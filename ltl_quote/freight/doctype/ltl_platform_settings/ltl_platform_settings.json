@@ -1,0 +1,117 @@
+{
+ "actions": [],
+ "creation": "2026-06-01 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rate_engine_section",
+  "rate_request_timeout_seconds",
+  "parallel_carrier_requests",
+  "column_break_rate",
+  "quote_currency",
+  "use_mock_carriers",
+  "decision_engine_section",
+  "cost_weight",
+  "transit_weight",
+  "reliability_weight",
+  "visibility_section",
+  "tracking_poll_interval_minutes",
+  "enable_exception_alerts"
+ ],
+ "fields": [
+  {
+   "fieldname": "rate_engine_section",
+   "fieldtype": "Section Break",
+   "label": "Rate Aggregation Engine"
+  },
+  {
+   "default": "30",
+   "fieldname": "rate_request_timeout_seconds",
+   "fieldtype": "Int",
+   "label": "Carrier API Timeout (seconds)"
+  },
+  {
+   "default": "10",
+   "fieldname": "parallel_carrier_requests",
+   "fieldtype": "Int",
+   "label": "Max Parallel Carrier Requests"
+  },
+  {
+   "fieldname": "column_break_rate",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "USD",
+   "fieldname": "quote_currency",
+   "fieldtype": "Link",
+   "label": "Quote Currency",
+   "options": "Currency",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "use_mock_carriers",
+   "fieldtype": "Check",
+   "label": "Use Mock Carriers (Development)"
+  },
+  {
+   "fieldname": "decision_engine_section",
+   "fieldtype": "Section Break",
+   "label": "Decision Engine Weights"
+  },
+  {
+   "default": "0.5",
+   "fieldname": "cost_weight",
+   "fieldtype": "Float",
+   "label": "Cost Weight (Best Value)"
+  },
+  {
+   "default": "0.3",
+   "fieldname": "transit_weight",
+   "fieldtype": "Float",
+   "label": "Transit Weight (Best Value)"
+  },
+  {
+   "default": "0.2",
+   "fieldname": "reliability_weight",
+   "fieldtype": "Float",
+   "label": "Reliability Weight (Best Value)"
+  },
+  {
+   "fieldname": "visibility_section",
+   "fieldtype": "Section Break",
+   "label": "Visibility Layer"
+  },
+  {
+   "default": "60",
+   "fieldname": "tracking_poll_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Tracking Poll Interval (minutes)"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_exception_alerts",
+   "fieldtype": "Check",
+   "label": "Enable Exception Alerts"
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-01 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Platform Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

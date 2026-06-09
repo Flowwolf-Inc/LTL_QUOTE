@@ -1,0 +1,279 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-06-01 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "column_break_status",
+  "requested_on",
+  "aggregated_on",
+  "shipment_section",
+  "origin_zip",
+  "origin_city",
+  "origin_state",
+  "column_break_origin",
+  "destination_zip",
+  "destination_city",
+  "destination_state",
+  "freight_section",
+  "total_weight",
+  "weight_uom",
+  "freight_class",
+  "column_break_freight",
+  "length",
+  "width",
+  "height",
+  "dimension_uom",
+  "pieces",
+  "stackable",
+  "accessorials_section",
+  "accessorials",
+  "carrier_quotes_section",
+  "carrier_quotes",
+  "recommendations_section",
+  "recommended_cheapest",
+  "recommended_fastest",
+  "column_break_rec",
+  "recommended_best_value",
+  "selected_carrier_quote",
+  "error_log"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "LTL-QR-.YYYY.-",
+   "default": "LTL-QR-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nAggregating\nQuoted\nBooked\nCancelled\nError",
+   "default": "Draft",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "requested_on",
+   "fieldtype": "Datetime",
+   "label": "Requested On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "aggregated_on",
+   "fieldtype": "Datetime",
+   "label": "Rates Aggregated On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipment_section",
+   "fieldtype": "Section Break",
+   "label": "Lane & Locations"
+  },
+  {
+   "fieldname": "origin_zip",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Origin ZIP",
+   "reqd": 1
+  },
+  {
+   "fieldname": "origin_city",
+   "fieldtype": "Data",
+   "label": "Origin City"
+  },
+  {
+   "fieldname": "origin_state",
+   "fieldtype": "Data",
+   "label": "Origin State"
+  },
+  {
+   "fieldname": "column_break_origin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "destination_zip",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Destination ZIP",
+   "reqd": 1
+  },
+  {
+   "fieldname": "destination_city",
+   "fieldtype": "Data",
+   "label": "Destination City"
+  },
+  {
+   "fieldname": "destination_state",
+   "fieldtype": "Data",
+   "label": "Destination State"
+  },
+  {
+   "fieldname": "freight_section",
+   "fieldtype": "Section Break",
+   "label": "Freight Details"
+  },
+  {
+   "fieldname": "total_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Weight",
+   "reqd": 1
+  },
+  {
+   "default": "LB",
+   "fieldname": "weight_uom",
+   "fieldtype": "Select",
+   "label": "Weight UOM",
+   "options": "LB\nKG"
+  },
+  {
+   "fieldname": "freight_class",
+   "fieldtype": "Select",
+   "label": "Freight Class",
+   "options": "50\n55\n60\n65\n70\n77.5\n85\n92.5\n100\n110\n125\n150\n175\n200\n250\n300\n400\n500",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_freight",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "length",
+   "fieldtype": "Float",
+   "label": "Length"
+  },
+  {
+   "fieldname": "width",
+   "fieldtype": "Float",
+   "label": "Width"
+  },
+  {
+   "fieldname": "height",
+   "fieldtype": "Float",
+   "label": "Height"
+  },
+  {
+   "default": "IN",
+   "fieldname": "dimension_uom",
+   "fieldtype": "Select",
+   "label": "Dimension UOM",
+   "options": "IN\nCM"
+  },
+  {
+   "default": "1",
+   "fieldname": "pieces",
+   "fieldtype": "Int",
+   "label": "Pieces / Pallets"
+  },
+  {
+   "fieldname": "stackable",
+   "fieldtype": "Check",
+   "label": "Stackable"
+  },
+  {
+   "fieldname": "accessorials_section",
+   "fieldtype": "Section Break",
+   "label": "Accessorials"
+  },
+  {
+   "fieldname": "accessorials",
+   "fieldtype": "Table",
+   "label": "Accessorials",
+   "options": "LTL Quote Request Accessorial"
+  },
+  {
+   "fieldname": "carrier_quotes_section",
+   "fieldtype": "Section Break",
+   "label": "Carrier Quotes (Rate Aggregation)"
+  },
+  {
+   "fieldname": "carrier_quotes",
+   "fieldtype": "Table",
+   "label": "Carrier Quotes",
+   "options": "LTL Carrier Quote Line",
+   "read_only": 1
+  },
+  {
+   "fieldname": "recommendations_section",
+   "fieldtype": "Section Break",
+   "label": "Decision Engine Recommendations",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "recommended_cheapest",
+   "fieldtype": "Data",
+   "label": "Cheapest Option",
+   "read_only": 1
+  },
+  {
+   "fieldname": "recommended_fastest",
+   "fieldtype": "Data",
+   "label": "Fastest Option",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_rec",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "recommended_best_value",
+   "fieldtype": "Data",
+   "label": "Best Value Option",
+   "read_only": 1
+  },
+  {
+   "fieldname": "selected_carrier_quote",
+   "fieldtype": "Data",
+   "label": "Selected Quote (Row Index)",
+   "hidden": 1
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Text",
+   "label": "Error Log",
+   "read_only": 1
+  }
+ ],
+ "links": [
+  {
+   "link_doctype": "LTL Shipment",
+   "link_fieldname": "quote_request"
+  }
+ ],
+ "modified": "2026-06-01 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Quote Request",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
