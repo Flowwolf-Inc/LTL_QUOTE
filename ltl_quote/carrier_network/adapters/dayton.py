@@ -4,6 +4,10 @@ import frappe
 import requests
 from frappe.utils import add_days, flt, now_datetime, today
 
+from ltl_quote.carrier_network.accessorials import (
+	build_accessorial_items,
+	dayton_rate_accessorials,
+)
 from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter, CarrierRateQuote, ShipmentRequest
 
 DEFAULT_BASE_URL = "https://api.daytonfreight.com"
@@ -51,13 +55,14 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		"""Maps LTL Quote Request schema -> Dayton Freight Rates API -> CarrierRateQuote."""
 		endpoint = f"{self.base_url}/api/Rates"
 		service_option = self._resolve_service_option(request.accessorial_codes)
+		dayton_accessorials = dayton_rate_accessorials(request.accessorials)
 
 		clean_weight = self._clean_int(request.total_weight)
 		clean_class = self._clean_float(request.freight_class, 70)
 		clean_pieces = self._clean_int(request.pieces, 1)
 
 		dayton_payload = {
-			"accessorials": [],
+			"accessorials": dayton_accessorials,
 			"account": self.account_number,
 			"destination": str(request.destination_zip),
 			"directOnly": False,
@@ -77,10 +82,12 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			"terms": "Prepaid",
 		}
 
+		headers = self.get_headers()
+
 		try:
 			response = requests.post(
 				endpoint,
-				headers=self.get_headers(),
+				headers=headers,
 				json=dayton_payload,
 				timeout=REQUEST_TIMEOUT,
 			)
@@ -144,6 +151,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		endpoint = f"{self.base_url}/api/Pickup"
 		quote_request = self._load_quote_request(quote_data)
 		pickup_date = quote_data.get("pickup_date") or today()
+		pickup_accessorials = dayton_rate_accessorials(build_accessorial_items(getattr(quote_request, "accessorials", None)))
 
 		dayton_pickup_payload = {
 			"customerReferenceNumber": str(quote_data.get("quote_request") or quote_data.get("carrier_quote_id")),
@@ -182,7 +190,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"fax": None,
 				"email": None,
 			},
-			"accessorials": [],
+			"accessorials": pickup_accessorials,
 			"comments": "Booked via LTL Quote platform",
 			"pickupInstructions": None,
 			"isTest": False,

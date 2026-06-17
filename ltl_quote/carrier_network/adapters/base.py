@@ -7,6 +7,12 @@ from typing import Any
 
 
 @dataclass
+class AccessorialItem:
+	code: str
+	quantity: int = 1
+
+
+@dataclass
 class ShipmentRequest:
 	origin_zip: str
 	destination_zip: str
@@ -16,11 +22,33 @@ class ShipmentRequest:
 	width: float = 0
 	height: float = 0
 	pieces: int = 1
-	accessorial_codes: list[str] = field(default_factory=list)
+	accessorials: list[AccessorialItem] = field(default_factory=list)
 	origin_city: str = ""
 	origin_state: str = ""
 	destination_city: str = ""
 	destination_state: str = ""
+
+	@property
+	def accessorial_codes(self) -> list[str]:
+		"""Unique normalized codes — backward-compatible for flag-based adapters."""
+		seen: set[str] = set()
+		ordered: list[str] = []
+		for item in self.accessorials:
+			code = (item.code or "").upper()
+			if code and code not in seen:
+				seen.add(code)
+				ordered.append(code)
+		return ordered
+
+	def expanded_accessorial_codes(self) -> list[str]:
+		"""Codes repeated by quantity for per-unit pricing."""
+		expanded: list[str] = []
+		for item in self.accessorials:
+			code = (item.code or "").upper()
+			if not code:
+				continue
+			expanded.extend([code] * max(int(item.quantity or 1), 1))
+		return expanded
 
 
 @dataclass

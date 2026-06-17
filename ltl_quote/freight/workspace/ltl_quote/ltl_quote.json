@@ -46,7 +46,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Network",
-   "link_count": 2,
+   "link_count": 3,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -68,6 +68,17 @@
    "label": "LTL Accessorial",
    "link_count": 0,
    "link_to": "LTL Accessorial",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "LTL Carrier Transaction Log",
+   "link_count": 0,
+   "link_to": "LTL Carrier Transaction Log",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"

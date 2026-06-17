@@ -36,10 +36,30 @@ SKIP_KEYS = {
 def parse_rating_payload(payload: dict | str | None = None, **kwargs) -> dict:
 	"""Parse and validate a unified rating request from REST clients or form data."""
 	data = _coerce_payload(payload, kwargs)
+	_expand_items_payload(data)
 	_validate_required(data)
 	data = _normalize_fields(data)
-	data["accessorial_rows"] = _resolve_accessorials(data.get("accessorials") or [])
+	accessorials = data.get("accessorials") or data.get("accessorial_codes") or []
+	data["accessorial_rows"] = _resolve_accessorials(accessorials)
 	return data
+
+
+def read_http_request_body() -> dict:
+	"""Capture raw JSON or form data from an incoming HTTP request (e.g. Postman)."""
+	headers = dict(frappe.request.headers) if getattr(frappe, "request", None) else {}
+
+	if getattr(frappe, "request", None) and frappe.request.data:
+		try:
+			body = json.loads(frappe.request.data.decode("utf-8"))
+		except (ValueError, UnicodeDecodeError):
+			body = dict(frappe.local.form_dict)
+	else:
+		body = dict(frappe.local.form_dict)
+
+	if isinstance(body, dict):
+		body.pop("cmd", None)
+
+	return {"headers": headers, "body": body}
 
 
 def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
@@ -57,6 +77,17 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 			continue
 		data.setdefault(key, value)
 
+	# Raw JSON body from Postman / REST clients
+	if getattr(frappe, "request", None) and frappe.request.data:
+		try:
+			raw_body = json.loads(frappe.request.data.decode("utf-8"))
+			if isinstance(raw_body, dict):
+				for key, value in raw_body.items():
+					if key not in SKIP_KEYS and value not in (None, ""):
+						data.setdefault(key, value)
+		except (ValueError, UnicodeDecodeError):
+			pass
+
 	# Nested JSON body under `data` or `payload`
 	for nested_key in ("data", "payload"):
 		nested = data.get(nested_key)
@@ -67,6 +98,25 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 				data.setdefault(key, value)
 
 	return data
+
+
+def _expand_items_payload(data: dict) -> None:
+	"""Map Postman-style `items` array into top-level freight fields."""
+	items = data.get("items") or []
+	if not items:
+		return
+
+	if not data.get("freight_class"):
+		data["freight_class"] = items[0].get("classification") or items[0].get("freight_class")
+
+	if not data.get("weight") and not data.get("total_weight"):
+		data["total_weight"] = sum(
+			float(item.get("weight") or 0) * max(int(item.get("qty") or item.get("quantity") or 1), 1)
+			for item in items
+		)
+
+	if not data.get("pieces"):
+		data["pieces"] = sum(max(int(item.get("qty") or item.get("quantity") or 1), 1) for item in items)
 
 
 def _validate_required(data: dict) -> None:
@@ -93,6 +143,9 @@ def _normalize_fields(data: dict) -> dict:
 	data["pieces"] = int(data.get("pieces") or 1)
 	data["timeout"] = int(data.get("timeout") or 0)
 	data["save_request"] = _as_bool(data.get("save_request", True))
+	for field in ("origin_city", "origin_state", "destination_city", "destination_state"):
+		if data.get(field):
+			data[field] = str(data[field]).strip()
 	return data
 
 
@@ -107,12 +160,17 @@ def _as_bool(value) -> bool:
 def _resolve_accessorials(accessorials: list) -> list[dict]:
 	rows = []
 	for item in accessorials:
-		code = _resolve_accessorial_code(item)
+		if isinstance(item, dict):
+			code = _resolve_accessorial_code(item.get("code") or item.get("accessorial_code") or item.get("accessorial"))
+			quantity = max(int(item.get("quantity") or item.get("qty") or 1), 1)
+		else:
+			code = _resolve_accessorial_code(item)
+			quantity = 1
 		if not code:
 			continue
 		name = frappe.db.get_value("LTL Accessorial", {"accessorial_code": code})
 		if name:
-			rows.append({"accessorial": name, "accessorial_code": code, "quantity": 1})
+			rows.append({"accessorial": name, "accessorial_code": code, "quantity": quantity})
 	return rows
 
 

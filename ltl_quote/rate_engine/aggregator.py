@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import frappe
 from frappe.utils import add_days, getdate, now_datetime
 
+from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
 from ltl_quote.decision_engine.recommender import DecisionEngine
@@ -16,9 +17,12 @@ from ltl_quote.utils.currency import get_quote_currency
 class RateAggregator:
 	"""Core rate aggregation — fetch LTL rates from multiple carriers in parallel."""
 
-	def __init__(self, quote_request):
+	def __init__(self, quote_request, carrier_ids: list[str] | None = None, shipment_request: ShipmentRequest | None = None):
 		self.doc = quote_request
 		self.settings = frappe.get_single("LTL Platform Settings")
+		self.carrier_ids = list(carrier_ids or [])
+		self.resolved_carriers = None
+		self.shipment_request = shipment_request
 
 	def aggregate(self, timeout: int | None = None) -> dict:
 		self.doc.status = "Aggregating"
@@ -26,8 +30,8 @@ class RateAggregator:
 		self.doc.save(ignore_permissions=True)
 		frappe.db.commit()
 
-		request = self._build_shipment_request()
-		carriers = get_enabled_carriers()
+		request = self.shipment_request or self._build_shipment_request()
+		carriers = self._resolve_carriers()
 		quotes = []
 		errors = []
 
@@ -109,11 +113,25 @@ class RateAggregator:
 			},
 		}
 
+	def _resolve_carriers(self) -> list:
+		if self.resolved_carriers is not None:
+			return self.resolved_carriers
+
+		if self.carrier_ids:
+			carriers = []
+			for carrier_id in self.carrier_ids:
+				if carrier_id == "MOCK":
+					from ltl_quote.carrier_network.registry import _ensure_mock_carriers
+
+					return _ensure_mock_carriers()
+				if frappe.db.exists("LTL Carrier", carrier_id):
+					carriers.append(frappe.get_doc("LTL Carrier", carrier_id))
+			if carriers:
+				return carriers
+
+		return get_enabled_carriers()
+
 	def _build_shipment_request(self) -> ShipmentRequest:
-		accessorial_codes = [
-			row.accessorial_code or frappe.db.get_value("LTL Accessorial", row.accessorial, "accessorial_code")
-			for row in (self.doc.accessorials or [])
-		]
 		return ShipmentRequest(
 			origin_zip=self.doc.origin_zip,
 			destination_zip=self.doc.destination_zip,
@@ -123,7 +141,7 @@ class RateAggregator:
 			width=float(self.doc.width or 0),
 			height=float(self.doc.height or 0),
 			pieces=int(float(str(self.doc.pieces or 1).replace(",", ""))),
-			accessorial_codes=[c for c in accessorial_codes if c],
+			accessorials=build_accessorial_items(self.doc.accessorials),
 			origin_city=self.doc.origin_city or "",
 			origin_state=self.doc.origin_state or "",
 			destination_city=self.doc.destination_city or "",

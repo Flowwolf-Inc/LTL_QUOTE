@@ -70,15 +70,31 @@ class MockCarrierAdapter(BaseCarrierAdapter):
 		return round((weight_factor * class_multiplier + distance_factor) * rng.uniform(0.95, 1.08), 2)
 
 	def _calculate_accessorials(self, request: ShipmentRequest, rng: random.Random) -> float:
-		charges = {"LIFTGATE": 75, "RESIDENTIAL": 65, "APPOINTMENT": 45, "HAZMAT": 120, "INSIDE_DELIVERY": 85}
+		charges = {
+			"LIFTGATE": 75,
+			"RESIDENTIAL": 65,
+			"APPOINTMENT": 45,
+			"HAZMAT": 120,
+			"INSIDE_DELIVERY": 85,
+			"LIMITED_ACCESS": 55,
+		}
 		total = 0.0
-		for code in request.accessorial_codes:
-			total += charges.get(code.upper(), 50) * rng.uniform(0.9, 1.1)
+		for code in request.expanded_accessorial_codes():
+			total += charges.get(code, 50) * rng.uniform(0.9, 1.1)
 		return round(total, 2)
 
 	def _accessorial_breakdown(self, request: ShipmentRequest) -> dict[str, float]:
-		charges = {"LIFTGATE": 75, "RESIDENTIAL": 65, "APPOINTMENT": 45}
-		return {c: charges.get(c.upper(), 50) for c in request.accessorial_codes}
+		charges = {
+			"LIFTGATE": 75,
+			"RESIDENTIAL": 65,
+			"APPOINTMENT": 45,
+			"INSIDE_DELIVERY": 85,
+			"LIMITED_ACCESS": 55,
+		}
+		breakdown: dict[str, float] = {}
+		for code in request.expanded_accessorial_codes():
+			breakdown[code] = breakdown.get(code, 0) + charges.get(code, 50)
+		return breakdown
 
 	def book_shipment(self, quote_data: dict) -> dict:
 		pro = f"PRO{frappe.generate_hash(length=8).upper()}"
