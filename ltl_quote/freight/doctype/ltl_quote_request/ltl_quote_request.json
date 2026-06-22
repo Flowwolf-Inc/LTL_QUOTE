@@ -18,6 +18,12 @@
   "destination_zip",
   "destination_city",
   "destination_state",
+  "addresses_section",
+  "shipper_company_name",
+  "shipper_address",
+  "column_break_addresses",
+  "consignee_company_name",
+  "consignee_address",
   "freight_section",
   "total_weight",
   "weight_uom",
@@ -118,6 +124,35 @@
    "fieldname": "destination_state",
    "fieldtype": "Data",
    "label": "Destination State"
+  },
+  {
+   "fieldname": "addresses_section",
+   "fieldtype": "Section Break",
+   "label": "Pickup & Delivery Addresses"
+  },
+  {
+   "fieldname": "shipper_company_name",
+   "fieldtype": "Data",
+   "label": "Shipper Company Name"
+  },
+  {
+   "fieldname": "shipper_address",
+   "fieldtype": "Small Text",
+   "label": "Shipper Address"
+  },
+  {
+   "fieldname": "column_break_addresses",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "consignee_company_name",
+   "fieldtype": "Data",
+   "label": "Consignee Company Name"
+  },
+  {
+   "fieldname": "consignee_address",
+   "fieldtype": "Small Text",
+   "label": "Consignee Address"
   },
   {
    "fieldname": "freight_section",

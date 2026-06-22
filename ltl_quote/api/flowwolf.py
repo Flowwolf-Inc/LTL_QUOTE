@@ -14,8 +14,10 @@ from frappe.utils import flt
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
 from ltl_quote.api.payload import parse_rating_payload
 from ltl_quote.api.quote import _build_shipment_request_from_payload, _create_quote_request
+from ltl_quote.booking.executor import ShipmentExecutor
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.decision_engine.recommender import rank_quotes
+from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
 
 FLOWWOLF_API_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_rates"
@@ -89,6 +91,104 @@ def get_rates(payload=None, **kwargs):
 		log_api_transaction(headers, log_body, response_payload, status, log_carrier_id)
 
 	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def book_carrier_quote(
+	quote_request_id: str,
+	carrier_code: str | None = None,
+	quote_row_idx: int | None = None,
+	transit_days: int | None = None,
+	is_test: bool = False,
+):
+	"""Server-side gateway to book an engineered quote from the Frappe desk UI."""
+	if not frappe.db.exists("LTL Quote Request", quote_request_id):
+		frappe.throw(f"Quote Request record {quote_request_id} not found.")
+
+	quote_doc = frappe.get_doc("LTL Quote Request", quote_request_id)
+	if quote_doc.status == "Booked":
+		frappe.throw(f"Quote Request {quote_request_id} is already booked.")
+
+	if not quote_doc.carrier_quotes:
+		frappe.throw("No carrier quotes are available on this request. Fetch rates before booking.")
+
+	row_idx = _resolve_quote_row_index(quote_doc, carrier_code, quote_row_idx)
+	selected = quote_doc.carrier_quotes[row_idx]
+	carrier_id = resolve_carrier_id(carrier_code) if carrier_code else selected.carrier
+	if not carrier_id:
+		carrier_id = selected.carrier
+
+	carrier_docs, carrier_label = load_carrier_for_rating(carrier_id)
+	carrier_doc = carrier_docs[0]
+	if carrier_doc.connector_type == "Mock" and carrier_code and carrier_code.upper() != "MOCK":
+		frappe.throw(f"Booking automation for {carrier_code} is not implemented yet.")
+
+	enrich_location_fields(quote_doc, "origin")
+	enrich_location_fields(quote_doc, "destination")
+	origin_city, origin_state = resolve_us_location(
+		quote_doc.origin_zip,
+		quote_doc.origin_city,
+		quote_doc.origin_state,
+	)
+	if not origin_state:
+		frappe.throw(
+			"Origin state is required to book a shipment. Enter origin state or use a valid US origin ZIP."
+		)
+
+	if transit_days:
+		selected.transit_days = int(transit_days)
+
+	quote_doc.selected_carrier_quote = str(row_idx)
+	quote_doc.origin_city = origin_city or quote_doc.origin_city
+	quote_doc.origin_state = origin_state
+
+	try:
+		result = ShipmentExecutor(quote_doc).book(is_test=is_test)
+	except Exception:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf Front-End Booking Error")
+		raise
+
+	carrier_name = carrier_doc.carrier_name or carrier_label
+	return {
+		"status": "success",
+		"message": (
+			f"Successfully booked with {carrier_name}! "
+			f"BOL Generated: {result.get('bol_number')}"
+		),
+		"data": {
+			**result,
+			"carrier_code": carrier_id,
+			"carrier_name": carrier_name,
+			"origin_city": origin_city,
+			"origin_state": origin_state,
+		},
+	}
+
+
+def _resolve_quote_row_index(quote_doc, carrier_code: str | None, quote_row_idx: int | None) -> int:
+	carrier_id = resolve_carrier_id(carrier_code) if carrier_code else None
+
+	if carrier_id:
+		for idx, row in enumerate(quote_doc.carrier_quotes):
+			if row.carrier == carrier_id:
+				if quote_row_idx is not None and int(quote_row_idx) != idx:
+					frappe.throw(
+						f"carrier_code {carrier_code} maps to quote row {idx}, "
+						f"but quote_row_idx {int(quote_row_idx)} was provided."
+					)
+				return idx
+		frappe.throw(f"No quote line found for carrier {carrier_code}.")
+
+	if quote_row_idx is not None:
+		idx = int(quote_row_idx)
+		if idx < 0 or idx >= len(quote_doc.carrier_quotes):
+			frappe.throw("Select a valid carrier quote before booking.")
+		return idx
+
+	if len(quote_doc.carrier_quotes) == 1:
+		return 0
+
+	frappe.throw("Select a carrier quote before booking.")
 
 
 def _read_request_context() -> tuple[dict, dict]:

@@ -9,11 +9,18 @@ from frappe.utils import now_datetime
 class LTLQuoteRequest(Document):
 	def validate(self):
 		self._normalize_zip_codes()
+		self._enrich_location_fields()
 
 	def _normalize_zip_codes(self):
 		for field in ("origin_zip", "destination_zip"):
 			if self.get(field):
 				self.set(field, str(self.get(field)).strip()[:10])
+
+	def _enrich_location_fields(self):
+		from ltl_quote.utils.location import enrich_location_fields
+
+		enrich_location_fields(self, "origin")
+		enrich_location_fields(self, "destination")
 
 	def before_save(self):
 		if self.is_new() and not self.requested_on:

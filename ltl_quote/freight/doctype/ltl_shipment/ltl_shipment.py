@@ -18,3 +18,14 @@ class LTLShipment(Document):
 		from ltl_quote.booking.executor import ShipmentExecutor
 
 		return ShipmentExecutor.dispatch_shipment(self)
+
+	@frappe.whitelist()
+	def fetch_proof_of_delivery(self):
+		from ltl_quote.carrier_network.registry import get_adapter
+
+		if not self.pro_number:
+			frappe.throw("PRO / tracking number required to fetch proof of delivery.")
+
+		carrier = frappe.get_doc("LTL Carrier", self.carrier)
+		adapter = get_adapter(carrier)
+		return adapter.get_proof_of_delivery(self.pro_number)

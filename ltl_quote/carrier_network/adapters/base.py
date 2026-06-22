@@ -97,3 +97,7 @@ class BaseCarrierAdapter(ABC):
 	def dispatch_shipment(self, shipment_data: dict) -> dict:
 		"""Send pickup/dispatch request to carrier."""
 		return {"status": "acknowledged", "message": "Dispatch not implemented for this connector"}
+
+	def get_proof_of_delivery(self, pro_number: str) -> dict:
+		"""Fetch signed delivery document when supported by the carrier connector."""
+		return {"pod_available": False, "message": "Proof of delivery is not supported for this carrier."}

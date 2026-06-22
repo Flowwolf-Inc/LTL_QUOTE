@@ -2,10 +2,12 @@
 # For license information, please see license.txt
 
 import frappe
-from frappe.utils import getdate, now_datetime
+from frappe.utils import now_datetime
 
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.utils.currency import get_quote_currency
+from ltl_quote.utils.booking import resolve_shipper_context
+from ltl_quote.utils.location import resolve_us_location
 
 
 class ShipmentExecutor:
@@ -13,8 +15,12 @@ class ShipmentExecutor:
 
 	def __init__(self, quote_request):
 		self.quote_request = quote_request
+		self.adapter = None
+		self.carrier_code = ""
+		self.booking_payload: dict = {}
 
-	def book(self) -> dict:
+	def book(self, is_test: bool = False) -> dict:
+		"""Orchestrates the platform booking execution path."""
 		idx = int(self.quote_request.selected_carrier_quote or 0)
 		quotes = self.quote_request.carrier_quotes or []
 		if idx < 0 or idx >= len(quotes):
@@ -22,9 +28,28 @@ class ShipmentExecutor:
 
 		selected = quotes[idx]
 		carrier = frappe.get_doc("LTL Carrier", selected.carrier)
-		adapter = get_adapter(carrier)
+		self.adapter = get_adapter(carrier)
+		self.carrier_code = str(getattr(carrier, "carrier_code", None) or carrier.name or "").upper()
 
-		quote_data = {
+		origin_city, origin_state = resolve_us_location(
+			self.quote_request.origin_zip,
+			self.quote_request.origin_city,
+			self.quote_request.origin_state,
+		)
+		destination_city, destination_state = resolve_us_location(
+			self.quote_request.destination_zip,
+			self.quote_request.destination_city,
+			self.quote_request.destination_state,
+		)
+
+		if not origin_state:
+			frappe.throw(
+				"Origin state is required to book a shipment. Enter origin state or use a valid US origin ZIP."
+			)
+
+		shipper = resolve_shipper_context(quote_request=self.quote_request)
+
+		self.booking_payload = {
 			"carrier_quote_id": selected.carrier_quote_id,
 			"total_charge": selected.total_charge,
 			"transit_days": selected.transit_days,
@@ -32,14 +57,28 @@ class ShipmentExecutor:
 			"destination_zip": self.quote_request.destination_zip,
 			"total_weight": self.quote_request.total_weight,
 			"pieces": self.quote_request.pieces or 1,
-			"origin_city": self.quote_request.origin_city,
-			"origin_state": self.quote_request.origin_state,
-			"destination_city": self.quote_request.destination_city,
-			"destination_state": self.quote_request.destination_state,
+			"origin_city": origin_city,
+			"origin_state": origin_state,
+			"destination_city": destination_city,
+			"destination_state": destination_state,
 			"quote_request": self.quote_request.name,
+			"freight_class": self.quote_request.freight_class,
+			"shipper_name": shipper["shipper_name"],
+			"shipper_address": shipper["shipper_address"],
+			"consignee_name": shipper["consignee_name"],
+			"consignee_address": shipper["consignee_address"],
+			"contact_name": shipper["contact_name"],
+			"contact_phone": shipper["contact_phone"],
+			"is_test": is_test,
 		}
 
-		booking_result = adapter.book_shipment(quote_data)
+		connector_type = str(getattr(carrier, "connector_type", None) or "").strip()
+
+		if self.carrier_code == "DAYTON" or connector_type == "Dayton":
+			booking_result = self.adapter.generate_bill_of_lading(self.booking_payload)
+		else:
+			booking_result = self.adapter.book_shipment(self.booking_payload)
+
 		shipment = self._create_shipment(selected, booking_result)
 		self._generate_bol(shipment)
 

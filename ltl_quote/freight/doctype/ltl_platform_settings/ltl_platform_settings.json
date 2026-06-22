@@ -10,6 +10,14 @@
   "column_break_rate",
   "quote_currency",
   "use_mock_carriers",
+  "default_shipper_section",
+  "default_shipper_name",
+  "default_shipper_address",
+  "column_break_shipper",
+  "default_contact_name",
+  "default_contact_phone",
+  "default_consignee_name",
+  "default_consignee_address",
   "decision_engine_section",
   "cost_weight",
   "transit_weight",
@@ -53,6 +61,51 @@
    "fieldname": "use_mock_carriers",
    "fieldtype": "Check",
    "label": "Use Mock Carriers (Development)"
+  },
+  {
+   "fieldname": "default_shipper_section",
+   "fieldtype": "Section Break",
+   "label": "Default Shipper (Booking)"
+  },
+  {
+   "default": "Main Warehouse Dispatch",
+   "fieldname": "default_shipper_name",
+   "fieldtype": "Data",
+   "label": "Default Shipper Name"
+  },
+  {
+   "default": "123 Logistics Way",
+   "fieldname": "default_shipper_address",
+   "fieldtype": "Small Text",
+   "label": "Default Shipper Address"
+  },
+  {
+   "fieldname": "column_break_shipper",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Shipping Desk",
+   "fieldname": "default_contact_name",
+   "fieldtype": "Data",
+   "label": "Default Contact Name"
+  },
+  {
+   "default": "0000000000",
+   "fieldname": "default_contact_phone",
+   "fieldtype": "Data",
+   "label": "Default Contact Phone"
+  },
+  {
+   "default": "Destination Receiver",
+   "fieldname": "default_consignee_name",
+   "fieldtype": "Data",
+   "label": "Default Consignee Name"
+  },
+  {
+   "default": "456 Customer Ave",
+   "fieldname": "default_consignee_address",
+   "fieldtype": "Small Text",
+   "label": "Default Consignee Address"
   },
   {
    "fieldname": "decision_engine_section",
