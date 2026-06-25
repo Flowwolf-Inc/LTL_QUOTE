@@ -10,7 +10,10 @@ def refresh_active_shipment_tracking():
 	"""Scheduled job: poll carrier APIs for in-transit shipments."""
 	active = frappe.get_all(
 		"LTL Shipment",
-		filters={"status": ["in", ["Booked", "Dispatched", "In Transit", "Out for Delivery"]]},
+		filters={
+			"status": ["in", ["Booked", "Dispatched", "In Transit", "Out for Delivery"]],
+			"carrier": ["!=", "DAYTON"],
+		},
 		pluck="name",
 	)
 	for name in active:

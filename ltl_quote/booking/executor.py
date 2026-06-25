@@ -73,14 +73,17 @@ class ShipmentExecutor:
 		}
 
 		connector_type = str(getattr(carrier, "connector_type", None) or "").strip()
+		self.connector_type = connector_type
+		self.is_dayton_carrier = self.carrier_code == "DAYTON" or connector_type == "Dayton"
 
-		if self.carrier_code == "DAYTON" or connector_type == "Dayton":
+		if self.is_dayton_carrier:
 			booking_result = self.adapter.generate_bill_of_lading(self.booking_payload)
 		else:
 			booking_result = self.adapter.book_shipment(self.booking_payload)
 
 		shipment = self._create_shipment(selected, booking_result)
-		self._generate_bol(shipment)
+		if not self.is_dayton_carrier:
+			self._generate_bol(shipment)
 
 		self.quote_request.status = "Booked"
 		self.quote_request.save(ignore_permissions=True)
@@ -104,11 +107,29 @@ class ShipmentExecutor:
 				"bol_number": booking_result.get("bol_number"),
 				"pro_number": booking_result.get("pro_number"),
 				"carrier_confirmation": booking_result.get("carrier_confirmation"),
+				"dayton_bol_id": booking_result.get("dayton_bol_id"),
 				"dispatch_status": "Pending",
 				"current_status": "Booked",
 			}
 		)
 		shipment.insert(ignore_permissions=True)
+
+		if self.is_dayton_carrier:
+			from ltl_quote.carrier_network.adapters.dayton import attach_dayton_bol_to_shipment
+
+			res = attach_dayton_bol_to_shipment(
+				shipment,
+				self.booking_payload,
+				bol_result=booking_result,
+			)
+			shipment.bol_number = res.get("bol_number") or shipment.bol_number
+			shipment.pro_number = res.get("pro_number") or shipment.pro_number
+			if res.get("status") == "success" and res.get("document_url"):
+				shipment.bol_document = res.get("document_url")
+			shipment.status = "Booked"
+			shipment.dispatch_status = "Pending"
+			shipment.save(ignore_permissions=True)
+
 		return shipment
 
 	def _generate_bol(self, shipment):

@@ -1,8 +1,10 @@
 import base64
+import json
 
 import frappe
 import requests
-from frappe.utils import add_days, cint, flt, now_datetime, today
+from frappe.utils import add_days, cint, flt, get_datetime, now_datetime, today
+from frappe.utils.file_manager import save_file
 
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
@@ -24,6 +26,13 @@ TEST_BOL_PDF_BASE64 = (
 	"MDA1MiAwMDAwMCBuIAowMDAwMDAwMTAxIDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA0IC9Sb290IDEgMCBS"
 	"ID4+CnN0YXJ0eHJlZgoxNzgKJSVFT0Y="
 )
+
+DAYTON_BOL_NOT_READY_MESSAGE = (
+	"Dayton Freight has registered the booking, but the official BOL document binary "
+	"is not yet finalized on their server. Please try again in a few minutes."
+)
+
+MIN_DAYTON_DOCUMENT_BYTES = 100
 
 
 class DaytonCarrierAdapter(BaseCarrierAdapter):
@@ -220,6 +229,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		ref_nums = res_data.get("referenceNumbers") or {}
 		bol_number = str(ref_nums.get("shipmentConfirmationNumber") or "")
 		pro_number = str(ref_nums.get("pro") or "")
+		dayton_bol_id = str(res_data.get("id") or bol_number or "")
 
 		images_dict = res_data.get("images") or {}
 		base64_pdf = images_dict.get("bol") or images_dict.get("bolDocument") or ""
@@ -241,9 +251,185 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			"bol_number": bol_number,
 			"pro_number": pro_number,
 			"carrier_confirmation": bol_number,
+			"dayton_bol_id": dayton_bol_id,
 			"document_binary": base64_pdf,
 			"shipping_labels_binary": base64_labels,
 		}
+
+	def update_electronic_bol(self, shipment_name: str) -> dict:
+		"""Map Frappe shipment data to Dayton UPDATE eBOL schema and persist returned PDF."""
+		shipment = frappe.get_doc("LTL Shipment", shipment_name)
+		if not shipment.dayton_bol_id:
+			frappe.throw("Dayton BOL ID is required before updating an electronic BOL.")
+
+		quote_request = frappe.get_doc("LTL Quote Request", shipment.quote_request)
+		payload = self._build_dayton_update_payload(shipment, quote_request)
+		endpoint = (
+			f"{self.base_url}/api/BillOfLading/v2/UpdateStandardElectronicBillOfLading"
+		)
+
+		try:
+			response = requests.post(
+				endpoint,
+				data=json.dumps(payload),
+				headers=self.get_headers(),
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as exc:
+			frappe.log_error(str(exc), "LTL Quote - Dayton eBOL Update Connection Error")
+			return {"success": False, "error": str(exc)}
+
+		if response.status_code != 200:
+			error_body = response.text or f"HTTP {response.status_code} with empty body"
+			frappe.log_error(
+				f"Dayton Update BOL HTTP {response.status_code}: {error_body}",
+				"LTL Carrier API Sync Fail",
+			)
+			return {"success": False, "error": error_body}
+
+		try:
+			response_data = response.json()
+		except ValueError:
+			frappe.log_error(response.text, "LTL Quote - Dayton eBOL Update Parse Failure")
+			return {"success": False, "error": response.text}
+
+		message_status = response_data.get("messageStatus") or {}
+		status_text = str(message_status.get("status") or "").lower()
+		if status_text and status_text not in {"success", "pass"}:
+			return {"success": False, "error": frappe.as_json(response_data)}
+
+		if response_data.get("errors"):
+			return {"success": False, "error": frappe.as_json(response_data)}
+
+		images_dict = response_data.get("images") or {}
+		base64_pdf_string = images_dict.get("bol") or images_dict.get("bolDocument") or ""
+		if not _is_usable_dayton_document_binary(base64_pdf_string):
+			return {
+				"success": False,
+				"status": "info",
+				"message": DAYTON_BOL_NOT_READY_MESSAGE,
+			}
+
+		file_doc = attach_base64_pdf_to_shipment(shipment.name, base64_pdf_string)
+		return {"success": True, "file_url": file_doc.file_url}
+
+	def _build_dayton_update_payload(self, shipment, quote_request) -> dict:
+		"""Build Dayton UPDATE eBOL payload from LTL Shipment and linked quote request."""
+		shipper = resolve_shipper_context(quote_request=quote_request)
+		platform_settings = frappe.get_single("LTL Platform Settings")
+
+		origin_zip = str(quote_request.origin_zip)
+		destination_zip = str(quote_request.destination_zip)
+		origin_city, origin_state = resolve_us_location(
+			origin_zip,
+			quote_request.origin_city,
+			quote_request.origin_state,
+		)
+		destination_city, destination_state = resolve_us_location(
+			destination_zip,
+			quote_request.destination_city,
+			quote_request.destination_state,
+		)
+
+		carrier_quote_id = self._shipment_carrier_quote_id(shipment, quote_request)
+		handling_unit_count = max(1, cint(flt(quote_request.pieces, 0)))
+		weight_lbs = cint(flt(quote_request.total_weight, 0))
+		pickup_date = shipment.pickup_date or today()
+		special_instructions = frappe.utils.strip_html(shipment.notes or "").strip()
+		if not special_instructions:
+			special_instructions = "Updated via Flowwolf API Portal."
+
+		handling_units = [
+			{
+				"count": handling_unit_count,
+				"handlingUnitQuantity": handling_unit_count,
+				"handlingUnitType": "SKID",
+				"type": "SKID",
+				"weight": weight_lbs,
+				"class": str(quote_request.freight_class or "70"),
+			}
+		]
+
+		return {
+			"id": cint(shipment.dayton_bol_id),
+			"bol": {
+				"requestedPickupDate": get_datetime(pickup_date).strftime("%Y-%m-%dT%H:%M:%SZ"),
+				"function": "UPDATE",
+				"isTest": bool(platform_settings.use_mock_carriers),
+				"requestorRole": "Shipper",
+				"specialInstructions": special_instructions,
+			},
+			"version": "2.0.0",
+			"images": {
+				"includeBol": True,
+				"includeShippingLabels": True,
+				"shippingLabels": {
+					"format": "LETTER",
+					"quantity": handling_unit_count,
+				},
+			},
+			"referenceNumbers": {
+				"quoteId": self._dayton_rate_quote_id({"carrier_quote_id": carrier_quote_id}),
+			},
+			"payment": {
+				"terms": "Prepaid",
+			},
+			"commodities": {
+				"lineItemLayout": "STACKED",
+				"handlingUnits": handling_units,
+			},
+			"shipmentTotals": {
+				"grossWeight": weight_lbs,
+				"handlingUnits": handling_unit_count,
+				"weightUnit": "LBS",
+			},
+			"origin": {
+				"account": self.account_number,
+				"name": shipper["shipper_name"],
+				"address1": shipper["shipper_address"],
+				"city": str(origin_city or quote_request.origin_city or "Dayton"),
+				"stateProvince": str(origin_state or quote_request.origin_state or "OH"),
+				"postalCode": origin_zip,
+				"country": "USA",
+				"contact": {
+					"name": shipper["contact_name"],
+					"phone": self._dayton_contact_phone(shipper.get("contact_phone")),
+				},
+			},
+			"destination": {
+				"name": shipper["consignee_name"],
+				"address1": shipper["consignee_address"],
+				"city": str(destination_city or quote_request.destination_city or "Chicago"),
+				"stateProvince": str(destination_state or quote_request.destination_state or "IL"),
+				"postalCode": destination_zip,
+				"country": "USA",
+				"contact": {
+					"name": shipper["consignee_name"],
+					"phone": self._dayton_contact_phone(),
+				},
+			},
+			"billTo": {
+				"account": self.account_number,
+				"name": shipper["shipper_name"],
+				"address1": shipper["shipper_address"],
+				"city": str(origin_city or quote_request.origin_city or "Dayton"),
+				"stateProvince": str(origin_state or quote_request.origin_state or "OH"),
+				"postalCode": origin_zip,
+				"country": "USA",
+				"contact": {
+					"name": shipper["contact_name"],
+					"phone": self._dayton_contact_phone(shipper.get("contact_phone")),
+				},
+			},
+		}
+
+	@staticmethod
+	def _shipment_carrier_quote_id(shipment, quote_request) -> str:
+		idx = cint(quote_request.selected_carrier_quote)
+		quotes = quote_request.carrier_quotes or []
+		if 0 <= idx < len(quotes):
+			return str(quotes[idx].carrier_quote_id or "")
+		return str(shipment.carrier_confirmation or "")
 
 	def _resolve_dayton_ebol_payload(self, quote_data: dict) -> dict:
 		"""Use explicit dayton_payload, a root-level Dayton schema, or build from platform fields."""
@@ -515,7 +701,11 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		}
 
 	def get_tracking(self, pro_number: str) -> list[dict]:
-		"""Poll Dayton tracking endpoint for live milestone event logs."""
+		"""Poll Dayton tracking endpoints for live milestone event logs."""
+		events = self._fetch_tracking_by_number(pro_number)
+		if events:
+			return events
+
 		endpoint = f"{self.base_url}/api/Tracking/{pro_number}"
 
 		try:
@@ -523,6 +713,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		except requests.exceptions.RequestException as e:
 			frappe.log_error(str(e), "LTL Quote - Dayton Tracking Connection Error")
 			return []
+
+		if response.status_code in (401, 403):
+			frappe.throw("Authentication failed with Dayton Lines API.")
 
 		if response.status_code != 200:
 			frappe.log_error(
@@ -533,18 +726,67 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 		data = response.json()
 		events = []
-		raw_events = data if isinstance(data, list) else data.get("events") or []
+		raw_events = data if isinstance(data, list) else data.get("events") or data.get("results") or []
 		for event in raw_events:
-			events.append(
-				{
-					"event_datetime": event.get("dateTime") or event.get("event_datetime"),
-					"status_code": event.get("statusCode") or event.get("status_code") or "IN_TRANSIT",
-					"status_description": event.get("description") or event.get("status_description") or "Cargo Movement Updated",
-					"location": event.get("location") or "Terminal Center",
-					"is_exception": 1 if event.get("isException") else 0,
-				}
-			)
+			events.append(self._parse_dayton_tracking_event(event))
 		return events
+
+	def _fetch_tracking_by_number(self, pro_number: str) -> list[dict]:
+		"""Query Dayton GET /api/Tracking/ByNumber for PRO-based milestone history."""
+		endpoint = f"{self.base_url}/api/Tracking/ByNumber"
+		params = {"type": "pro", "number": pro_number}
+
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				params=params,
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Tracking ByNumber Connection Error")
+			return []
+
+		if response.status_code in (401, 403):
+			frappe.throw("Authentication failed with Dayton Lines API.")
+
+		if response.status_code != 200:
+			return []
+
+		data = response.json()
+		results = data.get("results") if isinstance(data, dict) else data
+		if not isinstance(results, list):
+			return []
+
+		return [self._parse_dayton_tracking_event(event) for event in results]
+
+	@staticmethod
+	def _parse_dayton_tracking_event(event: dict) -> dict:
+		city = str(event.get("city") or "").strip()
+		state = str(event.get("state") or "").strip()
+		location = event.get("location")
+		if not location and (city or state):
+			location = ", ".join(part for part in (city, state) if part)
+
+		return {
+			"event_datetime": (
+				event.get("eventTime")
+				or event.get("dateTime")
+				or event.get("date")
+				or event.get("event_datetime")
+			),
+			"status_code": event.get("statusCode") or event.get("status_code") or "IN_TRANSIT",
+			"status_description": (
+				event.get("status")
+				or event.get("description")
+				or event.get("status_description")
+				or event.get("remarks")
+				or event.get("comment")
+				or "Cargo Movement Updated"
+			),
+			"location": location or "Terminal Center",
+			"is_exception": 1 if event.get("isException") else 0,
+		}
 
 	def get_proof_of_delivery(self, pro_number: str) -> dict:
 		"""Fetch signed POD document from Dayton GET /api/Documents/{proNumber}?type=POD."""
@@ -567,6 +809,30 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			)
 
 		return {"pod_available": False, "message": "Proof of delivery document is not available yet."}
+
+	def get_bol_document(self, pro_number: str) -> dict:
+		"""Fetch BOL document from Dayton GET /api/Documents/{proNumber}?type=BOL."""
+		endpoint = f"{self.base_url}/api/Documents/{pro_number}?type=BOL"
+
+		try:
+			response = requests.get(endpoint, headers=self.get_headers(), timeout=REQUEST_TIMEOUT)
+			if response.status_code == 200:
+				res_data = response.json()
+				document_base64 = (
+					res_data.get("imageDocument")
+					or res_data.get("bol")
+					or res_data.get("bolDocument")
+					or ""
+				)
+				if _is_usable_dayton_document_binary(document_base64):
+					return {"bol_available": True, "document_base64": document_base64}
+		except Exception as e:
+			frappe.log_error(
+				f"Failed to fetch BOL document for PRO {pro_number}: {e}",
+				"Dayton BOL Image Error",
+			)
+
+		return {"bol_available": False, "status": "info", "message": DAYTON_BOL_NOT_READY_MESSAGE}
 
 	def cancel_shipment(self, shipment_doc) -> bool:
 		"""Cancel a booked pickup via Dayton DELETE /api/Pickup/Cancel."""
@@ -710,31 +976,387 @@ def _is_dayton_test_request(request_data: dict, bol_result: dict | None = None) 
 	return False
 
 
-@frappe.whitelist(allow_guest=True)
-def download_dayton_bol():
-	request_data = frappe.request.get_json() or {}
-	adapter = DaytonCarrierAdapter()
-	request_data["return_raw_file"] = False
+def _is_usable_dayton_document_binary(document_binary: str | bytes | None) -> bool:
+	"""Return True when Dayton returned a non-trivial PDF/image payload."""
+	if not document_binary:
+		return False
 
 	try:
+		if isinstance(document_binary, bytes):
+			raw_bytes = document_binary
+		else:
+			raw_bytes = base64.b64decode(str(document_binary))
+	except Exception:
+		return False
+
+	return len(raw_bytes) >= MIN_DAYTON_DOCUMENT_BYTES
+
+
+def _dayton_bol_pending_response(bol_result: dict | None = None) -> dict:
+	response = {
+		"status": "info",
+		"message": DAYTON_BOL_NOT_READY_MESSAGE,
+	}
+	if bol_result:
+		response["bol_number"] = bol_result.get("bol_number")
+		response["pro_number"] = bol_result.get("pro_number")
+	return response
+
+
+def _resolve_dayton_bol_binary(request_data: dict, bol_result: dict | None = None) -> dict:
+	"""Resolve Dayton BOL PDF bytes and reference numbers from booking payload or API."""
+	request_data = dict(request_data or {})
+	request_data["return_raw_file"] = False
+
+	if bol_result is None:
+		adapter = DaytonCarrierAdapter()
 		bol_result = adapter.generate_bill_of_lading(request_data)
-	except frappe.ValidationError:
-		raise
 
 	base64_pdf = bol_result.get("document_binary")
 	bol_number = bol_result.get("bol_number") or "draft"
 
-	if not base64_pdf:
+	if not _is_usable_dayton_document_binary(base64_pdf):
 		if _is_dayton_test_request(request_data, bol_result):
 			base64_pdf = TEST_BOL_PDF_BASE64
 		else:
-			frappe.throw("No document binary returned from Dayton Freight production API.")
-
-	full_document_url = _save_bol_pdf_file(base64_pdf, bol_number)
+			return _dayton_bol_pending_response(bol_result)
 
 	return {
 		"status": "success",
 		"bol_number": bol_number,
 		"pro_number": bol_result.get("pro_number"),
+		"document_binary": base64_pdf,
+	}
+
+
+def resolve_dayton_bol_download(request_data: dict, bol_result: dict | None = None) -> dict:
+	"""Shared download_dayton_bol logic usable from HTTP API and booking executor."""
+	bol = _resolve_dayton_bol_binary(request_data, bol_result=bol_result)
+	if bol.get("status") == "info":
+		return bol
+
+	full_document_url = _save_bol_pdf_file(bol["document_binary"], bol["bol_number"])
+
+	return {
+		"status": "success",
+		"bol_number": bol["bol_number"],
+		"pro_number": bol.get("pro_number"),
 		"document_url": full_document_url,
 	}
+
+
+def attach_dayton_bol_to_shipment(shipment, request_data: dict, bol_result: dict | None = None) -> dict:
+	"""Persist Dayton BOL PDF on an LTL Shipment using download_dayton_bol resolution logic."""
+	bol = _resolve_dayton_bol_binary(request_data, bol_result=bol_result)
+	if bol.get("status") == "info":
+		return bol
+
+	file_doc = attach_base64_pdf_to_shipment(shipment.name, bol["document_binary"])
+
+	return {
+		"status": "success",
+		"bol_number": bol["bol_number"],
+		"pro_number": bol.get("pro_number"),
+		"document_url": file_doc.file_url,
+	}
+
+
+def attach_base64_pdf_to_shipment(shipment_id: str, base64_string: str):
+	"""Decode Dayton images.bol Base64 and attach a private PDF to the shipment BOL field."""
+	filename = f"Dayton_Updated_BOL_{shipment_id}.pdf"
+	file_bytes = base64.b64decode(base64_string)
+
+	file_doc = save_file(
+		fname=filename,
+		content=file_bytes,
+		dt="LTL Shipment",
+		dn=shipment_id,
+		is_private=1,
+		decode=False,
+		df="bol_document",
+	)
+	frappe.db.set_value("LTL Shipment", shipment_id, "bol_document", file_doc.file_url)
+	frappe.db.commit()
+	return file_doc
+
+
+DAYTON_CARRIER_CODE = "DAYTON"
+SHIPMENT_TRACKING_ID_FIELDS = (
+	"name",
+	"dayton_bol_id",
+	"pro_number",
+	"carrier_confirmation",
+	"bol_number",
+)
+
+
+def _normalize_postal_code(postal_code) -> str:
+	return str(postal_code or "").strip()[:10]
+
+
+def _find_booked_dayton_shipments(origin_postal_code, destination_postal_code) -> list[dict]:
+	origin = _normalize_postal_code(origin_postal_code)
+	destination = _normalize_postal_code(destination_postal_code)
+	if not origin or not destination:
+		return []
+
+	return frappe.db.sql(
+		"""
+		SELECT
+			s.name,
+			s.bol_document,
+			s.dayton_bol_id,
+			s.pro_number,
+			s.carrier_confirmation,
+			s.bol_number,
+			s.status,
+			s.carrier
+		FROM `tabLTL Shipment` s
+		INNER JOIN `tabLTL Quote Request` q ON q.name = s.quote_request
+		WHERE s.status = 'Booked'
+			AND s.carrier = %(carrier)s
+			AND q.origin_zip = %(origin)s
+			AND q.destination_zip = %(destination)s
+		ORDER BY s.booked_on DESC, s.modified DESC
+		""",
+		{"carrier": DAYTON_CARRIER_CODE, "origin": origin, "destination": destination},
+		as_dict=True,
+	)
+
+
+def _filter_shipments_by_tracking_id(shipments: list[dict], tracking_or_booking_id) -> list[dict]:
+	needle = str(tracking_or_booking_id or "").strip()
+	if not needle:
+		return shipments
+
+	return [
+		shipment
+		for shipment in shipments
+		if any(str(shipment.get(field) or "").strip() == needle for field in SHIPMENT_TRACKING_ID_FIELDS)
+	]
+
+
+def _resolve_booked_dayton_shipment(shipments: list[dict], tracking_or_booking_id=None) -> tuple[dict | None, dict | None]:
+	if not shipments:
+		return None, {
+			"success": False,
+			"error": "No matching booked Dayton shipment found for the provided routing parameters.",
+		}
+
+	if tracking_or_booking_id:
+		matched = _filter_shipments_by_tracking_id(shipments, tracking_or_booking_id)
+		if not matched:
+			return None, {
+				"success": False,
+				"error": "No shipment matched the provided tracking_or_booking_id.",
+			}
+		if len(matched) > 1:
+			return None, {
+				"success": False,
+				"error": "Multiple booked Dayton shipments match the provided tracking_or_booking_id.",
+				"matching_shipments": [row.name for row in matched],
+			}
+		return matched[0], None
+
+	if len(shipments) == 1:
+		return shipments[0], None
+
+	return None, {
+		"success": False,
+		"error": "Multiple booked Dayton shipments match the provided zip codes. Supply tracking_or_booking_id to disambiguate.",
+		"matching_shipments": [row.name for row in shipments],
+	}
+
+
+def _fetch_remote_bol_for_shipment(shipment: dict, adapter: DaytonCarrierAdapter | None = None) -> dict:
+	"""Retrieve a missing BOL attachment from Dayton and persist it on the shipment."""
+	adapter = adapter or DaytonCarrierAdapter()
+	shipment_name = shipment.name
+
+	if shipment.get("dayton_bol_id"):
+		result = adapter.update_electronic_bol(shipment_name)
+		if result.get("success"):
+			return {
+				"success": True,
+				"file_url": result.get("file_url"),
+				"shipment": shipment_name,
+				"source": "dayton_update_ebol",
+			}
+		if result.get("status") == "info":
+			return {
+				"success": False,
+				"status": "info",
+				"message": result.get("message") or DAYTON_BOL_NOT_READY_MESSAGE,
+				"shipment": shipment_name,
+			}
+		return {
+			"success": False,
+			"error": result.get("error") or result.get("message") or "Failed to retrieve BOL from Dayton update eBOL API.",
+			"shipment": shipment_name,
+		}
+
+	pro_number = str(shipment.get("pro_number") or "").strip()
+	if pro_number:
+		doc_result = adapter.get_bol_document(pro_number)
+		if doc_result.get("bol_available") and doc_result.get("document_base64"):
+			file_doc = attach_base64_pdf_to_shipment(shipment_name, doc_result["document_base64"])
+			return {
+				"success": True,
+				"file_url": file_doc.file_url,
+				"shipment": shipment_name,
+				"source": "dayton_documents_api",
+			}
+
+		return {
+			"success": False,
+			"status": doc_result.get("status") or "info",
+			"message": doc_result.get("message") or DAYTON_BOL_NOT_READY_MESSAGE,
+			"shipment": shipment_name,
+		}
+
+	return {
+		"success": False,
+		"error": "Matching shipment found but no Dayton BOL ID or PRO number is available to retrieve the document.",
+		"shipment": shipment_name,
+	}
+
+
+@frappe.whitelist()
+def get_booked_bol_url(origin_postal_code, destination_postal_code, tracking_or_booking_id=None):
+	"""
+	Looks up an existing, booked shipment matching the routing parameters
+	and returns its associated BOL document attachment URL.
+	"""
+	shipments = _find_booked_dayton_shipments(origin_postal_code, destination_postal_code)
+	shipment, error = _resolve_booked_dayton_shipment(shipments, tracking_or_booking_id)
+	if error:
+		return error
+
+	if shipment.get("bol_document"):
+		return {
+			"success": True,
+			"file_url": shipment.bol_document,
+			"shipment": shipment.name,
+			"source": "local",
+		}
+
+	return _fetch_remote_bol_for_shipment(shipment)
+
+
+@frappe.whitelist()
+def update_electronic_bol(shipment_name: str) -> dict:
+	"""Frappe API route: update an existing Dayton eBOL and store the returned PDF."""
+	shipment = frappe.get_doc("LTL Shipment", shipment_name)
+	carrier = frappe.get_doc("LTL Carrier", shipment.carrier)
+	adapter = DaytonCarrierAdapter(carrier)
+	return adapter.update_electronic_bol(shipment_name)
+
+
+@frappe.whitelist(allow_guest=True)
+def download_dayton_bol():
+	request_data = frappe.request.get_json() or {}
+	return resolve_dayton_bol_download(request_data)
+
+
+@frappe.whitelist()
+def fetch_dayton_tracking_updates(shipment_name):
+	"""Query Dayton Freight Tracking API and update the LTL Shipment tracking_events table."""
+	shipment = frappe.get_doc("LTL Shipment", shipment_name)
+
+	if not _is_dayton_shipment(shipment):
+		return {
+			"status": "error",
+			"message": "Tracking refresh is only supported for Dayton Freight shipments.",
+		}
+
+	tracking_number = shipment.pro_number
+	if not tracking_number:
+		return {
+			"status": "error",
+			"message": "No PRO or Tracking Number assigned to this shipment yet.",
+		}
+
+	try:
+		from ltl_quote.visibility.tracker import ShipmentTracker
+
+		result = ShipmentTracker(shipment).refresh()
+		if not result.get("events"):
+			return {
+				"status": "info",
+				"message": "Shipment registered, but transit tracking events are not populated yet.",
+			}
+
+		return {
+			"status": "success",
+			"message": "Tracking details synchronized successfully.",
+			"events": result.get("events"),
+			"has_exception": result.get("has_exception"),
+		}
+	except frappe.ValidationError as exc:
+		return {"status": "error", "message": str(exc)}
+	except Exception:
+		frappe.log_error(title="Dayton Tracking Pull Failure", message=frappe.get_traceback())
+		return {"status": "error", "message": "Connection tracking error while polling Dayton Freight."}
+
+
+def _is_dayton_shipment(shipment) -> bool:
+	carrier = str(shipment.carrier or "").upper()
+	if carrier == DAYTON_CARRIER_CODE:
+		return True
+
+	carrier_name = str(shipment.carrier_name or "").lower()
+	return "dayton" in carrier_name
+
+
+def sync_all_active_shipments():
+	"""Automated cron runner pulling milestones for active Dayton shipments."""
+	active_shipments = frappe.get_all(
+		"LTL Shipment",
+		filters={
+			"carrier": "DAYTON",
+			"status": ["in", ["Booked", "Dispatched", "In Transit", "Out for Delivery"]],
+			"current_status": ["not in", ["Delivered", "Cancelled"]],
+		},
+		pluck="name",
+	)
+
+	for name in active_shipments:
+		try:
+			fetch_dayton_tracking_updates(name)
+		except Exception:
+			frappe.log_error(
+				title=f"Dayton tracking sync failed: {name}",
+				message=frappe.get_traceback(),
+			)
+
+
+@frappe.whitelist()
+def fetch_dayton_tracking_by_date(start_date: str, end_date: str, customer_code: str) -> dict:
+	"""Proxies Dayton's ByDate endpoint through Frappe Localhost."""
+	adapter = DaytonCarrierAdapter()
+	endpoint = f"{adapter.base_url}/api/Tracking/ByDate"
+	params = {
+		"startstring": start_date,
+		"endstring": end_date,
+		"customerstring": customer_code
+	}
+	try:
+		response = requests.get(endpoint, headers=adapter.get_headers(), params=params, timeout=10)
+		return response.json() if response.status_code == 200 else {"status": "error", "code": response.status_code, "text": response.text}
+	except Exception as e:
+		frappe.throw(f"Frappe Proxy Error: {str(e)}")
+
+
+@frappe.whitelist()
+def fetch_dayton_pending_shipments(customer_code: str) -> dict:
+	"""Proxies Dayton's Pending shipments endpoint through Frappe Localhost."""
+	adapter = DaytonCarrierAdapter()
+	endpoint = f"{adapter.base_url}/api/Tracking/Pending"
+	params = {
+		"customer": customer_code
+	}
+	try:
+		response = requests.get(endpoint, headers=adapter.get_headers(), params=params, timeout=10)
+		return response.json() if response.status_code == 200 else {"status": "error", "code": response.status_code, "text": response.text}
+	except Exception as e:
+		frappe.throw(f"Frappe Proxy Error: {str(e)}")

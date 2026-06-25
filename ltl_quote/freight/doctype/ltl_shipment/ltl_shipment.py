@@ -29,3 +29,21 @@ class LTLShipment(Document):
 		carrier = frappe.get_doc("LTL Carrier", self.carrier)
 		adapter = get_adapter(carrier)
 		return adapter.get_proof_of_delivery(self.pro_number)
+
+	@frappe.whitelist()
+	def update_electronic_bol(self):
+		from ltl_quote.carrier_network.adapters.dayton import update_electronic_bol
+
+		if str(self.carrier or "").upper() != "DAYTON":
+			frappe.throw("Electronic BOL updates are only supported for Dayton shipments.")
+
+		return update_electronic_bol(self.name)
+
+	@frappe.whitelist()
+	def fetch_dayton_tracking_updates(self):
+		"""Document controller method triggered via doc: frm.doc from the desk UI."""
+		from ltl_quote.carrier_network.adapters.dayton import (
+			fetch_dayton_tracking_updates as run_sync,
+		)
+
+		return run_sync(self.name)

@@ -155,7 +155,10 @@ after_migrate = "ltl_quote.install.after_migrate"
 
 scheduler_events = {
 	"hourly": [
+		# Generic tasks ignore Dayton shipments to prevent double-polling API consumption.
 		"ltl_quote.tasks.refresh_active_shipment_tracking",
+		# Targeted Dayton tracking extraction.
+		"ltl_quote.carrier_network.adapters.dayton.sync_all_active_shipments",
 	],
 }
 

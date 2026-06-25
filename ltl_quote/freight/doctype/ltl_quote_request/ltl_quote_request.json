@@ -45,6 +45,14 @@
   "column_break_rec",
   "recommended_best_value",
   "selected_carrier_quote",
+  "acceptance_section",
+  "final_carrier",
+  "final_charge",
+  "column_break_acceptance",
+  "carrier_reference_number",
+  "bol_number",
+  "pro_number",
+  "bol_document_url",
   "error_log"
  ],
  "fields": [
@@ -62,7 +70,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Draft\nAggregating\nQuoted\nBooked\nCancelled\nError",
+   "options": "Draft\nAggregating\nQuoted\nAccepted\nBooked\nCancelled\nError",
    "default": "Draft",
    "read_only": 1
   },
@@ -273,6 +281,52 @@
    "fieldtype": "Data",
    "label": "Selected Quote (Row Index)",
    "hidden": 1
+  },
+  {
+   "fieldname": "acceptance_section",
+   "fieldtype": "Section Break",
+   "label": "Accepted Quote & BOL",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "final_carrier",
+   "fieldtype": "Data",
+   "label": "Final Carrier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_charge",
+   "fieldtype": "Currency",
+   "label": "Final Charge",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_acceptance",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "carrier_reference_number",
+   "fieldtype": "Data",
+   "label": "Carrier Reference Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_number",
+   "fieldtype": "Data",
+   "label": "BOL Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pro_number",
+   "fieldtype": "Data",
+   "label": "PRO Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_document_url",
+   "fieldtype": "Data",
+   "label": "BOL Document URL",
+   "read_only": 1
   },
   {
    "fieldname": "error_log",
