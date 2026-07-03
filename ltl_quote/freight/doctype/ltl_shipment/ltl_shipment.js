@@ -1,0 +1,298 @@
+// Copyright (c) 2026, LTL Quote and contributors
+// For license information, please see license.txt
+
+frappe.core = frappe.core || {};
+frappe.core.utils = frappe.core.utils || {};
+
+frappe.core.utils.update_dayton_carrier_bol = function (frm) {
+	frappe.call({
+		method: "update_electronic_bol",
+		doc: frm.doc,
+		freeze: true,
+		callback(r) {
+			if (r.message?.success) {
+				frappe.show_alert({
+					message: __("Updated BOL saved."),
+					indicator: "green",
+				});
+				frm.reload_doc();
+				return;
+			}
+
+			if (r.message?.status === "info") {
+				frappe.msgprint({
+					title: __("Dayton BOL Pending"),
+					indicator: "orange",
+					message: r.message.message || __("The BOL document is not ready yet."),
+				});
+				return;
+			}
+
+			frappe.msgprint({
+				title: __("Dayton BOL Update Failed"),
+				indicator: "red",
+				message: r.message?.error || r.message?.message || __("Unknown error"),
+			});
+		},
+	});
+};
+
+frappe.ui.form.on("LTL Shipment", {
+	refresh(frm) {
+		if (!frm.is_new()) {
+			frm.remove_custom_button(__("Dispatch to Carrier"));
+			frm.remove_custom_button(__("Update Electronic BOL"));
+			frm.remove_custom_button(__("Track Location"));
+			frm.remove_custom_button(__("Generate BOL"));
+			frm.remove_custom_button(__("Dispatch to Carrier"), __("Actions"));
+			frm.remove_custom_button(__("Update Electronic BOL"), __("Actions"));
+			frm.remove_custom_button(__("Track Location"), __("Actions"));
+
+			frm.add_custom_button(__("Refresh Tracking"), () => {
+				frappe.call({
+					method: "refresh_tracking",
+					doc: frm.doc,
+					freeze: true,
+					callback() {
+						frm.reload_doc();
+					},
+				});
+			}, __("Visibility"));
+
+			if (frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+				frm.add_custom_button(__("Dispatch to Carrier"), () => {
+					frappe.call({
+						method: "dispatch_to_carrier",
+						doc: frm.doc,
+						freeze: true,
+						callback() {
+							frm.reload_doc();
+						},
+					});
+				});
+			}
+
+			if (frm.doc.carrier === "DAYTON" && frm.doc.dayton_bol_id) {
+				frm.add_custom_button(__("Generate BOL"), () => {
+					frappe.core.utils.update_dayton_carrier_bol(frm);
+				}).addClass("btn-primary");
+			}
+
+			if (frm.doc.carrier === "DAYTON" && frm.doc.status === "Booked" && frm.doc.pro_number) {
+				frm.add_custom_button(__("Track Location"), () => {
+					frappe.show_alert({
+						message: __("Contacting Dayton network..."),
+						indicator: "blue",
+					});
+
+					frappe.call({
+						method: "fetch_dayton_tracking_updates",
+						doc: frm.doc,
+						callback(r) {
+							if (r.message?.status === "success") {
+								frm.reload_doc();
+								frappe.show_alert({
+									message: r.message.message,
+									indicator: "green",
+								});
+								return;
+							}
+
+							if (r.message) {
+								frappe.msgprint({
+									title: __("Tracking System"),
+									message: r.message.message,
+									indicator: r.message.status === "error" ? "red" : "orange",
+								});
+							}
+						},
+					});
+				});
+			}
+
+			if (frm.doc.carrier === "DAYTON") {
+				frm.add_custom_button(__("Track Pending Shipments"), () => {
+					get_dayton_customer_code(frm).then((customer_code) => {
+						frappe.call({
+							method: "ltl_quote.carrier_network.adapters.dayton.fetch_dayton_pending_shipments",
+							args: { customer_code },
+							freeze: true,
+							freeze_message: __("Fetching pending shipments from Dayton..."),
+							callback(r) {
+								if (r.message?.status === "error") {
+									frappe.msgprint({
+										title: __("Dayton Tracking"),
+										indicator: "red",
+										message: r.message.text || __("Failed to fetch pending shipments."),
+									});
+									return;
+								}
+								if (r.message?.results) {
+									render_dayton_tracking_dashboard(
+										frm,
+										"Dayton Pending Shipments Scan",
+										r.message.results
+									);
+								} else {
+									render_dayton_tracking_dashboard(frm, "Dayton Pending Shipments Scan", []);
+								}
+							},
+						});
+					});
+				}, __("Dayton Actions"));
+
+				frm.add_custom_button(__("Track By Date Range"), () => {
+					frappe.prompt(
+						[
+							{
+								label: __("Start Date"),
+								fieldname: "start_date",
+								fieldtype: "Date",
+								reqd: 1,
+								default: frappe.datetime.add_days(frappe.datetime.get_today(), -1),
+							},
+							{
+								label: __("End Date"),
+								fieldname: "end_date",
+								fieldtype: "Date",
+								reqd: 1,
+								default: frappe.datetime.get_today(),
+							},
+						],
+						(values) => {
+							get_dayton_customer_code(frm).then((customer_code) => {
+								frappe.call({
+									method: "ltl_quote.carrier_network.adapters.dayton.fetch_dayton_tracking_by_date",
+									args: {
+										start_date: values.start_date,
+										end_date: values.end_date,
+										customer_code,
+									},
+									freeze: true,
+									freeze_message: __("Querying historical tracking window..."),
+									callback(r) {
+										if (r.message?.status === "error") {
+											frappe.msgprint({
+												title: __("Dayton Tracking"),
+												indicator: "red",
+												message: r.message.text || __("Failed to fetch tracking data."),
+											});
+											return;
+										}
+										if (r.message?.results) {
+											render_dayton_tracking_dashboard(
+												frm,
+												"Historical Shipments Tracking",
+												r.message.results
+											);
+										} else {
+											render_dayton_tracking_dashboard(frm, "Historical Shipments Tracking", []);
+										}
+									},
+								});
+							});
+						},
+						__("Specify Tracking Range"),
+						__("Fetch Data")
+					);
+				}, __("Dayton Actions"));
+			}
+
+			if (frm.doc.carrier === "ARCB" && frm.doc.status === "Booked") {
+				let btn = frm.add_custom_button(__("Generate BOL"), function () {
+					frappe.call({
+						method: "ltl_quote.api.shipment.attach_arcbest_bol_to_shipment",
+						args: {
+							shipment_id: frm.doc.name,
+						},
+						freeze: true,
+						freeze_message: __("Downloading PDF from ArcBest and attaching to panel..."),
+						callback(r) {
+							if (r.message && r.message.status === "success") {
+								frappe.show_alert({
+									message: __("BOL Attached Successfully!"),
+									indicator: "green",
+								});
+								frm.reload_doc();
+							}
+						},
+					});
+				});
+
+				if (btn) {
+					btn
+						.removeClass("btn-default")
+						.css({
+							"background-color": "#111111",
+							color: "#ffffff",
+							"font-weight": "bold",
+							border: "1px solid #000000",
+						});
+				}
+			}
+		}
+	},
+});
+
+function get_dayton_customer_code(frm) {
+	if (frm.doc.customer_code) {
+		return Promise.resolve(frm.doc.customer_code);
+	}
+	if (frm.doc.carrier) {
+		return frappe.db
+			.get_value("LTL Carrier", frm.doc.carrier, "account_number")
+			.then((r) => r.message?.account_number || "0055666");
+	}
+	return Promise.resolve("0055666");
+}
+
+function render_dayton_tracking_dashboard(frm, title, results) {
+	frm.dashboard.clear_headline();
+	frm.dashboard.reset();
+
+	if (!results || results.length === 0) {
+		frm.dashboard.set_headline_alert(
+			__("No active transit tracking events returned from Dayton Freight currently."),
+			"orange"
+		);
+		return;
+	}
+
+	let html_content = `
+		<div class="dayton-tracking-container" style="padding: 15px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--border-radius-md); margin-bottom: 20px;">
+			<h6 class="text-muted text-uppercase tracking-wide" style="margin-bottom: 12px; font-size: 11px; font-weight: 600; color: var(--text-muted);">
+				<i class="fa fa-truck" style="margin-right: 6px;"></i> ${__(title)}
+			</h6>
+			<div class="row">
+	`;
+
+	results.forEach((row) => {
+		const activity = row.status ? row.status.activity : row.event || "Unknown Status";
+		const code = row.status ? row.status.activityCode : "N/A";
+
+		let indicator_color = "blue";
+		if (["DELIVERED", "DLV"].includes(code)) indicator_color = "green";
+		if (["DELAY", "EXC"].includes(code)) indicator_color = "red";
+		if (["ETOFD", "OFD"].includes(code)) indicator_color = "orange";
+
+		html_content += `
+				<div class="col-sm-4" style="margin-bottom: 10px;">
+					<div style="padding: 10px; background: var(--control-bg); border-left: 4px solid var(--text-${indicator_color}); border-radius: 4px;">
+						<div style="font-size: 11px; color: var(--text-muted);">PRO #${row.pro}</div>
+						<div style="font-weight: 600; font-size: 13px; margin: 2px 0;">${activity}</div>
+						<span class="indicator ${indicator_color}" style="font-size: 10px;">Code: ${code}</span>
+					</div>
+				</div>
+		`;
+	});
+
+	html_content += `
+			</div>
+		</div>
+	`;
+
+	frm.dashboard.add_section(html_content);
+	frm.dashboard.show();
+
+	frappe.utils.scroll_to(frm.dashboard.wrapper);
+}

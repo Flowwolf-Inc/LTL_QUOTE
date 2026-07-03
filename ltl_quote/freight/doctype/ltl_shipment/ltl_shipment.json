@@ -1,0 +1,257 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-06-01 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "column_break_status",
+  "quote_request",
+  "carrier",
+  "carrier_name",
+  "lifecycle_section",
+  "booked_on",
+  "pickup_date",
+  "estimated_delivery_date",
+  "actual_delivery_date",
+  "column_break_lifecycle",
+  "bol_number",
+  "dayton_bol_id",
+  "pro_number",
+  "carrier_confirmation",
+  "dispatch_status",
+  "charges_section",
+  "currency",
+  "total_charge",
+  "transit_days",
+  "visibility_section",
+  "current_status",
+  "current_location",
+  "last_tracking_update",
+  "column_break_vis",
+  "eta_predicted",
+  "has_exception",
+  "tracking_events",
+  "bol_section",
+  "bol_document",
+  "bol_document_url"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "LTL-SHP-.YYYY.-",
+   "default": "LTL-SHP-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nBooked\nDispatched\nIn Transit\nOut for Delivery\nDelivered\nCancelled\nException",
+   "default": "Draft"
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quote_request",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Quote Request",
+   "options": "LTL Quote Request",
+   "reqd": 1
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Link",
+   "label": "Carrier",
+   "options": "LTL Carrier",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "carrier.carrier_name",
+   "fieldname": "carrier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Carrier Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Shipment Lifecycle"
+  },
+  {
+   "fieldname": "booked_on",
+   "fieldtype": "Datetime",
+   "label": "Booked On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pickup_date",
+   "fieldtype": "Date",
+   "label": "Pickup Date"
+  },
+  {
+   "fieldname": "estimated_delivery_date",
+   "fieldtype": "Date",
+   "label": "Estimated Delivery"
+  },
+  {
+   "fieldname": "actual_delivery_date",
+   "fieldtype": "Date",
+   "label": "Actual Delivery"
+  },
+  {
+   "fieldname": "column_break_lifecycle",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_number",
+   "fieldtype": "Data",
+   "label": "BOL Number",
+   "unique": 1
+  },
+  {
+   "fieldname": "dayton_bol_id",
+   "fieldtype": "Data",
+   "label": "Dayton BOL ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pro_number",
+   "fieldtype": "Data",
+   "label": "PRO / Tracking Number"
+  },
+  {
+   "fieldname": "carrier_confirmation",
+   "fieldtype": "Data",
+   "label": "Carrier Confirmation #"
+  },
+  {
+   "fieldname": "dispatch_status",
+   "fieldtype": "Select",
+   "label": "Dispatch Status",
+   "options": "Pending\nSent to Carrier\nAcknowledged\nFailed"
+  },
+  {
+   "fieldname": "charges_section",
+   "fieldtype": "Section Break",
+   "label": "Charges"
+  },
+  {
+   "default": "USD",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_charge",
+   "fieldtype": "Currency",
+   "label": "Total Charge",
+   "options": "currency"
+  },
+  {
+   "fieldname": "transit_days",
+   "fieldtype": "Int",
+   "label": "Transit Days"
+  },
+  {
+   "fieldname": "visibility_section",
+   "fieldtype": "Section Break",
+   "label": "Visibility & Tracking"
+  },
+  {
+   "fieldname": "current_status",
+   "fieldtype": "Data",
+   "label": "Current Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_location",
+   "fieldtype": "Data",
+   "label": "Current Location",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_tracking_update",
+   "fieldtype": "Datetime",
+   "label": "Last Tracking Update",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_vis",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "eta_predicted",
+   "fieldtype": "Datetime",
+   "label": "Predicted ETA",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "has_exception",
+   "fieldtype": "Check",
+   "label": "Has Exception",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tracking_events",
+   "fieldtype": "Table",
+   "label": "Tracking Events",
+   "options": "LTL Shipment Tracking Event"
+  },
+  {
+   "fieldname": "bol_section",
+   "fieldtype": "Section Break",
+   "label": "Bill of Lading",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "bol_document",
+   "fieldtype": "Attach",
+   "label": "BOL Document"
+  },
+  {
+   "fieldname": "bol_document_url",
+   "fieldtype": "Data",
+   "label": "BOL Document URL",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-01 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Shipment",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

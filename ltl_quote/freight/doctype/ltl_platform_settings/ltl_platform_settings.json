@@ -1,0 +1,170 @@
+{
+ "actions": [],
+ "creation": "2026-06-01 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rate_engine_section",
+  "rate_request_timeout_seconds",
+  "parallel_carrier_requests",
+  "column_break_rate",
+  "quote_currency",
+  "use_mock_carriers",
+  "default_shipper_section",
+  "default_shipper_name",
+  "default_shipper_address",
+  "column_break_shipper",
+  "default_contact_name",
+  "default_contact_phone",
+  "default_consignee_name",
+  "default_consignee_address",
+  "decision_engine_section",
+  "cost_weight",
+  "transit_weight",
+  "reliability_weight",
+  "visibility_section",
+  "tracking_poll_interval_minutes",
+  "enable_exception_alerts"
+ ],
+ "fields": [
+  {
+   "fieldname": "rate_engine_section",
+   "fieldtype": "Section Break",
+   "label": "Rate Aggregation Engine"
+  },
+  {
+   "default": "30",
+   "fieldname": "rate_request_timeout_seconds",
+   "fieldtype": "Int",
+   "label": "Carrier API Timeout (seconds)"
+  },
+  {
+   "default": "10",
+   "fieldname": "parallel_carrier_requests",
+   "fieldtype": "Int",
+   "label": "Max Parallel Carrier Requests"
+  },
+  {
+   "fieldname": "column_break_rate",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "USD",
+   "fieldname": "quote_currency",
+   "fieldtype": "Link",
+   "label": "Quote Currency",
+   "options": "Currency",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "use_mock_carriers",
+   "fieldtype": "Check",
+   "label": "Use Mock Carriers (Development)"
+  },
+  {
+   "fieldname": "default_shipper_section",
+   "fieldtype": "Section Break",
+   "label": "Default Shipper (Booking)"
+  },
+  {
+   "default": "Main Warehouse Dispatch",
+   "fieldname": "default_shipper_name",
+   "fieldtype": "Data",
+   "label": "Default Shipper Name"
+  },
+  {
+   "default": "123 Logistics Way",
+   "fieldname": "default_shipper_address",
+   "fieldtype": "Small Text",
+   "label": "Default Shipper Address"
+  },
+  {
+   "fieldname": "column_break_shipper",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Shipping Desk",
+   "fieldname": "default_contact_name",
+   "fieldtype": "Data",
+   "label": "Default Contact Name"
+  },
+  {
+   "default": "0000000000",
+   "fieldname": "default_contact_phone",
+   "fieldtype": "Data",
+   "label": "Default Contact Phone"
+  },
+  {
+   "default": "Destination Receiver",
+   "fieldname": "default_consignee_name",
+   "fieldtype": "Data",
+   "label": "Default Consignee Name"
+  },
+  {
+   "default": "456 Customer Ave",
+   "fieldname": "default_consignee_address",
+   "fieldtype": "Small Text",
+   "label": "Default Consignee Address"
+  },
+  {
+   "fieldname": "decision_engine_section",
+   "fieldtype": "Section Break",
+   "label": "Decision Engine Weights"
+  },
+  {
+   "default": "0.5",
+   "fieldname": "cost_weight",
+   "fieldtype": "Float",
+   "label": "Cost Weight (Best Value)"
+  },
+  {
+   "default": "0.3",
+   "fieldname": "transit_weight",
+   "fieldtype": "Float",
+   "label": "Transit Weight (Best Value)"
+  },
+  {
+   "default": "0.2",
+   "fieldname": "reliability_weight",
+   "fieldtype": "Float",
+   "label": "Reliability Weight (Best Value)"
+  },
+  {
+   "fieldname": "visibility_section",
+   "fieldtype": "Section Break",
+   "label": "Visibility Layer"
+  },
+  {
+   "default": "60",
+   "fieldname": "tracking_poll_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Tracking Poll Interval (minutes)"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_exception_alerts",
+   "fieldtype": "Check",
+   "label": "Enable Exception Alerts"
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-01 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Platform Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
