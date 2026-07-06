@@ -9,6 +9,7 @@ from frappe.utils.file_manager import save_file
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	dayton_rate_accessorials,
+	unique_accessorial_codes,
 )
 from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter, CarrierRateQuote, ShipmentRequest
 from ltl_quote.utils.booking import resolve_shipper_context
@@ -314,9 +315,20 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		return {"success": True, "file_url": file_doc.file_url}
 
 	def _build_dayton_update_payload(self, shipment, quote_request) -> dict:
-		"""Build Dayton UPDATE eBOL payload from LTL Shipment and linked quote request."""
+		"""
+		Builds the v2 Update BOL payload with full accessorial structures
+		matching the Digital LTL Council standard.
+		"""
 		shipper = resolve_shipper_context(quote_request=quote_request)
 		platform_settings = frappe.get_single("LTL Platform Settings")
+		pickup_date = shipment.pickup_date or today()
+
+		special_instructions = frappe.utils.strip_html(getattr(shipment, "notes", None) or "").strip()
+		if not special_instructions:
+			special_instructions = "Updated via Flowwolf API Portal."
+
+		accessorial_items = build_accessorial_items(getattr(quote_request, "accessorials", None))
+		accessorial_codes = unique_accessorial_codes(accessorial_items)
 
 		origin_zip = str(quote_request.origin_zip)
 		destination_zip = str(quote_request.destination_zip)
@@ -334,10 +346,6 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		carrier_quote_id = self._shipment_carrier_quote_id(shipment, quote_request)
 		handling_unit_count = max(1, cint(flt(quote_request.pieces, 0)))
 		weight_lbs = cint(flt(quote_request.total_weight, 0))
-		pickup_date = shipment.pickup_date or today()
-		special_instructions = frappe.utils.strip_html(shipment.notes or "").strip()
-		if not special_instructions:
-			special_instructions = "Updated via Flowwolf API Portal."
 
 		handling_units = [
 			{
@@ -352,6 +360,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 		return {
 			"id": cint(shipment.dayton_bol_id),
+			"version": "2.0.0",
 			"bol": {
 				"requestedPickupDate": get_datetime(pickup_date).strftime("%Y-%m-%dT%H:%M:%SZ"),
 				"function": "UPDATE",
@@ -359,7 +368,6 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"requestorRole": "Shipper",
 				"specialInstructions": special_instructions,
 			},
-			"version": "2.0.0",
 			"images": {
 				"includeBol": True,
 				"includeShippingLabels": True,
@@ -369,6 +377,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				},
 			},
 			"referenceNumbers": {
+				"pro": str(shipment.pro_number or ""),
 				"quoteId": self._dayton_rate_quote_id({"carrier_quote_id": carrier_quote_id}),
 			},
 			"payment": {
@@ -383,8 +392,19 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"handlingUnits": handling_unit_count,
 				"weightUnit": "LBS",
 			},
+			"accessorials": {
+				"codes": accessorial_codes,
+				"hazardousDetails": {},
+				"cod": {},
+				"sortAndSegregateDetails": {},
+				"fullValueCoverageDetails": {},
+				"markDetails": {},
+				"limitedAccessType": {},
+				"timeCriticalDetails": {},
+				"appointmentDetails": {},
+			},
 			"origin": {
-				"account": self.account_number,
+				"account": str(self.account_number),
 				"name": shipper["shipper_name"],
 				"address1": shipper["shipper_address"],
 				"city": str(origin_city or quote_request.origin_city or "Dayton"),
@@ -409,7 +429,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				},
 			},
 			"billTo": {
-				"account": self.account_number,
+				"account": str(self.account_number),
 				"name": shipper["shipper_name"],
 				"address1": shipper["shipper_address"],
 				"city": str(origin_city or quote_request.origin_city or "Dayton"),
@@ -791,7 +811,15 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		}
 
 	def get_proof_of_delivery(self, pro_number: str) -> dict:
-		"""Fetch signed POD document from Dayton GET /api/Documents/{proNumber}?type=POD."""
+		"""Fetch signed POD document from Dayton GET /api/Documents/{proNumber}?type=POD.
+
+		Verifies the document is indexed via /api/Images/Search before requesting the
+		heavy binary, so we don't blindly poll for shipments that aren't scanned yet.
+		"""
+		gate = self._verify_indexed(pro_number, "PROOF OF DELIVERY")
+		if gate.get("blocked"):
+			return {"pod_available": False, "message": "Proof of delivery document is not available yet."}
+
 		endpoint = f"{self.base_url}/api/Documents/{pro_number}?type=POD"
 
 		try:
@@ -813,7 +841,15 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		return {"pod_available": False, "message": "Proof of delivery document is not available yet."}
 
 	def get_bol_document(self, pro_number: str) -> dict:
-		"""Fetch BOL document from Dayton GET /api/Documents/{proNumber}?type=BOL."""
+		"""Fetch BOL document from Dayton GET /api/Documents/{proNumber}?type=BOL.
+
+		Verifies the BOL is indexed via /api/Images/Search first (fail-open) so we
+		skip the heavy binary request when Dayton has not scanned it yet.
+		"""
+		gate = self._verify_indexed(pro_number, "BILL OF LADING")
+		if gate.get("blocked"):
+			return {"bol_available": False, "status": "info", "message": DAYTON_BOL_NOT_READY_MESSAGE}
+
 		endpoint = f"{self.base_url}/api/Documents/{pro_number}?type=BOL"
 
 		try:
@@ -827,7 +863,11 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 					or ""
 				)
 				if _is_usable_dayton_document_binary(document_base64):
-					return {"bol_available": True, "document_base64": document_base64}
+					return {
+						"bol_available": True,
+						"document_base64": document_base64,
+						"document_hash": (gate.get("document") or {}).get("hash"),
+					}
 		except Exception as e:
 			frappe.log_error(
 				f"Failed to fetch BOL document for PRO {pro_number}: {e}",
@@ -835,6 +875,48 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			)
 
 		return {"bol_available": False, "status": "info", "message": DAYTON_BOL_NOT_READY_MESSAGE}
+
+	def search_images(self, pro_number: str) -> dict:
+		"""Query Dayton GET /api/Images/Search to list the documents (BOL, POD, ...)
+		that have been indexed on their servers for a PRO.
+
+		Returns ``{"ok": bool, "documents": [...], "raw": {...}}``. ``ok`` is False
+		when the call could not be completed (network error / non-200) so callers can
+		fail open instead of assuming "no documents".
+		"""
+		endpoint = f"{self.base_url}/api/Images/Search"
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				params={"pro": str(pro_number or "").strip()},
+				timeout=REQUEST_TIMEOUT,
+			)
+			if response.status_code == 200:
+				data = response.json() or {}
+				return {"ok": True, "documents": data.get("documents") or [], "raw": data}
+			return {"ok": False, "documents": [], "raw": {"code": response.status_code, "text": response.text}}
+		except Exception:
+			frappe.log_error(title="Dayton Images Search Failure", message=frappe.get_traceback())
+			return {"ok": False, "documents": [], "raw": {}}
+
+	def _verify_indexed(self, pro_number: str, doc_type: str) -> dict:
+		"""Preventative gate consulted before downloading heavy document binaries.
+
+		Fails OPEN: it only reports ``blocked`` when the Images/Search call succeeds
+		and explicitly does not list ``doc_type``. Any inconclusive result (network
+		error, non-200) leaves ``blocked`` False so existing download behaviour holds.
+		"""
+		search = self.search_images(pro_number)
+		if not search.get("ok"):
+			return {"blocked": False, "checked": False}
+		document = _find_indexed_dayton_document(search, doc_type)
+		return {
+			"blocked": document is None,
+			"checked": True,
+			"document": document,
+			"documents": search.get("documents"),
+		}
 
 	def cancel_shipment(self, shipment_doc) -> bool:
 		"""Cancel a booked pickup via Dayton DELETE /api/Pickup/Cancel."""
@@ -1362,3 +1444,66 @@ def fetch_dayton_pending_shipments(customer_code: str) -> dict:
 		return response.json() if response.status_code == 200 else {"status": "error", "code": response.status_code, "text": response.text}
 	except Exception as e:
 		frappe.throw(f"Frappe Proxy Error: {str(e)}")
+
+
+def _find_indexed_dayton_document(search_result: dict, doc_type: str) -> dict | None:
+	"""Return the document dict of a given type from an Images/Search response, else None."""
+	target = str(doc_type or "").strip().upper()
+	for document in search_result.get("documents") or []:
+		if str(document.get("type") or "").strip().upper() == target:
+			return document
+	return None
+
+
+@frappe.whitelist()
+def search_dayton_images(pro: str) -> dict:
+	"""Query Dayton Freight's Images Search API to verify which documents (BOL, POD,
+	etc.) have been indexed on their servers for a PRO.
+
+	Use this as a lightweight "index verification" gate before requesting the heavy
+	document binaries via get_bol_document() / get_proof_of_delivery().
+	"""
+	if not pro:
+		frappe.throw("A valid PRO tracking number is required to search images.")
+
+	adapter = DaytonCarrierAdapter()
+	result = adapter.search_images(pro)
+	if result.get("ok"):
+		return {"success": True, "data": result.get("raw") or {"pro": pro, "documents": result.get("documents")}}
+
+	raw = result.get("raw") or {}
+	return {"success": False, "code": raw.get("code"), "text": raw.get("text")}
+
+
+@frappe.whitelist()
+def dayton_document_available(pro: str, doc_type: str = "BILL OF LADING") -> dict:
+	"""Report whether a specific Dayton document type is indexed and safe to download.
+
+	Powers UI badging (enable/disable "Download" buttons) and cron pre-checks. Also
+	returns the content ``hash`` so callers can cache-bust locally: re-download only
+	when the remote hash differs from the one stored on the shipment.
+	"""
+	if not pro:
+		return {"available": False, "checked": False, "message": "No PRO number assigned yet."}
+
+	adapter = DaytonCarrierAdapter()
+	search = adapter.search_images(pro)
+	if not search.get("ok"):
+		return {"available": False, "checked": False, "message": "Could not verify documents with Dayton right now."}
+
+	document = _find_indexed_dayton_document(search, doc_type)
+	if document:
+		return {
+			"available": True,
+			"checked": True,
+			"type": doc_type,
+			"hash": document.get("hash"),
+			"documents": search.get("documents"),
+		}
+
+	return {
+		"available": False,
+		"checked": True,
+		"message": "Documents are currently being scanned by Dayton's processing team.",
+		"documents": search.get("documents"),
+	}
