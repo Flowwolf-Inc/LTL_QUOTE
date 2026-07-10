@@ -70,3 +70,38 @@ def resolve_shipper_context(quote_data: dict | None = None, quote_request=None) 
 			defaults["contact_phone"],
 		),
 	}
+
+
+def resolve_shipment_bol_url(shipment_name: str | None = None, quote_request=None) -> str:
+	"""Resolve a browser-openable BOL URL from shipment or quote request records."""
+	if shipment_name:
+		row = frappe.db.get_value(
+			"LTL Shipment",
+			shipment_name,
+			["bol_document_url", "bol_document"],
+			as_dict=True,
+		)
+		if row:
+			url = str(row.get("bol_document_url") or "").strip()
+			if url:
+				return url
+			attach = str(row.get("bol_document") or "").strip()
+			if attach:
+				return attach if attach.startswith("http") else f"{frappe.utils.get_url()}{attach}"
+
+	if quote_request:
+		if isinstance(quote_request, str):
+			doc = frappe.db.get_value(
+				"LTL Quote Request",
+				quote_request,
+				["bol_document_url"],
+				as_dict=True,
+			)
+		else:
+			doc = quote_request
+		if doc:
+			url = str(doc.get("bol_document_url") if isinstance(doc, dict) else getattr(doc, "bol_document_url", None) or "").strip()
+			if url:
+				return url
+
+	return ""

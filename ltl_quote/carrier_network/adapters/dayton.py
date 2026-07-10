@@ -8,8 +8,10 @@ from frappe.utils.file_manager import save_file
 
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
+	build_dayton_bol_accessorials_section,
+	build_dayton_bol_special_instructions,
+	dayton_bol_accessorial_codes,
 	dayton_rate_accessorials,
-	unique_accessorial_codes,
 )
 from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter, CarrierRateQuote, ShipmentRequest
 from ltl_quote.utils.booking import resolve_shipper_context
@@ -172,7 +174,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		endpoint = (
 			f"{self.base_url}/api/BillOfLading/v2/CreateStandardElectronicBillOfLading"
 		)
-		dayton_ebol_payload = self._resolve_dayton_ebol_payload(quote_data)
+		dayton_ebol_payload = _sanitize_dayton_ebol_integers(
+			self._resolve_dayton_ebol_payload(quote_data)
+		)
 
 		frappe.log_error(frappe.as_json(dayton_ebol_payload), "DAYTON REQUEST")
 		frappe.logger("dayton").info(f"Dayton eBOL payload: {frappe.as_json(dayton_ebol_payload)}")
@@ -193,7 +197,8 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		if not response.text:
 			frappe.throw(f"Empty response received from Dayton API. HTTP Status: {response.status_code}")
 
-		if "html" in response.text.lower() or "<!doctype html>" in response.text.lower():
+		text_stripped = response.text.lstrip().lower()
+		if text_stripped.startswith("<!doctype html") or text_stripped.startswith("<html"):
 			frappe.log_error(response.text, "Dayton Returned HTML Error Webpage")
 			frappe.throw(
 				(
@@ -218,14 +223,10 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		status_text = str(message_status.get("status") or "").lower()
 		acceptable_statuses = {"success", "pass"}
 		if status_text and status_text not in acceptable_statuses:
-			frappe.throw(
-				f"Dayton eBOL Creation Failed ({response.status_code}): {frappe.as_json(res_data)}"
-			)
+			frappe.throw(_format_dayton_ebol_failure(response.status_code, res_data))
 
 		if response.status_code != 200 or res_data.get("errors"):
-			frappe.throw(
-				f"Dayton eBOL Creation Failed ({response.status_code}): {frappe.as_json(res_data)}"
-			)
+			frappe.throw(_format_dayton_ebol_failure(response.status_code, res_data))
 
 		ref_nums = res_data.get("referenceNumbers") or {}
 		bol_number = str(ref_nums.get("shipmentConfirmationNumber") or "")
@@ -264,7 +265,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			frappe.throw("Dayton BOL ID is required before updating an electronic BOL.")
 
 		quote_request = frappe.get_doc("LTL Quote Request", shipment.quote_request)
-		payload = self._build_dayton_update_payload(shipment, quote_request)
+		payload = _sanitize_dayton_ebol_integers(
+			self._build_dayton_update_payload(shipment, quote_request)
+		)
 		endpoint = (
 			f"{self.base_url}/api/BillOfLading/v2/UpdateStandardElectronicBillOfLading"
 		)
@@ -312,6 +315,17 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			}
 
 		file_doc = attach_base64_pdf_to_shipment(shipment.name, base64_pdf_string)
+		sync_dayton_bol_details_to_shipment(
+			shipment.name,
+			payload,
+			bol_result={
+				"bol_number": shipment.bol_number,
+				"pro_number": shipment.pro_number,
+				"dayton_bol_id": shipment.dayton_bol_id,
+				"carrier_confirmation": shipment.carrier_confirmation,
+			},
+			bol_file_url=file_doc.file_url,
+		)
 		return {"success": True, "file_url": file_doc.file_url}
 
 	def _build_dayton_update_payload(self, shipment, quote_request) -> dict:
@@ -323,12 +337,12 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		platform_settings = frappe.get_single("LTL Platform Settings")
 		pickup_date = shipment.pickup_date or today()
 
-		special_instructions = frappe.utils.strip_html(getattr(shipment, "notes", None) or "").strip()
-		if not special_instructions:
-			special_instructions = "Updated via Flowwolf API Portal."
-
-		accessorial_items = build_accessorial_items(getattr(quote_request, "accessorials", None))
-		accessorial_codes = unique_accessorial_codes(accessorial_items)
+		accessorial_rows = list(getattr(quote_request, "accessorials", None) or [])
+		accessorial_codes = dayton_bol_accessorial_codes(accessorial_rows)
+		special_instructions = build_dayton_bol_special_instructions(accessorial_rows)
+		notes = frappe.utils.strip_html(getattr(shipment, "notes", None) or "").strip()
+		if notes:
+			special_instructions = f"{special_instructions} | {notes}" if special_instructions else notes
 
 		origin_zip = str(quote_request.origin_zip)
 		destination_zip = str(quote_request.destination_zip)
@@ -343,20 +357,61 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			quote_request.destination_state,
 		)
 
-		carrier_quote_id = self._shipment_carrier_quote_id(shipment, quote_request)
 		handling_unit_count = max(1, cint(flt(quote_request.pieces, 0)))
-		weight_lbs = cint(flt(quote_request.total_weight, 0))
+		weight_lbs = _dayton_int_weight(quote_request.total_weight)
+		length = _optional_dayton_dimension(getattr(quote_request, "length", None))
+		width = _optional_dayton_dimension(getattr(quote_request, "width", None))
+		height = _optional_dayton_dimension(getattr(quote_request, "height", None))
+		dimensions_unit = str(getattr(quote_request, "dimension_uom", None) or "IN").upper()
+		if dimensions_unit not in ("IN", "CM"):
+			dimensions_unit = "IN"
 
-		handling_units = [
-			{
-				"count": handling_unit_count,
-				"handlingUnitQuantity": handling_unit_count,
-				"handlingUnitType": "SKID",
-				"type": "SKID",
-				"weight": weight_lbs,
-				"class": str(quote_request.freight_class or "70"),
-			}
-		]
+		handling_unit = {
+			"count": handling_unit_count,
+			"handlingUnitQuantity": handling_unit_count,
+			"handlingUnitType": "SKID",
+			"type": "SKID",
+			"weight": weight_lbs,
+			"class": str(quote_request.freight_class or "70"),
+			"lineItems": [
+				{
+					"handlingUnitId": "1",
+					"classification": str(quote_request.freight_class or "70"),
+					"description": "General Freight Cargo",
+					"hazardous": False,
+					"packagingType": "SKID",
+					"pieces": handling_unit_count,
+					"weight": weight_lbs,
+					"weightUnit": "LBS",
+				}
+			],
+		}
+		if length and width and height:
+			handling_unit["dimensionsUnit"] = dimensions_unit
+			handling_unit["length"] = length
+			handling_unit["width"] = width
+			handling_unit["height"] = height
+		handling_units = [handling_unit]
+
+		origin_contact_name = str(
+			getattr(quote_request, "contact_name", None) or shipper.get("contact_name") or "Shipping Desk"
+		)
+		origin_contact_phone = self._dayton_contact_phone(
+			getattr(quote_request, "contact_phone", None),
+			shipper.get("contact_phone"),
+		)
+		origin_contact_email = str(getattr(quote_request, "origin_contact_email", None) or "").strip()
+		destination_contact_name = str(
+			getattr(quote_request, "destination_contact_name", None)
+			or shipper.get("consignee_name")
+			or "Receiving Dock"
+		)
+		destination_contact_phone = self._dayton_contact_phone(
+			getattr(quote_request, "destination_contact_phone", None),
+		)
+		destination_contact_email = str(
+			getattr(quote_request, "destination_contact_email", None) or ""
+		).strip()
 
 		return {
 			"id": cint(shipment.dayton_bol_id),
@@ -365,7 +420,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"requestedPickupDate": get_datetime(pickup_date).strftime("%Y-%m-%dT%H:%M:%SZ"),
 				"function": "UPDATE",
 				"isTest": bool(platform_settings.use_mock_carriers),
-				"requestorRole": "Shipper",
+				"requestorRole": "SHIPPER",
 				"specialInstructions": special_instructions,
 			},
 			"images": {
@@ -374,11 +429,11 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"shippingLabels": {
 					"format": "LETTER",
 					"quantity": handling_unit_count,
+					"position": 1,
 				},
 			},
 			"referenceNumbers": {
 				"pro": str(shipment.pro_number or ""),
-				"quoteId": self._dayton_rate_quote_id({"carrier_quote_id": carrier_quote_id}),
 			},
 			"payment": {
 				"terms": "Prepaid",
@@ -389,56 +444,60 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			},
 			"shipmentTotals": {
 				"grossWeight": weight_lbs,
+				"netWeight": weight_lbs,
 				"handlingUnits": handling_unit_count,
 				"weightUnit": "LBS",
 			},
-			"accessorials": {
-				"codes": accessorial_codes,
-				"hazardousDetails": {},
-				"cod": {},
-				"sortAndSegregateDetails": {},
-				"fullValueCoverageDetails": {},
-				"markDetails": {},
-				"limitedAccessType": {},
-				"timeCriticalDetails": {},
-				"appointmentDetails": {},
-			},
+			"accessorials": build_dayton_bol_accessorials_section(accessorial_codes),
 			"origin": {
 				"account": str(self.account_number),
+				"locationId": "",
 				"name": shipper["shipper_name"],
 				"address1": shipper["shipper_address"],
+				"address2": "",
 				"city": str(origin_city or quote_request.origin_city or "Dayton"),
 				"stateProvince": str(origin_state or quote_request.origin_state or "OH"),
 				"postalCode": origin_zip,
 				"country": "USA",
 				"contact": {
-					"name": shipper["contact_name"],
-					"phone": self._dayton_contact_phone(shipper.get("contact_phone")),
+					"phone": origin_contact_phone,
+					"phoneExt": "",
+					"name": origin_contact_name,
+					"email": origin_contact_email,
 				},
 			},
 			"destination": {
+				"account": "",
+				"locationId": "",
 				"name": shipper["consignee_name"],
 				"address1": shipper["consignee_address"],
+				"address2": "",
 				"city": str(destination_city or quote_request.destination_city or "Chicago"),
 				"stateProvince": str(destination_state or quote_request.destination_state or "IL"),
 				"postalCode": destination_zip,
 				"country": "USA",
 				"contact": {
-					"name": shipper["consignee_name"],
-					"phone": self._dayton_contact_phone(),
+					"phone": destination_contact_phone,
+					"phoneExt": "",
+					"name": destination_contact_name,
+					"email": destination_contact_email,
 				},
 			},
 			"billTo": {
 				"account": str(self.account_number),
+				"locationId": "",
 				"name": shipper["shipper_name"],
 				"address1": shipper["shipper_address"],
+				"address2": "",
 				"city": str(origin_city or quote_request.origin_city or "Dayton"),
 				"stateProvince": str(origin_state or quote_request.origin_state or "OH"),
 				"postalCode": origin_zip,
 				"country": "USA",
 				"contact": {
-					"name": shipper["contact_name"],
-					"phone": self._dayton_contact_phone(shipper.get("contact_phone")),
+					"phone": origin_contact_phone,
+					"phoneExt": "",
+					"name": origin_contact_name,
+					"email": origin_contact_email,
 				},
 			},
 		}
@@ -496,6 +555,13 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		origin_address1 = str(shipper.get("shipper_address") or "123 Logistics Way")
 		origin_city = str(origin_city or quote_data.get("origin_city") or quote_request.origin_city or "Dayton")
 		origin_state = str(origin_state or quote_data.get("origin_state") or quote_request.origin_state or "OH")
+		origin_country = str(
+			quote_data.get("origin_country")
+			or getattr(quote_request, "origin_country", None)
+			or "USA"
+		).upper()
+		if origin_country in ("US", "UNITED STATES"):
+			origin_country = "USA"
 
 		destination_name = str(
 			shipper.get("consignee_name")
@@ -520,6 +586,13 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			or quote_request.destination_state
 			or "IL"
 		)
+		destination_country = str(
+			quote_data.get("destination_country")
+			or getattr(quote_request, "destination_country", None)
+			or "USA"
+		).upper()
+		if destination_country in ("US", "UNITED STATES"):
+			destination_country = "USA"
 
 		origin_contact_name = str(
 			quote_data.get("origin_contact_name")
@@ -530,86 +603,195 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			quote_data.get("origin_contact_phone"),
 			shipper.get("contact_phone"),
 		)
+		origin_contact_email = str(
+			quote_data.get("origin_contact_email")
+			or quote_data.get("contact_email")
+			or getattr(quote_request, "origin_contact_email", None)
+			or ""
+		).strip()
 		destination_contact_name = str(
 			quote_data.get("destination_contact_name")
 			or quote_data.get("consignee_contact_name")
+			or getattr(quote_request, "destination_contact_name", None)
 			or "Receiving Dock"
 		)
 		destination_contact_phone = self._dayton_contact_phone(
 			quote_data.get("destination_contact_phone"),
 			quote_data.get("consignee_contact_phone"),
+			getattr(quote_request, "destination_contact_phone", None),
 		)
+		destination_contact_email = str(
+			quote_data.get("destination_contact_email")
+			or getattr(quote_request, "destination_contact_email", None)
+			or ""
+		).strip()
 
 		raw_weight = quote_data.get("total_weight") or quote_request.total_weight
-		weight_lbs = cint(flt(raw_weight, 0))
+		weight_lbs = _dayton_int_weight(raw_weight)
 		handling_unit_count = self._resolve_handling_unit_count(quote_data, quote_request)
+		freight_class = str(
+			quote_data.get("freight_class") or quote_request.freight_class or "70"
+		)
+
+		# Only send HU dimensions when the shipper provided them. Defaulting to
+		# 48x40x48 makes Dayton print "HU Dims: ..." under the commodity description.
+		length = _optional_dayton_dimension(
+			quote_data.get("length") if quote_data.get("length") is not None else getattr(quote_request, "length", None)
+		)
+		width = _optional_dayton_dimension(
+			quote_data.get("width") if quote_data.get("width") is not None else getattr(quote_request, "width", None)
+		)
+		height = _optional_dayton_dimension(
+			quote_data.get("height") if quote_data.get("height") is not None else getattr(quote_request, "height", None)
+		)
+		dimensions_unit = str(
+			quote_data.get("dimension_uom")
+			or getattr(quote_request, "dimension_uom", None)
+			or "IN"
+		).upper()
+		if dimensions_unit not in ("IN", "CM"):
+			dimensions_unit = "IN"
+
+		# Commodities: description only — Dayton appends HU Dims / QUOTE lines when
+		# dimensions or quoteId are present on the handling unit / references.
+		hu_id = "1"
+		handling_unit = {
+			"id": hu_id,
+			"count": handling_unit_count,
+			"type": "PALLET",
+			"weight": weight_lbs,
+			"weightUnit": "LBS",
+			"tareWeight": 0,
+			"stackable": False,
+			"lineItems": [
+				{
+					"handlingUnitId": hu_id,
+					"classification": freight_class,
+					"description": str(
+						quote_data.get("commodity_description") or "General Freight Cargo"
+					),
+					"hazardous": bool(quote_data.get("is_hazardous", False)),
+					"nmfc": str(quote_data.get("nmfc") or ""),
+					"packagingType": "SKID",
+					"pieces": handling_unit_count,
+					"weight": weight_lbs,
+					"weightUnit": "LBS",
+				}
+			],
+		}
+		if length and width and height:
+			handling_unit["dimensionsUnit"] = dimensions_unit
+			handling_unit["length"] = length
+			handling_unit["width"] = width
+			handling_unit["height"] = height
+
+		handling_units = [handling_unit]
+
+		pickup_date = quote_data.get("pickup_date") or getattr(quote_request, "pickup_date", None)
+		if pickup_date:
+			requested_pickup = get_datetime(pickup_date).strftime("%Y-%m-%dT%H:%M:%SZ")
+		else:
+			requested_pickup = now_datetime().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+		# Prefer accessorials saved on the quote request (with pickup/delivery/load group).
+		quote_accessorials = list(getattr(quote_request, "accessorials", None) or [])
+		payload_accessorials = quote_data.get("accessorials") or quote_data.get("accessorial_rows") or []
+		accessorial_rows = quote_accessorials or payload_accessorials
+		if not accessorial_rows and quote_data.get("accessorial_codes"):
+			accessorial_rows = [{"accessorial_code": code} for code in quote_data.get("accessorial_codes") or []]
+		accessorial_codes = dayton_bol_accessorial_codes(accessorial_rows)
+		special_instructions = quote_data.get("special_instructions") or build_dayton_bol_special_instructions(
+			accessorial_rows
+		)
 
 		return {
 			"version": "2.0.0",
 			"bol": {
-				"requestedPickupDate": now_datetime().strftime("%Y-%m-%dT%H:%M:%SZ"),
+				"requestedPickupDate": requested_pickup,
 				"function": "CREATE",
 				"isTest": bool(quote_data.get("is_test", False)),
-				"requestorRole": "Shipper",
-				"specialInstructions": quote_data.get("special_instructions", "LTL Freight Shipment"),
+				"requestorRole": "SHIPPER",
+				"specialInstructions": special_instructions,
+			},
+			"images": {
+				"includeBol": True,
+				"includeShippingLabels": True,
+				"shippingLabels": {
+					"format": "LETTER",
+					"position": 1,
+					"quantity": handling_unit_count,
+				},
 			},
 			"payment": {
 				"terms": "Prepaid",
 			},
-			"referenceNumbers": {
-				"quoteId": self._dayton_rate_quote_id(quote_data),
-			},
+			"referenceNumbers": {},
+			"accessorials": build_dayton_bol_accessorials_section(accessorial_codes),
 			"commodities": {
-				"handlingUnits": [
-					{
-						"count": handling_unit_count,
-						"type": "PT",
-						"weight": weight_lbs,
-						"weightUnit": "LB",
-						"freightClass": str(
-							quote_data.get("freight_class") or quote_request.freight_class or "70"
-						),
-						"description": "Palletized Freight",
-					}
-				],
+				"handlingUnits": handling_units,
 				"lineItemLayout": "STACKED",
+			},
+			"shipmentTotals": {
+				"cube": 0,
+				"cubeDimensionsUnit": "FT",
+				"currency": "USD",
+				"declaredValue": 0,
+				"dimensionsUnit": "IN",
+				"grossWeight": weight_lbs,
+				"handlingUnits": handling_unit_count,
+				"linearLength": 0,
+				"netWeight": weight_lbs,
+				"weightUnit": "LBS",
 			},
 			"origin": {
 				"account": self.account_number,
+				"locationId": "",
 				"name": origin_name,
 				"address1": origin_address1,
+				"address2": "",
 				"city": origin_city,
 				"stateProvince": origin_state,
 				"postalCode": origin_zip,
-				"country": "USA",
+				"country": origin_country,
 				"contact": {
-					"name": origin_contact_name,
 					"phone": origin_contact_phone,
+					"phoneExt": "",
+					"name": origin_contact_name,
+					"email": origin_contact_email,
 				},
 			},
 			"destination": {
+				"account": "",
+				"locationId": "",
 				"name": destination_name,
 				"address1": destination_address1,
+				"address2": "",
 				"city": destination_city,
 				"stateProvince": destination_state,
 				"postalCode": destination_zip,
-				"country": "USA",
+				"country": destination_country,
 				"contact": {
-					"name": destination_contact_name,
 					"phone": destination_contact_phone,
+					"phoneExt": "",
+					"name": destination_contact_name,
+					"email": destination_contact_email,
 				},
 			},
 			"billTo": {
 				"account": self.account_number,
+				"locationId": "",
 				"name": origin_name,
 				"address1": origin_address1,
+				"address2": "",
 				"city": origin_city,
 				"stateProvince": origin_state,
 				"postalCode": origin_zip,
-				"country": "USA",
+				"country": origin_country,
 				"contact": {
-					"name": origin_contact_name,
 					"phone": origin_contact_phone,
+					"phoneExt": "",
+					"name": origin_contact_name,
+					"email": origin_contact_email,
 				},
 			},
 		}
@@ -1030,6 +1212,173 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		)
 
 
+DAYTON_DEFAULT_BOL_EMAIL = "admin@ltlquote.com"
+
+
+def _format_dayton_ebol_failure(status_code, res_data: dict) -> str:
+	"""Surface Dayton messageStatus.message/resolution instead of dumping the full JSON blob."""
+	message_status = (res_data or {}).get("messageStatus") or {}
+	message = str(message_status.get("message") or "").strip()
+	resolution = str(message_status.get("resolution") or "").strip()
+	if message and resolution:
+		return f"Dayton eBOL Creation Failed ({status_code}): {message} — {resolution}"
+	if message:
+		return f"Dayton eBOL Creation Failed ({status_code}): {message}"
+	return f"Dayton eBOL Creation Failed ({status_code}): {frappe.as_json(res_data)}"
+
+
+def _is_valid_dayton_email(value) -> bool:
+	email = str(value or "").strip()
+	if not email or "@" not in email:
+		return False
+	local, _, domain = email.partition("@")
+	return bool(local and domain and "." in domain)
+
+
+def _resolve_dayton_bol_email_addresses(quote_data: dict | None = None) -> list[str]:
+	"""Return at least one email for Dayton images.email.addresses (required when emailing BOL/labels)."""
+	quote_data = quote_data or {}
+	candidates: list[str] = []
+
+	for key in (
+		"origin_contact_email",
+		"contact_email",
+		"bol_email",
+		"destination_contact_email",
+	):
+		value = quote_data.get(key)
+		if value:
+			candidates.append(str(value).strip())
+
+	try:
+		settings = frappe.get_single("LTL Platform Settings")
+		settings_email = getattr(settings, "default_contact_email", None)
+		if settings_email:
+			candidates.append(str(settings_email).strip())
+	except Exception:
+		pass
+
+	session_user = getattr(frappe.session, "user", None)
+	if session_user and session_user not in ("Guest", "Administrator"):
+		user_email = frappe.db.get_value("User", session_user, "email")
+		if user_email:
+			candidates.append(str(user_email).strip())
+	elif session_user == "Administrator":
+		admin_email = frappe.db.get_value("User", "Administrator", "email")
+		if admin_email and _is_valid_dayton_email(admin_email):
+			candidates.append(str(admin_email).strip())
+
+	addresses: list[str] = []
+	seen: set[str] = set()
+	for email in candidates:
+		normalized = email.lower()
+		if not _is_valid_dayton_email(email) or normalized in seen:
+			continue
+		seen.add(normalized)
+		addresses.append(email)
+
+	if not addresses:
+		addresses.append(DAYTON_DEFAULT_BOL_EMAIL)
+
+	return addresses
+
+
+def _dayton_int_weight(value) -> int:
+	"""Dayton eBOL expects weight/count fields as integers (rejects values like 1000.0)."""
+	return int(float(value or 0))
+
+
+def _dayton_int_dimension(value, default: int = 48) -> int:
+	"""Dayton requires handling-unit length/width/height as integers in 1..999."""
+	try:
+		dim = int(float(value)) if value not in (None, "") else 0
+	except (TypeError, ValueError):
+		dim = 0
+	if dim <= 0:
+		dim = int(default)
+	return max(1, min(999, dim))
+
+
+def _optional_dayton_dimension(value) -> int | None:
+	"""Return a clamped dimension only when the shipper provided a positive value."""
+	try:
+		dim = int(float(value)) if value not in (None, "") else 0
+	except (TypeError, ValueError):
+		dim = 0
+	if dim <= 0:
+		return None
+	return max(1, min(999, dim))
+
+
+def _sanitize_dayton_ebol_integers(payload: dict) -> dict:
+	"""Force Dayton integer fields before API POST (weights/counts reject floats like 1000.0)."""
+	if not isinstance(payload, dict):
+		return payload
+
+	payload = dict(payload)
+	totals = dict(payload.get("shipmentTotals") or {})
+	for key in ("netWeight", "grossWeight", "handlingUnits", "declaredValue", "cube", "linearLength"):
+		if key in totals and totals[key] is not None:
+			totals[key] = _dayton_int_weight(totals[key])
+	if totals:
+		payload["shipmentTotals"] = totals
+
+	commodities = dict(payload.get("commodities") or {})
+	handling_units = []
+	for hu in commodities.get("handlingUnits") or []:
+		if not isinstance(hu, dict):
+			handling_units.append(hu)
+			continue
+
+		row = dict(hu)
+		for key in ("weight", "tareWeight", "count", "handlingUnitQuantity"):
+			if key in row and row[key] is not None:
+				row[key] = _dayton_int_weight(row[key])
+
+		# Only coerce dimensions that were explicitly provided — do not invent 48x40x48
+		# defaults (Dayton prints those as "HU Dims" under the commodity description).
+		has_explicit_dims = all(
+			row.get(key) not in (None, "", 0, "0") for key in ("length", "width", "height")
+		)
+		if has_explicit_dims:
+			row["length"] = _dayton_int_dimension(row.get("length"), 48)
+			row["width"] = _dayton_int_dimension(row.get("width"), 40)
+			row["height"] = _dayton_int_dimension(row.get("height"), 48)
+			row.setdefault("dimensionsUnit", "IN")
+		else:
+			for key in ("length", "width", "height", "dimensionsUnit"):
+				row.pop(key, None)
+
+		line_items = []
+		for line in row.get("lineItems") or []:
+			if not isinstance(line, dict):
+				line_items.append(line)
+				continue
+
+			item = dict(line)
+			for key in ("weight", "pieces"):
+				if key in item and item[key] is not None:
+					item[key] = _dayton_int_weight(item[key])
+
+			hazmat = item.get("hazardousDetails")
+			if isinstance(hazmat, dict) and hazmat.get("weight") is not None:
+				hazmat = dict(hazmat)
+				hazmat["weight"] = _dayton_int_weight(hazmat["weight"])
+				item["hazardousDetails"] = hazmat
+
+			line_items.append(item)
+
+		if "lineItems" in row:
+			row["lineItems"] = line_items
+		handling_units.append(row)
+
+	if "handlingUnits" in commodities or handling_units:
+		commodities["handlingUnits"] = handling_units
+		payload["commodities"] = commodities
+
+	return payload
+
+
 def _save_bol_pdf_file(base64_pdf: str, bol_number: str) -> str:
 	"""Decode Dayton images.bol Base64 and persist as a public Frappe File; return full URL."""
 	file_doc = frappe.get_doc(
@@ -1135,7 +1484,19 @@ def attach_dayton_bol_to_shipment(shipment, request_data: dict, bol_result: dict
 	if bol.get("status") == "info":
 		return bol
 
-	file_doc = attach_base64_pdf_to_shipment(shipment.name, bol["document_binary"])
+	shipment_name = shipment.name if hasattr(shipment, "name") else str(shipment)
+	file_doc = attach_base64_pdf_to_shipment(shipment_name, bol["document_binary"])
+
+	sync_dayton_bol_details_to_shipment(
+		shipment_name,
+		request_data or {},
+		bol_result={
+			**(bol_result or {}),
+			"bol_number": bol.get("bol_number") or (bol_result or {}).get("bol_number"),
+			"pro_number": bol.get("pro_number") or (bol_result or {}).get("pro_number"),
+		},
+		bol_file_url=file_doc.file_url,
+	)
 
 	return {
 		"status": "success",
@@ -1143,6 +1504,35 @@ def attach_dayton_bol_to_shipment(shipment, request_data: dict, bol_result: dict
 		"pro_number": bol.get("pro_number"),
 		"document_url": file_doc.file_url,
 	}
+
+
+def sync_dayton_bol_details_to_shipment(
+	shipment_name: str,
+	request_data: dict,
+	bol_result: dict | None = None,
+	bol_file_url: str | None = None,
+	dayton_payload: dict | None = None,
+) -> None:
+	"""Map Dayton eBOL payload + response identifiers onto LTL Shipment BOL detail fields."""
+	from ltl_quote.utils.bol_mapping import update_ltl_shipment_with_dayton_bol
+
+	payload = dayton_payload
+	if payload is None:
+		adapter = DaytonCarrierAdapter()
+		# Update payloads already look like Dayton schema; create uses platform booking fields.
+		if isinstance(request_data, dict) and (
+			{"origin", "destination", "commodities"} & set(request_data.keys())
+		):
+			payload = request_data
+		else:
+			payload = adapter._resolve_dayton_ebol_payload(request_data or {})
+
+	update_ltl_shipment_with_dayton_bol(
+		shipment_name=shipment_name,
+		dayton_payload=payload or {},
+		bol_result=bol_result,
+		bol_file_url=bol_file_url,
+	)
 
 
 def attach_base64_pdf_to_shipment(shipment_id: str, base64_string: str):
@@ -1159,7 +1549,14 @@ def attach_base64_pdf_to_shipment(shipment_id: str, base64_string: str):
 		decode=False,
 		df="bol_document",
 	)
-	frappe.db.set_value("LTL Shipment", shipment_id, "bol_document", file_doc.file_url)
+	frappe.db.set_value(
+		"LTL Shipment",
+		shipment_id,
+		{
+			"bol_document": file_doc.file_url,
+			"bol_document_url": file_doc.file_url,
+		},
+	)
 	frappe.db.commit()
 	return file_doc
 

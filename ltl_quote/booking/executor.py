@@ -48,6 +48,11 @@ class ShipmentExecutor:
 			)
 
 		shipper = resolve_shipper_context(quote_request=self.quote_request)
+		contact_email = (
+			getattr(self.quote_request, "origin_contact_email", None)
+			or getattr(self.quote_request, "contact_email", None)
+			or frappe.db.get_value("User", frappe.session.user, "email")
+		)
 
 		self.booking_payload = {
 			"carrier_quote_id": selected.carrier_quote_id,
@@ -57,6 +62,10 @@ class ShipmentExecutor:
 			"destination_zip": self.quote_request.destination_zip,
 			"total_weight": self.quote_request.total_weight,
 			"pieces": self.quote_request.pieces or 1,
+			"length": getattr(self.quote_request, "length", None),
+			"width": getattr(self.quote_request, "width", None),
+			"height": getattr(self.quote_request, "height", None),
+			"dimension_uom": getattr(self.quote_request, "dimension_uom", None) or "IN",
 			"origin_city": origin_city,
 			"origin_state": origin_state,
 			"destination_city": destination_city,
@@ -69,6 +78,23 @@ class ShipmentExecutor:
 			"consignee_address": shipper["consignee_address"],
 			"contact_name": shipper["contact_name"],
 			"contact_phone": shipper["contact_phone"],
+			"origin_contact_name": getattr(self.quote_request, "contact_name", None) or shipper["contact_name"],
+			"origin_contact_phone": getattr(self.quote_request, "contact_phone", None) or shipper["contact_phone"],
+			"contact_email": contact_email,
+			"origin_contact_email": contact_email,
+			"destination_contact_name": getattr(self.quote_request, "destination_contact_name", None),
+			"destination_contact_phone": getattr(self.quote_request, "destination_contact_phone", None),
+			"destination_contact_email": getattr(
+				self.quote_request, "destination_contact_email", None
+			),
+			"accessorials": [
+				{
+					"accessorial_code": getattr(row, "accessorial_code", None),
+					"service_group": getattr(row, "service_group", None),
+					"quantity": getattr(row, "quantity", 1) or 1,
+				}
+				for row in (self.quote_request.accessorials or [])
+			],
 			"is_test": is_test,
 		}
 
@@ -122,10 +148,12 @@ class ShipmentExecutor:
 				self.booking_payload,
 				bol_result=booking_result,
 			)
+			shipment.reload()
 			shipment.bol_number = res.get("bol_number") or shipment.bol_number
 			shipment.pro_number = res.get("pro_number") or shipment.pro_number
 			if res.get("status") == "success" and res.get("document_url"):
 				shipment.bol_document = res.get("document_url")
+				shipment.bol_document_url = res.get("document_url")
 			shipment.status = "Booked"
 			shipment.dispatch_status = "Pending"
 			shipment.save(ignore_permissions=True)

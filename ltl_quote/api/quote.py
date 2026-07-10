@@ -21,7 +21,7 @@ from ltl_quote.carrier_network.adapters.base import ShipmentRequest
 from ltl_quote.decision_engine.recommender import rank_quotes
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.rate_engine.aggregator import RateAggregator
-from ltl_quote.utils.booking import resolve_shipper_context
+from ltl_quote.utils.booking import resolve_shipper_context, resolve_shipment_bol_url
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
@@ -188,6 +188,22 @@ def _create_quote_request(request: dict):
 			"destination_zip": request["destination_zip"],
 			"destination_city": request.get("destination_city") or "",
 			"destination_state": request.get("destination_state") or "",
+			"shipper_company_name": request.get("shipper_company_name") or request.get("shipper_name") or "",
+			"shipper_address": request.get("shipper_address") or "",
+			"consignee_company_name": request.get("consignee_company_name")
+			or request.get("consignee_name")
+			or "",
+			"consignee_address": request.get("consignee_address") or "",
+			"contact_name": request.get("contact_name") or request.get("origin_contact_name") or "",
+			"contact_phone": request.get("contact_phone") or request.get("origin_contact_phone") or "",
+			"origin_contact_email": request.get("origin_contact_email") or request.get("contact_email") or "",
+			"destination_contact_name": request.get("destination_contact_name")
+			or request.get("consignee_contact_name")
+			or "",
+			"destination_contact_phone": request.get("destination_contact_phone")
+			or request.get("consignee_contact_phone")
+			or "",
+			"destination_contact_email": request.get("destination_contact_email") or "",
 			"total_weight": request["total_weight"],
 			"freight_class": request["freight_class"],
 			"length": request.get("length") or 0,
@@ -242,6 +258,36 @@ def track_shipment(shipment: str) -> dict:
 
 
 @frappe.whitelist(allow_guest=False)
+def get_quote_booking_context(quote_request_id: str) -> dict:
+	"""Return booking state for a quote request so the dashboard can block re-booking."""
+	if not quote_request_id or not frappe.db.exists("LTL Quote Request", quote_request_id):
+		return {"is_booked": False}
+
+	doc = frappe.db.get_value(
+		"LTL Quote Request",
+		quote_request_id,
+		["name", "status", "final_carrier", "bol_number", "bol_document_url"],
+		as_dict=True,
+	)
+	shipment = frappe.db.get_value("LTL Shipment", {"quote_request": quote_request_id}, "name")
+	is_booked = bool(shipment) or doc.status == "Booked"
+
+	bol_url = resolve_shipment_bol_url(shipment_name=shipment, quote_request=quote_request_id)
+	booked_carrier = doc.final_carrier or ""
+	if not booked_carrier and shipment:
+		booked_carrier = frappe.db.get_value("LTL Shipment", shipment, "carrier") or ""
+
+	return {
+		"is_booked": is_booked,
+		"quote_status": doc.status,
+		"shipment": shipment,
+		"booked_carrier": booked_carrier,
+		"bol_url": bol_url,
+		"bol_number": doc.bol_number or "",
+	}
+
+
+@frappe.whitelist(allow_guest=False)
 def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_quote_id):
 	"""
 	Save the selected rate, transition status to Accepted, and trigger the
@@ -250,6 +296,22 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 	try:
 		doc = frappe.get_doc("LTL Quote Request", quote_request_id)
 		carrier_key = resolve_carrier_id(carrier_code) or str(carrier_code or "").upper()
+
+		existing_shipment = frappe.db.get_value("LTL Shipment", {"quote_request": quote_request_id}, "name")
+		if existing_shipment or doc.status == "Booked":
+			shipment_name = existing_shipment
+			bol_url = resolve_shipment_bol_url(shipment_name=shipment_name, quote_request=doc)
+			return {
+				"status": "already_booked",
+				"message": "This quote has already been booked.",
+				"quote_request_id": doc.name,
+				"shipment": shipment_name,
+				"booked_carrier": doc.final_carrier or carrier_key,
+				"bol_number": doc.bol_number or "",
+				"pro_number": doc.pro_number or "",
+				"bol_document_url": bol_url,
+				"data": {"shipment": shipment_name} if shipment_name else {},
+			}
 
 		doc.status = "Accepted"
 		doc.final_carrier = carrier_key
@@ -269,7 +331,15 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 				return arcb_result
 			shipment_name = (arcb_result or {}).get("shipment")
 		elif carrier_key == "DAYTON" or str(carrier_code).upper() == "DAYTON":
-			_route_dayton_bol(doc, carrier_quote_id, total_charge)
+			dayton_result = _route_dayton_bol(doc, carrier_quote_id, total_charge)
+			if dayton_result:
+				shipment_name = _create_dayton_shipment(
+					doc,
+					flt(total_charge),
+					carrier_quote_id,
+					bol_result=dayton_result.get("bol_result"),
+					booking_payload=dayton_result.get("booking_payload"),
+				)
 		else:
 			doc.add_comment(
 				text=f"Quote accepted for {carrier_code}. No automated BOL gateway configured for this carrier."
@@ -279,15 +349,17 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 		frappe.db.commit()
 		doc.reload()
 
+		bol_url = resolve_shipment_bol_url(shipment_name=shipment_name, quote_request=doc)
 		return {
 			"status": "success",
 			"message": f"Quote accepted and processed for {carrier_code} completely.",
 			"quote_request_id": doc.name,
 			"shipment": shipment_name,
+			"booked_carrier": carrier_key,
 			"data": {"shipment": shipment_name} if shipment_name else {},
 			"bol_number": doc.bol_number if getattr(doc, "bol_number", None) else "Pending",
 			"pro_number": doc.pro_number if getattr(doc, "pro_number", None) else "Auto-Assigned",
-			"bol_document_url": doc.bol_document_url if getattr(doc, "bol_document_url", None) else "",
+			"bol_document_url": bol_url or (doc.bol_document_url if getattr(doc, "bol_document_url", None) else ""),
 		}
 
 	except Exception as e:
@@ -472,6 +544,70 @@ def _create_arcbest_shipment(doc, total_charge=0) -> str | None:
 	return shipment.name
 
 
+def _create_dayton_shipment(doc, total_charge, carrier_quote_id, bol_result=None, booking_payload=None) -> str | None:
+	"""Create a linked LTL Shipment after a successful Dayton eBOL."""
+	existing = frappe.db.get_value("LTL Shipment", {"quote_request": doc.name}, "name")
+	if existing:
+		doc.status = "Booked"
+		return existing
+
+	bol_result = bol_result or {}
+	dayton_row = next(
+		(row for row in (doc.carrier_quotes or []) if row.carrier == "DAYTON"),
+		None,
+	)
+
+	shipment = frappe.get_doc(
+		{
+			"doctype": "LTL Shipment",
+			"quote_request": doc.name,
+			"carrier": "DAYTON",
+			"status": "Booked",
+			"booked_on": now_datetime(),
+			"bol_number": doc.bol_number or bol_result.get("bol_number"),
+			"pro_number": doc.pro_number or bol_result.get("pro_number"),
+			"dayton_bol_id": bol_result.get("dayton_bol_id"),
+			"carrier_confirmation": bol_result.get("carrier_confirmation") or doc.bol_number,
+			"total_charge": flt(total_charge) or doc.final_charge or (dayton_row.total_charge if dayton_row else 0),
+			"currency": (dayton_row.currency if dayton_row else None) or get_quote_currency(),
+			"transit_days": dayton_row.transit_days if dayton_row else None,
+			"estimated_delivery_date": dayton_row.estimated_delivery_date if dayton_row else None,
+			"dispatch_status": "Pending",
+			"current_status": "Booked",
+		}
+	)
+	if doc.bol_document_url:
+		shipment.bol_document = doc.bol_document_url
+		shipment.bol_document_url = doc.bol_document_url
+
+	shipment.insert(ignore_permissions=True)
+
+	bol_file_url = shipment.bol_document or shipment.bol_document_url
+	if booking_payload and not shipment.bol_document:
+		from ltl_quote.carrier_network.adapters.dayton import attach_dayton_bol_to_shipment
+
+		res = attach_dayton_bol_to_shipment(shipment, booking_payload, bol_result=bol_result)
+		if res.get("status") == "success" and res.get("document_url"):
+			shipment.reload()
+			shipment.bol_number = res.get("bol_number") or shipment.bol_number
+			shipment.pro_number = res.get("pro_number") or shipment.pro_number
+			shipment.bol_document = res["document_url"]
+			shipment.bol_document_url = res["document_url"]
+			shipment.save(ignore_permissions=True)
+	elif booking_payload:
+		from ltl_quote.carrier_network.adapters.dayton import sync_dayton_bol_details_to_shipment
+
+		sync_dayton_bol_details_to_shipment(
+			shipment.name,
+			booking_payload,
+			bol_result=bol_result,
+			bol_file_url=bol_file_url,
+		)
+
+	doc.status = "Booked"
+	return shipment.name
+
+
 def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 	"""Route acceptance to the existing Dayton eBOL adapter."""
 	try:
@@ -485,6 +621,11 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 			doc.destination_zip, doc.destination_city, doc.destination_state
 		)
 		shipper = resolve_shipper_context(quote_request=doc)
+		contact_email = (
+			getattr(doc, "origin_contact_email", None)
+			or getattr(doc, "contact_email", None)
+			or frappe.db.get_value("User", frappe.session.user, "email")
+		)
 
 		booking_payload = {
 			"carrier_quote_id": carrier_quote_id,
@@ -493,6 +634,10 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 			"destination_zip": doc.destination_zip,
 			"total_weight": doc.total_weight,
 			"pieces": doc.pieces or 1,
+			"length": getattr(doc, "length", None),
+			"width": getattr(doc, "width", None),
+			"height": getattr(doc, "height", None),
+			"dimension_uom": getattr(doc, "dimension_uom", None) or "IN",
 			"origin_city": origin_city,
 			"origin_state": origin_state,
 			"destination_city": destination_city,
@@ -505,6 +650,21 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 			"consignee_address": shipper["consignee_address"],
 			"contact_name": shipper["contact_name"],
 			"contact_phone": shipper["contact_phone"],
+			"origin_contact_name": getattr(doc, "contact_name", None) or shipper["contact_name"],
+			"origin_contact_phone": getattr(doc, "contact_phone", None) or shipper["contact_phone"],
+			"contact_email": contact_email,
+			"origin_contact_email": contact_email,
+			"destination_contact_name": getattr(doc, "destination_contact_name", None),
+			"destination_contact_phone": getattr(doc, "destination_contact_phone", None),
+			"destination_contact_email": getattr(doc, "destination_contact_email", None),
+			"accessorials": [
+				{
+					"accessorial_code": getattr(row, "accessorial_code", None),
+					"service_group": getattr(row, "service_group", None),
+					"quantity": getattr(row, "quantity", 1) or 1,
+				}
+				for row in (doc.accessorials or [])
+			],
 		}
 
 		bol_result = adapter.generate_bill_of_lading(booking_payload)
@@ -529,10 +689,12 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 				)
 			)
 		)
+		return {"bol_result": bol_result, "booking_payload": booking_payload}
 
 	except Exception:
 		frappe.log_error(title="Dayton BOL Generation Failure", message=frappe.get_traceback())
 		doc.add_comment(text="Rate saved locally, but Dayton eBOL gateway processing failed.")
+		return None
 
 
 def _get_arcbest_api_id(carrier_doc) -> str:

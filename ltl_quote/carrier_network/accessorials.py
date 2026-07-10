@@ -121,3 +121,201 @@ def dayton_rate_accessorials(accessorials: list[AccessorialItem], carrier_doc) -
 			codes.append(code)
 			seen.add(code)
 	return codes
+
+
+# Dayton eBOL accessorial codes (NMFTA / Digital LTL Council), keyed by
+# (internal_code, service_group). Pickup vs delivery must stay distinct because
+# the UI reuses one internal code (e.g. LIFTGATE) on both sides.
+DAYTON_BOL_ACCESSORIAL_MAP: dict[tuple[str, str], str] = {
+	("LIFTGATE", "pickup"): "LFTP",
+	("LIFTGATE", "delivery"): "LFTD",
+	("LIFTGATE", "load"): "LFTD",
+	("INSIDE_DELIVERY", "pickup"): "IPU",
+	("INSIDE_DELIVERY", "delivery"): "IDL",
+	("INSIDE_DELIVERY", "load"): "IDL",
+	("RESIDENTIAL", "pickup"): "RES",
+	("RESIDENTIAL", "delivery"): "RES",
+	("RESIDENTIAL", "load"): "RES",
+	("APPOINTMENT", "pickup"): "APTP",
+	("APPOINTMENT", "delivery"): "APTD",
+	("APPOINTMENT", "load"): "APTD",
+	("LIMITED_ACCESS", "pickup"): "LTDAP",
+	("LIMITED_ACCESS", "delivery"): "LTDAD",
+	("LIMITED_ACCESS", "load"): "LTDAD",
+	("HAZMAT", "pickup"): "HAZ",
+	("HAZMAT", "delivery"): "HAZ",
+	("HAZMAT", "load"): "HAZ",
+}
+
+DAYTON_BOL_ACCESSORIAL_DEFAULTS: dict[str, str] = {
+	"LIFTGATE": "LFTD",
+	"INSIDE_DELIVERY": "IDL",
+	"RESIDENTIAL": "RES",
+	"APPOINTMENT": "APTD",
+	"LIMITED_ACCESS": "LTDAD",
+	"HAZMAT": "HAZ",
+	"COD": "COD",
+	"EXPD": "EXPD",
+	"FVC": "FVC",
+	"OVR": "OVR",
+	"MARK": "MARK",
+	"SRT": "SRT",
+	"SS": "SS",
+	"TCS": "TCS",
+	"PPD": "PPD",
+	"PSC": "PSC",
+	"PSH": "PSH",
+	"PSN": "PSN",
+	"REP": "REP",
+	"MNC": "MNC",
+	"INBD": "INBD",
+}
+
+DAYTON_BOL_CODE_LABELS: dict[str, str] = {
+	"LFTP": "Liftgate Pickup",
+	"LFTD": "Liftgate Delivery",
+	"IPU": "Inside Pickup",
+	"IDL": "Inside Delivery",
+	"RES": "Residential Delivery",
+	"APTP": "Appointment Pickup",
+	"APTD": "Appointment Delivery",
+	"LTDAP": "Limited Access Pickup",
+	"LTDAD": "Limited Access Delivery",
+	"HAZ": "Hazmat Handling",
+	"COD": "Collect on Delivery",
+	"EXPD": "Expedited",
+	"FVC": "Full Value Coverage",
+	"OVR": "Over Dimension",
+	"MARK": "Marking / Tagging",
+	"SRT": "Sort and Segregate",
+	"SS": "Sort and Segregate",
+	"TCS": "Time Critical Service",
+	"PPD": "Protect from Freezing",
+	"INBD": "Inbond",
+}
+
+
+def normalize_service_group(group: str | None) -> str:
+	value = str(group or "").strip().lower()
+	if value in {"pickup", "origin"}:
+		return "pickup"
+	if value in {"delivery", "destination"}:
+		return "delivery"
+	if value in {"load", "shipment", "freight"}:
+		return "load"
+	return ""
+
+
+def map_dayton_bol_accessorial_code(internal_code: str | None, service_group: str | None = None) -> str | None:
+	"""Map an internal accessorial (+ optional pickup/delivery/load group) to a Dayton eBOL code."""
+	code = normalize_accessorial_code(internal_code)
+	if not code:
+		return None
+
+	# Already a Dayton eBOL code.
+	if code in DAYTON_BOL_CODE_LABELS or code in {
+		"GTD_AM",
+		"GTD_NOON",
+		"GTD_PM",
+		"LFTD",
+		"LFTP",
+		"IDL",
+		"IPU",
+		"LTDAD",
+		"LTDAP",
+		"APTD",
+		"APTP",
+	}:
+		return code
+
+	group = normalize_service_group(service_group)
+	if group:
+		mapped = DAYTON_BOL_ACCESSORIAL_MAP.get((code, group))
+		if mapped:
+			return mapped
+	return DAYTON_BOL_ACCESSORIAL_DEFAULTS.get(code)
+
+
+def dayton_bol_accessorial_codes(rows) -> list[str]:
+	"""Unique Dayton eBOL accessorial codes from quote-request rows or payload dicts."""
+	ordered: list[str] = []
+	seen: set[str] = set()
+	for row in rows or []:
+		if isinstance(row, dict):
+			internal = row.get("accessorial_code") or row.get("code") or row.get("accessorial")
+			group = row.get("service_group") or row.get("group")
+		else:
+			internal = getattr(row, "accessorial_code", None) or getattr(row, "accessorial", None)
+			group = getattr(row, "service_group", None)
+		mapped = map_dayton_bol_accessorial_code(internal, group)
+		if mapped and mapped not in seen:
+			seen.add(mapped)
+			ordered.append(mapped)
+	return ordered
+
+
+def dayton_bol_accessorial_labels(rows) -> list[str]:
+	"""Human-readable labels for selected accessorials (prefer UI/master labels)."""
+	labels: list[str] = []
+	seen: set[str] = set()
+	for row in rows or []:
+		if isinstance(row, dict):
+			internal = row.get("accessorial_code") or row.get("code") or row.get("accessorial")
+			group = row.get("service_group") or row.get("group")
+			label = str(row.get("label") or row.get("accessorial_name") or "").strip()
+		else:
+			internal = getattr(row, "accessorial_code", None) or getattr(row, "accessorial", None)
+			group = getattr(row, "service_group", None)
+			label = str(getattr(row, "accessorial_name", None) or "").strip()
+		mapped = map_dayton_bol_accessorial_code(internal, group)
+		if not mapped:
+			continue
+		display = label or DAYTON_BOL_CODE_LABELS.get(mapped) or mapped
+		if display not in seen:
+			seen.add(display)
+			labels.append(display)
+	return labels
+
+
+def build_dayton_bol_special_instructions(rows, service_name: str = "Standard LTL") -> str:
+	"""Build BOL specialInstructions from selected pickup/delivery/load accessorials."""
+	labels = dayton_bol_accessorial_labels(rows)
+	service = str(service_name or "Standard LTL").strip() or "Standard LTL"
+	if labels:
+		return f"Service: {service} | ACCESSORIALS: {', '.join(labels)}"
+	return f"Service: {service}"
+
+
+# NMFTA / Digital LTL Council limited-access subtype. Required when LTDAD/LTDAP
+# is present. "Other-52" is the generic "Other" destination/origin type.
+DAYTON_DEFAULT_LIMITED_ACCESS_TYPE = "Other-52"
+
+
+def build_dayton_bol_accessorials_section(
+	codes: list[str] | None = None,
+	*,
+	limited_access_origin: str | None = None,
+	limited_access_destination: str | None = None,
+) -> dict:
+	"""Build the Dayton eBOL ``accessorials`` object, including required detail blocks."""
+	codes = [str(code).strip().upper() for code in (codes or []) if str(code or "").strip()]
+	section: dict = {
+		"codes": codes,
+		"hazardousDetails": {
+			"emergencyContact": {},
+		},
+	}
+
+	limited: dict[str, str] = {}
+	if "LTDAP" in codes:
+		limited["origin"] = (
+			str(limited_access_origin or "").strip() or DAYTON_DEFAULT_LIMITED_ACCESS_TYPE
+		)
+	if "LTDAD" in codes:
+		limited["destination"] = (
+			str(limited_access_destination or "").strip() or DAYTON_DEFAULT_LIMITED_ACCESS_TYPE
+		)
+	if limited:
+		section["limitedAccessType"] = limited
+
+	return section

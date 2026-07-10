@@ -89,7 +89,7 @@ const LIST_VIEWS = {
 		title: "LTL Shipment",
 		sub: "Booked shipments and their tracking status.",
 		icon: "fa fa-truck",
-		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation"],
+		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation", "bol_document", "bol_document_url"],
 		order_by: "creation desc",
 		search: ["name", "carrier_name", "bol_number", "pro_number", "status"],
 		columns: [
@@ -136,6 +136,16 @@ const LIST_VIEWS = {
 	},
 };
 
+function resolve_bol_url(row) {
+	if (!row) return "";
+	const url = String(row.bol_document_url || "").trim();
+	if (url) return url;
+	const attach = String(row.bol_document || "").trim();
+	if (!attach) return "";
+	if (attach.startsWith("http")) return attach;
+	return window.location.origin + attach;
+}
+
 ltl_quote.Dashboard = class Dashboard {
 	constructor(wrapper, page) {
 		this.wrapper = wrapper;
@@ -143,6 +153,8 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body = $(page.main).addClass("ltl-dashboard-root");
 		this.quote_request_id = null;
 		this.quotes = [];
+		this.booking_context = null;
+		this.quote_request_status = null;
 		this.expanded = false;
 		this.acc_options = {
 			pickup: PICKUP_ACCESSORIALS,
@@ -220,6 +232,9 @@ ltl_quote.Dashboard = class Dashboard {
 							<div class="ltl-card">
 								<div class="ltl-list-body"><div class="ltl-empty">Loading…</div></div>
 							</div>
+						</div>
+						<div class="ltl-view ltl-view-detail" style="display:none;">
+							<div class="ltl-detail-body"><div class="ltl-empty">Loading…</div></div>
 						</div>
 					</div>
 				</div>
@@ -355,13 +370,17 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-field"><label>${hours_label} <span class="req">*</span></label>
 							<input type="text" class="ltl-input" data-field="${pfx}hours" placeholder="0800-1700" /></div>
 					</div>
-					<div class="ltl-grid ltl-grid-1">
+					<div class="ltl-grid ltl-grid-2">
 						<div class="ltl-field"><label>Contact</label>
 							<input type="text" class="ltl-input" data-field="${pfx}contact" /></div>
+						<div class="ltl-field"><label>Email</label>
+							<input type="email" class="ltl-input" data-field="${pfx}email" placeholder="name@example.com" /></div>
 					</div>
 				</div>
-				<div class="ltl-tab-pane" data-tab-pane="${side}-acc" style="display:none;">
-					<div class="ltl-acc-grid">${this.accessorial_boxes(acc, side)}</div>
+				<div class="ltl-tab-pane ltl-od-acc-pane" data-tab-pane="${side}-acc" style="display:none;">
+					<div class="ltl-od-acc-panel">
+						<div class="ltl-acc-grid ltl-acc-grid-od">${this.accessorial_boxes(acc, side)}</div>
+					</div>
 				</div>
 			</div>`;
 	}
@@ -418,8 +437,24 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 
 		this.body.on("click", ".ltl-list-row", (e) => {
+			if ($(e.target).closest(".ltl-list-actions, .ltl-bol-attach, .ltl-recent-view").length) return;
 			const name = $(e.currentTarget).attr("data-name");
-			if (this.current_list) frappe.set_route("Form", this.current_list.doctype, name);
+			if (!this.current_list || !name) return;
+			if (this.current_list.doctype === "LTL Quote Request") {
+				this.open_quote_detail(name);
+				return;
+			}
+			if (this.current_list.doctype === "LTL Shipment") {
+				this.open_shipment_detail(name);
+				return;
+			}
+			frappe.set_route("Form", this.current_list.doctype, name);
+		});
+
+		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled)", (e) => {
+			e.stopPropagation();
+			const url = $(e.currentTarget).attr("data-bol-url");
+			if (url) window.open(url, "_blank");
 		});
 
 		this.body.on(
@@ -434,8 +469,42 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 
 		this.body.on("click", ".ltl-recent-view", (e) => {
+			e.stopPropagation();
+			const name =
+				$(e.currentTarget).attr("data-name") ||
+				$(e.currentTarget).closest("tr").attr("data-name");
+			if (!name) return;
+			if (this.current_list && this.current_list.doctype === "LTL Shipment") {
+				this.open_shipment_detail(name);
+				return;
+			}
+			if (this.current_list && this.current_list.doctype !== "LTL Quote Request") {
+				frappe.set_route("Form", this.current_list.doctype, name);
+				return;
+			}
+			this.open_quote_detail(name);
+		});
+
+		this.body.on("click", "[data-action='detail-cancel']", () => this.close_detail_view());
+		this.body.on("click", "[data-action='detail-save']", () => {
+			if (this.detail_type === "shipment") this.save_shipment_detail();
+			else this.save_quote_detail();
+		});
+		this.body.on("click", "[data-action='open-desk-form']", (e) => {
 			const name = $(e.currentTarget).attr("data-name");
-			frappe.set_route("Form", "LTL Quote Request", name);
+			const doctype = $(e.currentTarget).attr("data-doctype") || "LTL Quote Request";
+			if (name) frappe.set_route("Form", doctype, name);
+		});
+		this.body.on("click", ".ltl-detail-shipment-link", (e) => {
+			e.preventDefault();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.open_shipment_detail(shipment);
+		});
+		this.body.on("click", ".ltl-detail-quote-link", (e) => {
+			e.preventDefault();
+			const quote =
+				$(e.currentTarget).attr("data-quote") || $(e.currentTarget).val();
+			if (quote) this.open_quote_detail(quote);
 		});
 
 		const zip_selector =
@@ -487,9 +556,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 	collect_payload() {
 		const val = (field) => (this.body.find(`[data-field='${field}']`).val() || "").trim();
+		const accessorials = [];
 		const codes = [];
 		this.body.find("input[data-acc]:checked").each(function () {
 			const code = $(this).attr("data-acc");
+			const group = $(this).attr("data-group") || "";
+			const label = ($(this).closest("label").find("span").first().text() || "").trim();
+			if (!code) return;
+			accessorials.push({ code, group, service_group: group, label });
 			if (!codes.includes(code)) codes.push(code);
 		});
 
@@ -501,6 +575,7 @@ ltl_quote.Dashboard = class Dashboard {
 			freight_class: val(`${pfx}freight_class`),
 			pieces: 1,
 			accessorial_codes: codes,
+			accessorials,
 		};
 
 		if (this.expanded) {
@@ -514,6 +589,13 @@ ltl_quote.Dashboard = class Dashboard {
 				consignee_company_name: val("exp_destination_location"),
 				consignee_address: val("exp_destination_address"),
 				contact_name: val("exp_origin_contact"),
+				origin_contact_name: val("exp_origin_contact"),
+				origin_contact_email: val("exp_origin_email"),
+				destination_contact_name: val("exp_destination_contact"),
+				destination_contact_email: val("exp_destination_email"),
+				origin_country: val("exp_origin_country") || "USA",
+				destination_country: val("exp_destination_country") || "USA",
+				pickup_date: val("exp_origin_date"),
 			});
 		}
 		return payload;
@@ -553,11 +635,14 @@ ltl_quote.Dashboard = class Dashboard {
 				}
 				this.quote_request_id = res.quote_request_id;
 				this.quotes = res.data.quotes;
-				this.render_rates();
-				frappe.show_alert(
-					{ message: __("Quotes received — {0} carrier rates", [this.quotes.length]), indicator: "green" },
-					7
-				);
+				this.booking_context = null;
+				this.load_booking_context(this.quote_request_id, () => {
+					this.render_rates();
+					frappe.show_alert(
+						{ message: __("Quotes received — {0} carrier rates", [this.quotes.length]), indicator: "green" },
+						7
+					);
+				});
 			},
 			error: () => {
 				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
@@ -601,7 +686,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<td>${base}</td>
 						<td>${acc}</td>
 						<td><span class="ltl-rating">${rating} <i class="fa fa-star"></i></span></td>
-						<td><button class="ltl-btn ltl-btn-primary ltl-book-btn" data-idx="${idx}">Book Shipment</button></td>
+						<td>${this.render_rate_action(q, idx)}</td>
 					</tr>`;
 			})
 			.join("");
@@ -634,48 +719,256 @@ ltl_quote.Dashboard = class Dashboard {
 		return "";
 	}
 
+	normalize_carrier_code(code) {
+		return String(code || "")
+			.toUpperCase()
+			.replace(/[^A-Z0-9]/g, "");
+	}
+
+	render_rate_action(q, idx) {
+		const ctx = this.booking_context;
+		const code = this.normalize_carrier_code(q.carrier_code || q.carrier);
+		const booked_norm = ctx?.booked_carrier_code
+			? this.normalize_carrier_code(ctx.booked_carrier_code)
+			: "";
+
+		if (ctx?.shipment && booked_norm && code === booked_norm) {
+			return `<button class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__("View Shipment")}</button>`;
+		}
+		if (ctx?.shipment) {
+			return `<span class="ltl-status ltl-status-grey">${__("Booked")}</span>`;
+		}
+		return `<button class="ltl-btn ltl-btn-primary ltl-book-btn" data-idx="${idx}">${__("Book Shipment")}</button>`;
+	}
+
+	load_booking_context(quote_request_id, callback) {
+		if (!quote_request_id) {
+			this.booking_context = null;
+			this.quote_request_status = null;
+			if (callback) callback();
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.quote.get_quote_booking_context",
+			args: { quote_request_id },
+			callback: (r) => {
+				const ctx = r.message || {};
+				if (ctx.is_booked && ctx.shipment) {
+					this.apply_booking_context({
+						shipment: ctx.shipment,
+						booked_carrier: ctx.booked_carrier,
+						bol_document_url: ctx.bol_url,
+						bol_number: ctx.bol_number,
+					});
+					this.quote_request_status = ctx.quote_status;
+				} else {
+					this.booking_context = null;
+					this.quote_request_status = ctx.quote_status || null;
+				}
+				if (callback) callback();
+			},
+			error: () => {
+				if (callback) callback();
+			},
+		});
+	}
+
+	apply_booking_context(res) {
+		const shipment = res.shipment || (res.data && res.data.shipment);
+		if (!shipment) return false;
+		this.booking_context = {
+			shipment,
+			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
+			bol_url: res.bol_document_url || res.bol_url || "",
+			bol_number: res.bol_number || "",
+		};
+		this.quote_request_status = "Booked";
+		return true;
+	}
+
+	open_shipment_view(shipmentName) {
+		if (!shipmentName) return;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="shipments"]').addClass("active");
+		this.show_view("shipments");
+		const cfg = LIST_VIEWS.shipments;
+		this.current_list = cfg;
+		frappe.db
+			.get_list(cfg.doctype, {
+				fields: cfg.fields,
+				order_by: cfg.order_by,
+				limit: 100,
+			})
+			.then((rows) => {
+				this.list_rows = rows || [];
+				this.render_list_table(this.list_rows);
+				frappe.set_route("Form", "LTL Shipment", shipmentName);
+			});
+	}
+
 	book_shipment(idx) {
 		const quote = this.quotes[idx];
 		if (!quote || !this.quote_request_id) return;
 
-		frappe.confirm(
-			__("Book shipment with {0} for {1}?", [
-				quote.carrier || quote.carrier_code,
-				format_currency(quote.total_cost, quote.currency || "USD"),
-			]),
-			() => {
-				frappe.call({
-					method: "ltl_quote.api.quote.accept_carrier_quote",
-					args: {
-						quote_request_id: this.quote_request_id,
-						carrier_code: quote.carrier_code,
-						total_charge: quote.total_cost,
-						carrier_quote_id: quote.carrier_quote_id || "",
-					},
-					freeze: true,
-					freeze_message: __("Booking shipment…"),
-					callback: (r) => {
-						const res = r.message || {};
-						if (res.status === "success") {
-							frappe.show_alert(
-								{ message: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]), indicator: "green" },
-								8
-							);
-							this.load_recent_requests();
-							if (res.shipment) {
-								frappe.set_route("Form", "LTL Shipment", res.shipment);
-							}
-						} else {
-							frappe.msgprint({
-								title: __("Booking Failed"),
-								message: res.message || res.error || __("Unknown error"),
-								indicator: "red",
-							});
-						}
-					},
-				});
+		const code = this.normalize_carrier_code(quote.carrier_code || quote.carrier);
+		const booked = this.booking_context?.booked_carrier_code;
+		if (this.booking_context?.shipment) {
+			if (booked && code === this.normalize_carrier_code(booked)) {
+				this.open_shipment_view(this.booking_context.shipment);
 			}
-		);
+			return;
+		}
+		this.show_booking_modal(idx);
+	}
+
+	show_booking_modal(idx) {
+		const quote = this.quotes[idx];
+		if (!quote) return;
+
+		const shipment = this.collect_payload();
+		const dialog = new frappe.ui.Dialog({
+			title: __("Confirm Booking"),
+			size: "large",
+			fields: [{ fieldtype: "HTML", fieldname: "summary" }],
+			primary_action_label: __("Confirm Booking"),
+			primary_action: () => {
+				dialog.hide();
+				this.execute_booking(quote);
+			},
+		});
+
+		dialog.$wrapper.addClass("ltl-book-dialog");
+		dialog.fields_dict.summary.$wrapper.html(this.render_booking_modal_html(quote, shipment));
+		dialog.show();
+	}
+
+	render_booking_modal_html(quote, shipment) {
+		const esc = frappe.utils.escape_html;
+		const currency = quote.currency || "USD";
+		const carrier_name = quote.carrier || quote.carrier_code || "—";
+		const carrier_code = (quote.carrier_code || carrier_name).slice(0, 3).toUpperCase();
+		const service = esc(quote.service_level || "Standard LTL");
+		const rating = quote.reliability_score ? (quote.reliability_score / 20).toFixed(1) : null;
+		const tags = quote.tags || (quote.tag ? [quote.tag] : []);
+		const tag_badge = (t) =>
+			`<span class="ltl-tag ltl-tag-${t.toLowerCase().replace(/\s+/g, "-")}">${this.tag_icon(t)} ${esc(t)}</span>`;
+		const tag_html = tags.length
+			? tags.map(tag_badge).join(" ")
+			: '<span class="ltl-tag-none">—</span>';
+
+		const transit_days = quote.transit_days || 0;
+		const transit_label =
+			transit_days === 1
+				? __("1 Business Day")
+				: transit_days
+					? __("{0} Business Days", [transit_days])
+					: "—";
+
+		const origin_zip = esc(shipment.origin_zip || "—");
+		const destination_zip = esc(shipment.destination_zip || "—");
+		const weight = shipment.weight ? `${Number(shipment.weight).toLocaleString()} lbs` : "—";
+		const freight_class = shipment.freight_class ? __("Class {0}", [esc(shipment.freight_class)]) : "—";
+
+		const detail_row = (label, value) =>
+			`<div class="ltl-book-row"><span class="ltl-book-label">${label}</span><span class="ltl-book-value">${value}</span></div>`;
+
+		const cost_row = (label, amount, extra_class = "") =>
+			`<div class="ltl-book-row ${extra_class}"><span class="ltl-book-label">${label}</span><span class="ltl-book-value">${amount}</span></div>`;
+
+		const fuel_surcharge = Number(quote.fuel_surcharge) || 0;
+		const fuel_row = fuel_surcharge > 0
+			? cost_row(__("Fuel Surcharge"), format_currency(fuel_surcharge, currency))
+			: "";
+
+		const accessorial = Number(quote.accessorial_charge) || 0;
+		const accessorial_display =
+			accessorial > 0
+				? `+ ${format_currency(accessorial, currency)}`
+				: format_currency(accessorial, currency);
+
+		return `
+			<div class="ltl-book-modal">
+				<div class="ltl-book-header">
+					<div class="ltl-book-carrier">
+						<span class="ltl-carrier-badge">${esc(carrier_code)}</span>
+						<div>
+							<div class="ltl-book-carrier-name">${esc(carrier_name)}</div>
+							<div class="ltl-book-meta">
+								<span>${service}</span>
+								${rating ? `<span class="ltl-rating">${rating} <i class="fa fa-star"></i></span>` : ""}
+							</div>
+						</div>
+					</div>
+					<div class="ltl-tag-wrap ltl-book-tags">${tag_html}</div>
+				</div>
+				<div class="ltl-book-grid">
+					<div class="ltl-book-panel">
+						<div class="ltl-book-panel-head">${__("Operational Details")}</div>
+						<div class="ltl-book-panel-body">
+							${detail_row(__("Transit Window"), esc(transit_label))}
+							${detail_row(__("Route Lane"), `${origin_zip} <i class="fa fa-long-arrow-right ltl-book-arrow"></i> ${destination_zip}`)}
+							${detail_row(__("Shipment Mass"), esc(weight))}
+							${detail_row(__("Freight Class"), freight_class)}
+						</div>
+					</div>
+					<div class="ltl-book-panel">
+						<div class="ltl-book-panel-head">${__("Cost Summary")}</div>
+						<div class="ltl-book-panel-body">
+							${cost_row(__("Base Linehaul"), format_currency(quote.linehaul_charge || 0, currency))}
+							${fuel_row}
+							${cost_row(__("Accessorials"), accessorial_display)}
+							${cost_row(__("Total Rate"), format_currency(quote.total_cost, currency), "ltl-book-total")}
+						</div>
+					</div>
+				</div>
+				<p class="ltl-book-footer">${__(
+					"Review details before confirming booking with the carrier."
+				)}</p>
+			</div>`;
+	}
+
+	execute_booking(quote) {
+		frappe.call({
+			method: "ltl_quote.api.quote.accept_carrier_quote",
+			args: {
+				quote_request_id: this.quote_request_id,
+				carrier_code: quote.carrier_code,
+				total_charge: quote.total_cost,
+				carrier_quote_id: quote.carrier_quote_id || "",
+			},
+			freeze: true,
+			freeze_message: __("Booking shipment…"),
+			callback: (r) => {
+				const res = r.message || {};
+				if (res.status === "success" || res.status === "already_booked") {
+					const booked = this.apply_booking_context(res);
+					if (booked) {
+						this.render_rates();
+						const msg =
+							res.status === "already_booked"
+								? __("Shipment already booked — opening details")
+								: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]);
+						frappe.show_alert({ message: msg, indicator: "green" }, 8);
+						this.load_recent_requests();
+						this.open_shipment_view(this.booking_context.shipment);
+						return;
+					}
+				}
+				if (res.status === "success") {
+					frappe.show_alert(
+						{ message: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]), indicator: "green" },
+						8
+					);
+					this.load_recent_requests();
+				} else {
+					frappe.msgprint({
+						title: __("Booking Failed"),
+						message: res.message || res.error || __("Unknown error"),
+						indicator: "red",
+					});
+				}
+			},
+		});
 	}
 
 	current_zips() {
@@ -744,19 +1037,31 @@ ltl_quote.Dashboard = class Dashboard {
 
 	show_view(key) {
 		const is_quote = key === "quote";
+		const is_detail = key === "detail";
 		this.body.find(".ltl-view-quote").toggle(is_quote);
-		this.body.find(".ltl-view-list").toggle(!is_quote);
+		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail);
+		this.body.find(".ltl-view-detail").toggle(is_detail);
 		this.body.find(".ltl-scroll")[0].scrollTo(0, 0);
 
 		if (is_quote) {
 			this.current_list = null;
+			this.detail_doc = null;
+			this.detail_type = null;
 			this.body.find(".ltl-breadcrumb .current").text("New Carrier Quote");
+			return;
+		}
+
+		if (is_detail) {
+			const label = this.detail_type === "shipment" ? "Shipment" : "Quote Request";
+			this.body.find(".ltl-breadcrumb .current").text(label);
 			return;
 		}
 
 		const cfg = LIST_VIEWS[key];
 		if (!cfg) return;
 		this.current_list = cfg;
+		this.detail_doc = null;
+		this.detail_type = null;
 		this.body.find(".ltl-breadcrumb .current").text(cfg.title);
 		this.body.find(".ltl-list-title").text(cfg.title);
 		this.body.find(".ltl-list-sub").text(cfg.sub || "");
@@ -764,6 +1069,578 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.find(".ltl-list-new").html(`<i class="fa fa-plus"></i> New ${frappe.utils.escape_html(cfg.title)}`);
 		this.body.find(".ltl-list-search").val("");
 		this.load_list(cfg);
+	}
+
+	open_quote_detail(name) {
+		if (!name) return;
+		this.detail_return_view = this.current_list
+			? this.current_list.doctype === "LTL Shipment"
+				? "shipments"
+				: "quotes"
+			: this.detail_type === "shipment"
+				? "shipments"
+				: "quote";
+		this.detail_type = "quote";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="quotes"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_quote_request_detail",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load quote request.</div>');
+					return;
+				}
+				this.detail_doc = r.message;
+				container.html(this.render_quote_detail(r.message));
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load quote request.</div>');
+			},
+		});
+	}
+
+	open_shipment_detail(name) {
+		if (!name) return;
+		this.detail_return_view = "shipments";
+		this.detail_type = "shipment";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="shipments"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_shipment_detail",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load shipment.</div>');
+					return;
+				}
+				this.detail_doc = r.message;
+				container.html(this.render_shipment_detail(r.message));
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load shipment.</div>');
+			},
+		});
+	}
+
+	close_detail_view() {
+		const back = this.detail_return_view || (this.detail_type === "shipment" ? "shipments" : "quotes");
+		this.detail_doc = null;
+		this.detail_type = null;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		const nav = back === "quote" ? "quote" : back;
+		this.body.find(`.ltl-nav-item[data-view="${nav}"]`).addClass("active");
+		this.show_view(back === "quote" ? "quote" : back);
+	}
+
+	close_quote_detail() {
+		this.close_detail_view();
+	}
+
+	render_quote_detail(payload) {
+		const doc = payload.doc || {};
+		const accessorials = payload.accessorials || [];
+		const shipments = payload.shipments || [];
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v);
+		const readonly = ["Booked", "Cancelled"].includes(doc.status);
+		const ro = readonly ? "readonly" : "";
+		const dis = readonly ? "disabled" : "";
+
+		const freight_opts = FREIGHT_CLASSES.map(
+			(c) => `<option value="${c}" ${String(doc.freight_class) === c ? "selected" : ""}>${c}</option>`
+		).join("");
+
+		const shipment_tabs = shipments.length
+			? shipments
+					.map(
+						(s, i) => `
+				<button type="button" class="ltl-detail-conn-tab ${i === 0 ? "active" : ""} ltl-detail-shipment-link"
+					data-shipment="${esc(s.name)}">${i + 1} LTL Shipment</button>`
+					)
+					.join("")
+			: `<span class="ltl-detail-conn-empty">No linked shipments</span>`;
+
+		const acc_rows = accessorials.length
+			? accessorials
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
+					<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+					<td>${esc(row.quantity || 1)}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="4" class="ltl-empty-cell">No accessorials selected</td></tr>`;
+
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
+
+		return `
+			<div class="ltl-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">LTL Quote Request</div>
+							<div class="ltl-detail-hero-sub">Create and manage LTL shipment quote requests</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-link"></i> 1. CONNECTIONS</div>
+					<div class="ltl-detail-conn-row">
+						${shipment_tabs}
+						<button type="button" class="ltl-detail-conn-add" data-action="open-desk-form"
+							data-name="${esc(doc.name)}" title="Open in Desk">+</button>
+					</div>
+					<div class="ltl-detail-grid ltl-detail-grid-3">
+						<div class="ltl-field">
+							<label>Status</label>
+							<input class="ltl-input ltl-detail-status" value="${val(doc.status)}" readonly />
+						</div>
+						<div class="ltl-field">
+							<label>Requested On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.requested_on))}" readonly />
+							<small class="ltl-tz">${frappe.boot.time_zone?.user || frappe.boot.time_zone || ""}</small>
+						</div>
+						<div class="ltl-field">
+							<label>Rates Aggregated On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.aggregated_on))}" readonly />
+							<small class="ltl-tz">${frappe.boot.time_zone?.user || frappe.boot.time_zone || ""}</small>
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> 2. LANE &amp; LOCATIONS</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Origin ZIP <span class="req">*</span></label>
+							<input class="ltl-input" data-detail="origin_zip" value="${val(doc.origin_zip)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination ZIP <span class="req">*</span></label>
+							<input class="ltl-input" data-detail="destination_zip" value="${val(doc.destination_zip)}" ${ro} /></div>
+						<div class="ltl-field"><label>Origin City</label>
+							<input class="ltl-input" data-detail="origin_city" value="${val(doc.origin_city)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination City</label>
+							<input class="ltl-input" data-detail="destination_city" value="${val(doc.destination_city)}" ${ro} /></div>
+						<div class="ltl-field"><label>Origin State</label>
+							<input class="ltl-input" data-detail="origin_state" value="${val(doc.origin_state)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination State</label>
+							<input class="ltl-input" data-detail="destination_state" value="${val(doc.destination_state)}" ${ro} /></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-truck"></i> 3. PICKUP &amp; DELIVERY ADDRESSES</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Shipper Company Name</label>
+							<input class="ltl-input" data-detail="shipper_company_name" value="${val(doc.shipper_company_name)}"
+								placeholder="Enter shipper company name" ${ro} /></div>
+						<div class="ltl-field"><label>Consignee Company Name</label>
+							<input class="ltl-input" data-detail="consignee_company_name" value="${val(doc.consignee_company_name)}"
+								placeholder="Enter consignee company name" ${ro} /></div>
+						<div class="ltl-field"><label>Shipper Address</label>
+							<textarea class="ltl-input" data-detail="shipper_address" rows="3"
+								placeholder="Enter shipper address" ${ro}>${val(doc.shipper_address)}</textarea></div>
+						<div class="ltl-field"><label>Consignee Address</label>
+							<textarea class="ltl-input" data-detail="consignee_address" rows="3"
+								placeholder="Enter consignee address" ${ro}>${val(doc.consignee_address)}</textarea></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-cube"></i> 4. FREIGHT DETAILS</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Total Weight <span class="req">*</span></label>
+							<input type="number" class="ltl-input" data-detail="total_weight" value="${val(doc.total_weight)}" ${ro} /></div>
+						<div class="ltl-field"><label>Length</label>
+							<input type="number" class="ltl-input" data-detail="length" value="${val(doc.length || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Weight UOM</label>
+							<select class="ltl-input" data-detail="weight_uom" ${dis}>
+								<option value="LB" ${doc.weight_uom === "LB" || !doc.weight_uom ? "selected" : ""}>LB</option>
+								<option value="KG" ${doc.weight_uom === "KG" ? "selected" : ""}>KG</option>
+							</select></div>
+						<div class="ltl-field"><label>Width</label>
+							<input type="number" class="ltl-input" data-detail="width" value="${val(doc.width || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Freight Class <span class="req">*</span></label>
+							<select class="ltl-input" data-detail="freight_class" ${dis}>${freight_opts}</select></div>
+						<div class="ltl-field"><label>Height</label>
+							<input type="number" class="ltl-input" data-detail="height" value="${val(doc.height || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Dimension UOM</label>
+							<select class="ltl-input" data-detail="dimension_uom" ${dis}>
+								<option value="IN" ${doc.dimension_uom === "IN" || !doc.dimension_uom ? "selected" : ""}>IN</option>
+								<option value="CM" ${doc.dimension_uom === "CM" ? "selected" : ""}>CM</option>
+							</select></div>
+						<div class="ltl-field"><label>Pieces / Pallets</label>
+							<input type="number" class="ltl-input" data-detail="pieces" value="${val(doc.pieces || 1)}" ${ro} /></div>
+					</div>
+					<label class="ltl-check ltl-detail-stackable">
+						<input type="checkbox" data-detail="stackable" ${doc.stackable ? "checked" : ""} ${dis} />
+						<span>Stackable</span>
+					</label>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-th-large"></i> 5. ACCESSORIALS</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead>
+							<tr><th>No.</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr>
+						</thead>
+						<tbody>${acc_rows}</tbody>
+					</table>
+				</section>
+
+				<div class="ltl-detail-footer">
+					<button type="button" class="ltl-btn" data-action="detail-cancel">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="detail-save" ${dis}>
+						<i class="fa fa-save"></i> Save Quote Request
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
+	save_quote_detail() {
+		if (!this.detail_doc || !this.detail_doc.doc) return;
+		const name = this.detail_doc.doc.name;
+		const data = {};
+		this.body.find("[data-detail]").each(function () {
+			const key = $(this).attr("data-detail");
+			if ($(this).attr("type") === "checkbox") {
+				data[key] = $(this).is(":checked") ? 1 : 0;
+			} else {
+				data[key] = ($(this).val() || "").toString().trim();
+			}
+		});
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_quote_request_detail",
+			args: { name, data: JSON.stringify(data) },
+			freeze: true,
+			freeze_message: __("Saving quote request..."),
+			callback: (r) => {
+				if (r.exc) return;
+				frappe.show_alert({ message: __("Quote request saved"), indicator: "green" }, 4);
+				this.open_quote_detail(name);
+			},
+		});
+	}
+
+	render_shipment_detail(payload) {
+		const doc = payload.doc || {};
+		const line_items = payload.line_items || [];
+		const tracking_events = payload.tracking_events || [];
+		const accessorials = payload.accessorials || [];
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v);
+		const readonly = ["Delivered", "Cancelled"].includes(doc.status);
+		const ro = readonly ? "readonly" : "";
+		const dis = readonly ? "disabled" : "";
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
+
+		const status_opts = ["Draft", "Booked", "Dispatched", "In Transit", "Out for Delivery", "Delivered", "Cancelled", "Exception"]
+			.map((s) => `<option value="${s}" ${doc.current_status === s || (!doc.current_status && doc.status === s) ? "selected" : ""}>${s}</option>`)
+			.join("");
+		const dispatch_opts = ["Pending", "Sent to Carrier", "Acknowledged", "Failed"]
+			.map((s) => `<option value="${s}" ${doc.dispatch_status === s ? "selected" : ""}>${s}</option>`)
+			.join("");
+
+		const tracking_rows = tracking_events.length
+			? tracking_events
+					.map(
+						(row) => `
+				<tr>
+					<td>${esc(fmt_dt(row.event_datetime))}</td>
+					<td class="ltl-mono">${esc(row.status_code || "—")}</td>
+					<td>${esc(row.status_description || "—")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="3" class="ltl-empty-cell">No Data</td></tr>`;
+
+		const line_rows = line_items.length
+			? line_items
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td>${esc(row.idx_line_no || idx + 1)}</td>
+					<td>${esc(row.handling_unit_qty || "—")}</td>
+					<td>${esc(row.handling_unit_type || "—")}</td>
+					<td>${esc(row.freight_class || "—")}</td>
+					<td>${esc(row.commodity_description || "—")}</td>
+					<td>${esc(row.weight != null ? row.weight : "—")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">No Data</td></tr>`;
+
+		const acc_rows = accessorials.length
+			? accessorials
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
+					<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+					<td>${esc(row.quantity || 1)}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="4" class="ltl-empty-cell">No accessorials</td></tr>`;
+
+		const bol_url = resolve_bol_url(doc);
+		const view_bol_btn = bol_url
+			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
+					<i class="fa fa-file-pdf-o"></i> View BOL
+				</button>`
+			: `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__("No BOL attached")}">
+					<i class="fa fa-file-pdf-o"></i> View BOL
+				</button>`;
+
+		return `
+			<div class="ltl-detail ltl-shipment-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">LTL Shipment</div>
+							<div class="ltl-detail-hero-sub">Track booked shipments, BOL details, and delivery status</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
+						${view_bol_btn}
+					</div>
+				</div>
+
+				<div class="ltl-ship-detail-columns">
+					<div class="ltl-ship-detail-col">
+						<section class="ltl-detail-card">
+							<div class="ltl-detail-card-head"><i class="fa fa-file-text-o"></i> Shipment Overview</div>
+							<div class="ltl-detail-grid ltl-detail-grid-1">
+								<div class="ltl-field"><label>Status</label>
+									<input class="ltl-input ltl-detail-status" value="${val(doc.status)}" readonly /></div>
+								<div class="ltl-field"><label>Quote Request</label>
+									<input class="ltl-input ltl-detail-quote-link" data-quote="${esc(doc.quote_request)}"
+										value="${val(doc.quote_request)}" readonly style="cursor:pointer;color:var(--ltl-orange);font-weight:600;" /></div>
+								<div class="ltl-field"><label>Carrier</label>
+									<input class="ltl-input" value="${val(doc.carrier)}" readonly /></div>
+								<div class="ltl-field"><label>Carrier Name</label>
+									<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
+							</div>
+						</section>
+					</div>
+
+					<div class="ltl-ship-detail-col">
+						<section class="ltl-detail-card">
+							<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> Visibility &amp; Tracking</div>
+							<div class="ltl-detail-grid ltl-detail-grid-2">
+								<div class="ltl-field"><label>Current Status</label>
+									<select class="ltl-input" data-detail="current_status" ${dis}>${status_opts}</select></div>
+								<div class="ltl-field" style="display:flex;align-items:flex-end;">
+									<label class="ltl-check"><input type="checkbox" data-detail="has_exception" ${doc.has_exception ? "checked" : ""} ${dis} />
+										<span>Has Exception</span></label>
+								</div>
+							</div>
+							<div class="ltl-detail-card-head" style="margin-top:14px;margin-bottom:8px;">Tracking Events</div>
+							<table class="ltl-table ltl-detail-acc-table">
+								<thead><tr><th>Event Time</th><th>Status Code</th><th>Description</th></tr></thead>
+								<tbody>${tracking_rows}</tbody>
+							</table>
+						</section>
+
+						<section class="ltl-detail-card ltl-ship-card-charges">
+							<div class="ltl-detail-card-head"><i class="fa fa-usd"></i> Charges</div>
+							<div class="ltl-detail-grid ltl-detail-grid-3">
+								<div class="ltl-field"><label>Currency</label>
+									<input class="ltl-input" value="${val(doc.currency || "USD")}" readonly /></div>
+								<div class="ltl-field"><label>Transit Days</label>
+									<input class="ltl-input" value="${val(doc.transit_days)}" readonly /></div>
+								<div class="ltl-field"><label>Total Charge</label>
+									<input class="ltl-input" value="${val(doc.total_charge)}" readonly /></div>
+							</div>
+						</section>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card ltl-ship-card-lifecycle">
+					<div class="ltl-detail-card-head"><i class="fa fa-calendar"></i> Shipment Lifecycle</div>
+					<div class="ltl-detail-grid ltl-detail-grid-4">
+						<div class="ltl-field"><label>Booked On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.booked_on))}" readonly /></div>
+						<div class="ltl-field"><label>BOL Number</label>
+							<input class="ltl-input" data-detail="bol_number" value="${val(doc.bol_number)}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Date</label>
+							<input type="date" class="ltl-input" data-detail="pickup_date" value="${esc(doc.pickup_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Dayton BOL ID</label>
+							<input class="ltl-input" value="${val(doc.dayton_bol_id)}" readonly /></div>
+						<div class="ltl-field"><label>Estimated Delivery</label>
+							<input type="date" class="ltl-input" data-detail="estimated_delivery_date" value="${esc(doc.estimated_delivery_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>PRO / Tracking Number</label>
+							<input class="ltl-input" data-detail="pro_number" value="${val(doc.pro_number)}" ${ro} /></div>
+						<div class="ltl-field"><label>Actual Delivery</label>
+							<input type="date" class="ltl-input" data-detail="actual_delivery_date" value="${esc(doc.actual_delivery_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Carrier Confirmation #</label>
+							<input class="ltl-input" data-detail="carrier_confirmation" value="${val(doc.carrier_confirmation)}" ${ro} /></div>
+						<div class="ltl-field ltl-ship-lifecycle-dispatch">
+							<label>Dispatch Status</label>
+							<select class="ltl-input ltl-detail-status" data-detail="dispatch_status" ${dis}>${dispatch_opts}</select>
+						</div>
+					</div>
+				</section>
+
+				<div class="ltl-ship-detail-parallel">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-file-text-o"></i> Dayton BOL Details</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Document Type</label>
+								<input class="ltl-input" data-detail="bol_document_type" value="${val(doc.bol_document_type || "Bill of Lading")}" ${ro} /></div>
+							<div class="ltl-field"><label>Payment Terms</label>
+								<input class="ltl-input" data-detail="bol_payment_terms" value="${val(doc.bol_payment_terms)}" ${ro} /></div>
+							<div class="ltl-field"><label>SCAC</label>
+								<input class="ltl-input" data-detail="bol_scac" value="${val(doc.bol_scac)}" ${ro} /></div>
+							<div class="ltl-field"><label>Total Quantity</label>
+								<input type="number" class="ltl-input" data-detail="bol_total_quantity" value="${val(doc.bol_total_quantity)}" ${ro} /></div>
+							<div class="ltl-field"><label>BOL Date</label>
+								<input type="date" class="ltl-input" data-detail="bol_date" value="${esc(doc.bol_date || "")}" ${ro} /></div>
+							<div class="ltl-field"><label>Grand Total Weight</label>
+								<input type="number" class="ltl-input" data-detail="bol_grand_total_weight" value="${val(doc.bol_grand_total_weight)}" ${ro} /></div>
+							<div class="ltl-field"><label>BOL Page Count</label>
+								<input type="number" class="ltl-input" data-detail="bol_page_count" value="${val(doc.bol_page_count)}" ${ro} /></div>
+						</div>
+						<div class="ltl-field" style="margin-top:12px;">
+							<label>Special Instructions</label>
+							<textarea class="ltl-input" data-detail="bol_special_instructions" rows="2" ${ro}>${val(doc.bol_special_instructions)}</textarea>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-users"></i> Bill To / Third Party</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_bill_to_name" value="${val(doc.bol_bill_to_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_bill_to_contact_name" value="${val(doc.bol_bill_to_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_bill_to_address1" value="${val(doc.bol_bill_to_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_bill_to_contact_phone" value="${val(doc.bol_bill_to_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_bill_to_city" value="${val(doc.bol_bill_to_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_bill_to_state" value="${val(doc.bol_bill_to_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_bill_to_postal_code" value="${val(doc.bol_bill_to_postal_code)}" ${ro} /></div>
+						</div>
+					</section>
+				</div>
+
+				<div class="ltl-ship-detail-parties">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-truck"></i> Ship From</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_shipper_name" value="${val(doc.bol_shipper_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_shipper_contact_name" value="${val(doc.bol_shipper_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_shipper_address1" value="${val(doc.bol_shipper_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_shipper_contact_phone" value="${val(doc.bol_shipper_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_shipper_city" value="${val(doc.bol_shipper_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_shipper_state" value="${val(doc.bol_shipper_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_shipper_postal_code" value="${val(doc.bol_shipper_postal_code)}" ${ro} /></div>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> Ship To</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_consignee_name" value="${val(doc.bol_consignee_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_consignee_contact_name" value="${val(doc.bol_consignee_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_consignee_address1" value="${val(doc.bol_consignee_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_consignee_contact_phone" value="${val(doc.bol_consignee_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_consignee_city" value="${val(doc.bol_consignee_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_consignee_state" value="${val(doc.bol_consignee_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_consignee_postal_code" value="${val(doc.bol_consignee_postal_code)}" ${ro} /></div>
+						</div>
+					</section>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-list-alt"></i> BOL Commodity / Line Items</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead>
+							<tr><th>No.</th><th>Line No</th><th>HU Qty</th><th>HU Type</th><th>Class</th><th>Description</th><th>Weight</th></tr>
+						</thead>
+						<tbody>${line_rows}</tbody>
+					</table>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> Accessories / Accessorials</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr><th>No.</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr></thead>
+						<tbody>${acc_rows}</tbody>
+					</table>
+				</section>
+
+				<div class="ltl-detail-footer">
+					<button type="button" class="ltl-btn" data-action="detail-cancel">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="detail-save" ${dis}>
+						<i class="fa fa-save"></i> Save Shipment
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
+	save_shipment_detail() {
+		if (!this.detail_doc || !this.detail_doc.doc || this.detail_type !== "shipment") return;
+		const name = this.detail_doc.doc.name;
+		const data = {};
+		this.body.find("[data-detail]").each(function () {
+			const key = $(this).attr("data-detail");
+			if ($(this).attr("type") === "checkbox") {
+				data[key] = $(this).is(":checked") ? 1 : 0;
+			} else {
+				data[key] = ($(this).val() || "").toString().trim();
+			}
+		});
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_shipment_detail",
+			args: { name, data: JSON.stringify(data) },
+			freeze: true,
+			freeze_message: __("Saving shipment..."),
+			callback: (r) => {
+				if (r.exc) return;
+				frappe.show_alert({ message: __("Shipment saved"), indicator: "green" }, 4);
+				this.open_shipment_detail(name);
+			},
+		});
 	}
 
 	load_list(cfg) {
@@ -811,8 +1688,8 @@ ltl_quote.Dashboard = class Dashboard {
 		const body = rows
 			.map((row) => {
 				const cells = cfg.columns.map((c) => `<td>${this.format_cell(row, c)}</td>`).join("");
-				return `<tr class="ltl-list-row" data-name="${frappe.utils.escape_html(row.name)}">${cells}
-					<td><span class="ltl-recent-view" title="Open"><i class="fa fa-eye"></i></span></td></tr>`;
+				const actions = this.render_list_actions(row, cfg);
+				return `<tr class="ltl-list-row" data-name="${frappe.utils.escape_html(row.name)}">${cells}${actions}</tr>`;
 			})
 			.join("");
 
@@ -821,6 +1698,20 @@ ltl_quote.Dashboard = class Dashboard {
 				<thead><tr>${head}</tr></thead>
 				<tbody>${body}</tbody>
 			</table>`);
+	}
+
+	render_list_actions(row, cfg) {
+		if (cfg.doctype === "LTL Shipment") {
+			const bol_url = resolve_bol_url(row);
+			const bol_icon = bol_url
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}"><i class="fa fa-paperclip"></i></span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No BOL attached")}"><i class="fa fa-paperclip"></i></span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				${bol_icon}
+			</td>`;
+		}
+		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span></td>`;
 	}
 
 	format_cell(row, col) {
@@ -880,6 +1771,8 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.find("input[data-acc]").prop("checked", false);
 		this.quotes = [];
 		this.quote_request_id = null;
+		this.booking_context = null;
+		this.quote_request_status = null;
 		this.render_rates();
 		this.load_recent_requests();
 	}

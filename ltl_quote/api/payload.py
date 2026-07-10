@@ -40,6 +40,10 @@ def parse_rating_payload(payload: dict | str | None = None, **kwargs) -> dict:
 	_validate_required(data)
 	data = _normalize_fields(data)
 	accessorials = data.get("accessorials") or data.get("accessorial_codes") or []
+	# Prefer structured accessorials (with pickup/delivery/load group) when both are present.
+	structured = data.get("accessorials")
+	if isinstance(structured, list) and structured and isinstance(structured[0], dict):
+		accessorials = structured
 	data["accessorial_rows"] = _resolve_accessorials(accessorials)
 	return data
 
@@ -163,14 +167,27 @@ def _resolve_accessorials(accessorials: list) -> list[dict]:
 		if isinstance(item, dict):
 			code = _resolve_accessorial_code(item.get("code") or item.get("accessorial_code") or item.get("accessorial"))
 			quantity = max(int(item.get("quantity") or item.get("qty") or 1), 1)
+			service_group = str(item.get("service_group") or item.get("group") or "").strip().lower()
+			label = str(item.get("label") or item.get("accessorial_name") or "").strip()
 		else:
 			code = _resolve_accessorial_code(item)
 			quantity = 1
+			service_group = ""
+			label = ""
 		if not code:
 			continue
 		name = frappe.db.get_value("LTL Accessorial", {"accessorial_code": code})
 		if name:
-			rows.append({"accessorial": name, "accessorial_code": code, "quantity": quantity})
+			row = {"accessorial": name, "accessorial_code": code, "quantity": quantity}
+			if service_group in {"pickup", "delivery", "load", "origin", "destination"}:
+				if service_group == "origin":
+					service_group = "pickup"
+				elif service_group == "destination":
+					service_group = "delivery"
+				row["service_group"] = service_group
+			if label:
+				row["accessorial_name"] = label
+			rows.append(row)
 	return rows
 
 

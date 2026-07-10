@@ -36,7 +36,47 @@
   "tracking_events",
   "bol_section",
   "bol_document",
-  "bol_document_url"
+  "bol_document_url",
+  "dayton_bol_details_section",
+  "bol_document_type",
+  "bol_scac",
+  "bol_date",
+  "bol_page_count",
+  "column_break_bol_meta",
+  "bol_payment_terms",
+  "bol_quote_id",
+  "bol_special_instructions",
+  "bol_total_quantity",
+  "bol_grand_total_weight",
+  "bol_ship_from_section",
+  "bol_shipper_name",
+  "bol_shipper_address1",
+  "bol_shipper_city",
+  "bol_shipper_state",
+  "bol_shipper_postal_code",
+  "column_break_ship_from",
+  "bol_shipper_contact_name",
+  "bol_shipper_contact_phone",
+  "bol_ship_to_section",
+  "bol_consignee_name",
+  "bol_consignee_address1",
+  "bol_consignee_city",
+  "bol_consignee_state",
+  "bol_consignee_postal_code",
+  "column_break_ship_to",
+  "bol_consignee_contact_name",
+  "bol_consignee_contact_phone",
+  "bol_bill_to_section",
+  "bol_bill_to_name",
+  "bol_bill_to_address1",
+  "bol_bill_to_city",
+  "bol_bill_to_state",
+  "bol_bill_to_postal_code",
+  "column_break_bill_to",
+  "bol_bill_to_contact_name",
+  "bol_bill_to_contact_phone",
+  "bol_line_items_section",
+  "bol_line_items"
  ],
  "fields": [
   {
@@ -227,10 +267,243 @@
    "fieldtype": "Data",
    "label": "BOL Document URL",
    "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "dayton_bol_details_section",
+   "fieldtype": "Section Break",
+   "label": "Dayton BOL Details"
+  },
+  {
+   "default": "Bill of Lading",
+   "fieldname": "bol_document_type",
+   "fieldtype": "Data",
+   "label": "Document Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_scac",
+   "fieldtype": "Data",
+   "label": "SCAC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_date",
+   "fieldtype": "Date",
+   "label": "BOL Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_page_count",
+   "fieldtype": "Int",
+   "label": "BOL Page Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_bol_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_payment_terms",
+   "fieldtype": "Data",
+   "label": "Payment Terms",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_quote_id",
+   "fieldtype": "Data",
+   "label": "Quote ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_special_instructions",
+   "fieldtype": "Small Text",
+   "label": "Special Instructions",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_total_quantity",
+   "fieldtype": "Int",
+   "label": "Total Quantity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_grand_total_weight",
+   "fieldtype": "Float",
+   "label": "Grand Total Weight",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "bol_ship_from_section",
+   "fieldtype": "Section Break",
+   "label": "Ship From"
+  },
+  {
+   "fieldname": "bol_shipper_name",
+   "fieldtype": "Data",
+   "label": "Shipper Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_shipper_address1",
+   "fieldtype": "Data",
+   "label": "Shipper Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_shipper_city",
+   "fieldtype": "Data",
+   "label": "Shipper City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_shipper_state",
+   "fieldtype": "Data",
+   "label": "Shipper State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_shipper_postal_code",
+   "fieldtype": "Data",
+   "label": "Shipper ZIP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ship_from",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_shipper_contact_name",
+   "fieldtype": "Data",
+   "label": "Shipper Contact",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_shipper_contact_phone",
+   "fieldtype": "Data",
+   "label": "Shipper Phone",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "bol_ship_to_section",
+   "fieldtype": "Section Break",
+   "label": "Ship To"
+  },
+  {
+   "fieldname": "bol_consignee_name",
+   "fieldtype": "Data",
+   "label": "Consignee Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_consignee_address1",
+   "fieldtype": "Data",
+   "label": "Consignee Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_consignee_city",
+   "fieldtype": "Data",
+   "label": "Consignee City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_consignee_state",
+   "fieldtype": "Data",
+   "label": "Consignee State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_consignee_postal_code",
+   "fieldtype": "Data",
+   "label": "Consignee ZIP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ship_to",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_consignee_contact_name",
+   "fieldtype": "Data",
+   "label": "Consignee Contact",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_consignee_contact_phone",
+   "fieldtype": "Data",
+   "label": "Consignee Phone",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "bol_bill_to_section",
+   "fieldtype": "Section Break",
+   "label": "Bill To / Third Party"
+  },
+  {
+   "fieldname": "bol_bill_to_name",
+   "fieldtype": "Data",
+   "label": "Bill To Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_bill_to_address1",
+   "fieldtype": "Data",
+   "label": "Bill To Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_bill_to_city",
+   "fieldtype": "Data",
+   "label": "Bill To City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_bill_to_state",
+   "fieldtype": "Data",
+   "label": "Bill To State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_bill_to_postal_code",
+   "fieldtype": "Data",
+   "label": "Bill To ZIP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_bill_to",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_bill_to_contact_name",
+   "fieldtype": "Data",
+   "label": "Bill To Contact",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bol_bill_to_contact_phone",
+   "fieldtype": "Data",
+   "label": "Bill To Phone",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "bol_line_items_section",
+   "fieldtype": "Section Break",
+   "label": "BOL Commodity / Line Items"
+  },
+  {
+   "fieldname": "bol_line_items",
+   "fieldtype": "Table",
+   "label": "BOL Line Items",
+   "options": "LTL Shipment BOL Line Item"
   }
  ],
  "links": [],
- "modified": "2026-06-01 10:00:00.000000",
+ "modified": "2026-07-10 14:16:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL Shipment",

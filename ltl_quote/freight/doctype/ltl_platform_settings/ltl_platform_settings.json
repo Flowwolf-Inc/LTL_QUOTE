@@ -16,6 +16,7 @@
   "column_break_shipper",
   "default_contact_name",
   "default_contact_phone",
+  "default_contact_email",
   "default_consignee_name",
   "default_consignee_address",
   "decision_engine_section",
@@ -94,6 +95,13 @@
    "fieldname": "default_contact_phone",
    "fieldtype": "Data",
    "label": "Default Contact Phone"
+  },
+  {
+   "default": "admin@ltlquote.com",
+   "fieldname": "default_contact_email",
+   "fieldtype": "Data",
+   "label": "Default Contact Email",
+   "options": "Email"
   },
   {
    "default": "Destination Receiver",

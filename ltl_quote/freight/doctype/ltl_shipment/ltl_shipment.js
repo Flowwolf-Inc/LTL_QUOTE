@@ -1,6 +1,19 @@
 // Copyright (c) 2026, LTL Quote and contributors
 // For license information, please see license.txt
 
+function resolve_bol_url(doc) {
+	if (!doc) return "";
+	const url = String(doc.bol_document_url || "").trim();
+	if (url) {
+		if (url.startsWith("http://") || url.startsWith("https://")) return url;
+		return window.location.origin + (url.startsWith("/") ? url : `/${url}`);
+	}
+	const attach = String(doc.bol_document || "").trim();
+	if (!attach) return "";
+	if (attach.startsWith("http://") || attach.startsWith("https://")) return attach;
+	return window.location.origin + (attach.startsWith("/") ? attach : `/${attach}`);
+}
+
 frappe.core = frappe.core || {};
 frappe.core.utils = frappe.core.utils || {};
 
@@ -40,6 +53,14 @@ frappe.core.utils.update_dayton_carrier_bol = function (frm) {
 frappe.ui.form.on("LTL Shipment", {
 	refresh(frm) {
 		if (!frm.is_new()) {
+			frm.remove_custom_button(__("View BOL"));
+			const bol_url = resolve_bol_url(frm.doc);
+			if (bol_url) {
+				frm.add_custom_button(__("View BOL"), () => {
+					window.open(bol_url, "_blank", "noopener,noreferrer");
+				}).addClass("btn-primary");
+			}
+
 			frm.remove_custom_button(__("Dispatch to Carrier"));
 			frm.remove_custom_button(__("Update Electronic BOL"));
 			frm.remove_custom_button(__("Track Location"));

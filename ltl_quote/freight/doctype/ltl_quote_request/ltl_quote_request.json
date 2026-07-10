@@ -21,9 +21,15 @@
   "addresses_section",
   "shipper_company_name",
   "shipper_address",
+  "contact_name",
+  "contact_phone",
+  "origin_contact_email",
   "column_break_addresses",
   "consignee_company_name",
   "consignee_address",
+  "destination_contact_name",
+  "destination_contact_phone",
+  "destination_contact_email",
   "freight_section",
   "total_weight",
   "weight_uom",
@@ -149,6 +155,21 @@
    "label": "Shipper Address"
   },
   {
+   "fieldname": "contact_name",
+   "fieldtype": "Data",
+   "label": "Origin Contact Name"
+  },
+  {
+   "fieldname": "contact_phone",
+   "fieldtype": "Data",
+   "label": "Origin Contact Phone"
+  },
+  {
+   "fieldname": "origin_contact_email",
+   "fieldtype": "Data",
+   "label": "Origin Contact Email"
+  },
+  {
    "fieldname": "column_break_addresses",
    "fieldtype": "Column Break"
   },
@@ -161,6 +182,21 @@
    "fieldname": "consignee_address",
    "fieldtype": "Small Text",
    "label": "Consignee Address"
+  },
+  {
+   "fieldname": "destination_contact_name",
+   "fieldtype": "Data",
+   "label": "Destination Contact Name"
+  },
+  {
+   "fieldname": "destination_contact_phone",
+   "fieldtype": "Data",
+   "label": "Destination Contact Phone"
+  },
+  {
+   "fieldname": "destination_contact_email",
+   "fieldtype": "Data",
+   "label": "Destination Contact Email"
   },
   {
    "fieldname": "freight_section",
