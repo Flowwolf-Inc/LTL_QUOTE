@@ -16,6 +16,19 @@ LOG_CARRIER_LABELS = {
 }
 
 
+ALLOWED_LOG_STATUSES = frozenset(
+	{
+		"Queued",
+		"Quotes Received",
+		"No Quotes Received",
+		"Booked",
+		"Already Booked",
+		"API Error",
+		"Connection Failed",
+	}
+)
+
+
 def log_api_transaction(headers, body, response_payload, status, carrier_id):
 	"""
 	Save the gateway API interaction into LTL Carrier Transaction Log.
@@ -27,6 +40,7 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 		body = body or {}
 		carrier_label = LOG_CARRIER_LABELS.get(carrier_id, carrier_id or "Dayton Freight")
 		api_url = body.get("api_url") or body.get("api_endpoint") or API_GATEWAY_ENDPOINT
+		log_status = status if status in ALLOWED_LOG_STATUSES else "API Error"
 
 		log_doc = frappe.get_doc(
 			{
@@ -35,7 +49,7 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 				"direction": "Sent",
 				"action_method": "POST",
 				"api_endpoint": api_url,
-				"status": status,
+				"status": log_status,
 				"origin_zip": body.get("origin_zip"),
 				"destination_zip": body.get("destination_zip"),
 				"timestamp": now_datetime(),
@@ -47,6 +61,8 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 		log_doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as log_ex:
+		# Keep booking/rate API responses clean if logging fails.
+		frappe.clear_messages()
 		frappe.logger().error(f"Failed to write LTL Carrier Transaction Log: {log_ex}")
 
 

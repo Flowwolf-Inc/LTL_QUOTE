@@ -1,3 +1,5 @@
+window.ltl_quote = window.ltl_quote || {};
+
 frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -13,16 +15,45 @@ frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
 
 frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 	document.body.classList.add("ltl-fullscreen");
-	if (wrapper.ltl_dashboard) {
-		wrapper.ltl_dashboard.load_recent_requests();
+	const dash = wrapper.ltl_dashboard;
+	if (!dash) return;
+
+	const opts = frappe.route_options || {};
+	const view = opts.ltl_view;
+	const name = opts.ltl_name;
+	if (view || name) {
+		frappe.route_options = {};
+		if (name && (view === "shipment" || view === "shipments")) {
+			dash.open_shipment_detail(name);
+			return;
+		}
+		if (name && (view === "quote" || view === "quotes")) {
+			dash.open_quote_detail(name);
+			return;
+		}
+		if (view === "quote" || view === "quotes" || view === "shipments" || view === "carriers" || view === "accessorials") {
+			dash.body.find(".ltl-nav-item").removeClass("active");
+			dash.body.find(`.ltl-nav-item[data-view="${view}"]`).addClass("active");
+			dash.show_view(view);
+			return;
+		}
 	}
+
+	dash.load_recent_requests();
+};
+
+/** Navigate to the themed LTL Quote page (never the legacy Desk Form/List). */
+ltl_quote.open_dashboard = function (opts = {}) {
+	frappe.route_options = Object.assign({}, frappe.route_options || {}, {
+		ltl_view: opts.view || null,
+		ltl_name: opts.name || null,
+	});
+	frappe.set_route("ltl-quote");
 };
 
 frappe.pages["ltl-quote"].on_page_hide = function () {
 	document.body.classList.remove("ltl-fullscreen");
 };
-
-window.ltl_quote = window.ltl_quote || {};
 
 const FREIGHT_CLASSES = [
 	"50", "55", "60", "65", "70", "77.5", "85", "92.5", "100", "110",
@@ -44,6 +75,49 @@ const LOAD_ACCESSORIALS = [
 	{ label: "Limited Access", code: "LIMITED_ACCESS" },
 	{ label: "Delivery Appointment", code: "APPOINTMENT" },
 ];
+
+function new_line_item(overrides = {}) {
+	return Object.assign(
+		{
+			id: `li_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+			item_number: "",
+			item_name: "",
+			item_id: "",
+			rate: "",
+			description: "",
+			units: "",
+			quantity: "",
+			packaging_units: "",
+			packaging_unit_count: "",
+			dimension_units: "",
+			length: "",
+			width: "",
+			height: "",
+			volume_units: "",
+			volume: "",
+			area_units: "",
+			area: "",
+			weight_units: "",
+			weight: "",
+			hazmat_class_division: "",
+			hazmat_phone: "",
+			hazmat_contact_company: "",
+			hazmat_contact: "",
+			hazmat_number: "",
+			hazmat_packaging_group: "",
+			hazmat: "",
+			hazmat_number_type: "",
+			linear_feet: "",
+			nmfc_class: "",
+			nmfc_number: "",
+			pickup_stop_location: "",
+			pickup: "",
+			drop_stop_location: "",
+			drop: "",
+		},
+		overrides
+	);
+}
 
 const NAV_SECTIONS = [
 	{
@@ -156,6 +230,9 @@ ltl_quote.Dashboard = class Dashboard {
 		this.booking_context = null;
 		this.quote_request_status = null;
 		this.expanded = false;
+		this.line_items = [];
+		this.editing_line_item = null;
+		this.editing_line_item_is_new = false;
 		this.acc_options = {
 			pickup: PICKUP_ACCESSORIALS,
 			delivery: DELIVERY_ACCESSORIALS,
@@ -180,6 +257,7 @@ ltl_quote.Dashboard = class Dashboard {
 	build() {
 		this.render();
 		this.bind_events();
+		this.refresh_line_items_table();
 		this.load_recent_requests();
 	}
 
@@ -235,6 +313,9 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 						<div class="ltl-view ltl-view-detail" style="display:none;">
 							<div class="ltl-detail-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
+						<div class="ltl-view ltl-view-line-item" style="display:none;">
+							<div class="ltl-line-item-edit-body"></div>
 						</div>
 					</div>
 				</div>
@@ -405,7 +486,327 @@ ltl_quote.Dashboard = class Dashboard {
 				</div>
 				<div class="ltl-subhead" style="margin-top:18px;">Load Based Accessorials</div>
 				<div class="ltl-acc-grid">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
+				${this.render_line_items_bar()}
 			</div>`;
+	}
+
+	render_line_items_bar() {
+		return `
+			<div class="ltl-line-items">
+				<div class="ltl-line-items-head">
+					<div class="ltl-line-items-head-left">
+						<span class="ltl-line-items-icon"><i class="fa fa-list-ul"></i></span>
+						<div>
+							<div class="ltl-line-items-title">Line Items</div>
+							<div class="ltl-line-items-sub">Manage line items for this shipment</div>
+						</div>
+					</div>
+					<button type="button" class="ltl-btn ltl-btn-line-add" data-action="add-line-item">
+						<i class="fa fa-plus"></i> Add Line Item
+					</button>
+				</div>
+				<div class="ltl-line-items-card">
+					<div class="ltl-line-items-card-head">
+						<span class="ltl-line-items-card-icon"><i class="fa fa-file-text-o"></i></span>
+						<div>
+							<div class="ltl-line-items-card-title">Line Items</div>
+							<div class="ltl-line-items-count">0 items</div>
+						</div>
+					</div>
+					<div class="ltl-line-items-table-wrap">
+						<table class="ltl-table ltl-line-items-table">
+							<thead>
+								<tr>
+									<th class="ltl-li-check"><input type="checkbox" class="ltl-li-select-all" /></th>
+									<th class="ltl-li-no">No.</th>
+									<th>Item Description <span class="req">*</span></th>
+									<th>Item Number</th>
+									<th>NMFC Class <span class="req">*</span></th>
+									<th>NMFC Number</th>
+									<th class="ltl-li-actions"></th>
+								</tr>
+							</thead>
+							<tbody class="ltl-line-items-body"></tbody>
+						</table>
+					</div>
+					<div class="ltl-line-items-footer">
+						<span class="ltl-line-items-showing">Showing 0 of 0 items</span>
+					</div>
+				</div>
+			</div>`;
+	}
+
+	refresh_line_items_table() {
+		const body = this.body.find(".ltl-line-items-body");
+		if (!body.length) return;
+		const items = this.line_items || [];
+		if (!items.length) {
+			body.html(`<tr><td colspan="7" class="ltl-empty-cell">No line items yet. Click + Add Line Item to begin.</td></tr>`);
+		} else {
+			body.html(items.map((item, idx) => this.render_line_item_row(idx + 1, item)).join(""));
+		}
+		const count = items.length;
+		const label = count === 1 ? "1 item" : `${count} items`;
+		this.body.find(".ltl-line-items-count").text(label);
+		this.body.find(".ltl-line-items-showing").text(`Showing ${count} of ${count} item${count === 1 ? "" : "s"}`);
+		this.body.find(".ltl-li-select-all").prop("checked", false);
+	}
+
+	render_line_item_row(no, data = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const trunc = (v, n = 42) => {
+			const s = String(v || "");
+			return s.length > n ? `${s.slice(0, n)}…` : s;
+		};
+		const desc = data.description || data.item_name || "—";
+		return `
+			<tr class="ltl-line-item-row" data-line-id="${esc(data.id || "")}">
+				<td class="ltl-li-check"><input type="checkbox" class="ltl-li-row-check" /></td>
+				<td class="ltl-li-no">${no}</td>
+				<td title="${esc(desc)}">${esc(trunc(desc))}</td>
+				<td>${esc(data.item_number || "—")}</td>
+				<td>${esc(data.nmfc_class || "—")}</td>
+				<td>${esc(data.nmfc_number || "—")}</td>
+				<td class="ltl-li-actions">
+					<button type="button" class="ltl-li-icon-btn" data-action="edit-line-item" title="${__("Edit")}">
+						<i class="fa fa-pencil"></i>
+					</button>
+					<button type="button" class="ltl-li-icon-btn ltl-li-remove" data-action="remove-line-item" title="${__("Remove")}">
+						<i class="fa fa-trash-o"></i>
+					</button>
+				</td>
+			</tr>`;
+	}
+
+	li_input(label, key, opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = esc((this.editing_line_item && this.editing_line_item[key]) || "");
+		const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : "";
+		if (opts.type === "textarea") {
+			return `
+				<div class="ltl-field ${opts.className || ""}">
+					<label>${label}</label>
+					<textarea class="ltl-input" data-li-edit="${key}" rows="${opts.rows || 4}"${ph}>${val}</textarea>
+				</div>`;
+		}
+		if (opts.type === "select") {
+			const options = (opts.options || [])
+				.map((c) => `<option value="${esc(c)}" ${val === String(c) ? "selected" : ""}>${esc(c)}</option>`)
+				.join("");
+			return `
+				<div class="ltl-field ${opts.className || ""}">
+					<label>${label}</label>
+					<select class="ltl-input" data-li-edit="${key}">
+						<option value="">Select</option>${options}
+					</select>
+				</div>`;
+		}
+		return `
+			<div class="ltl-field ${opts.className || ""}">
+				<label>${label}</label>
+				<input type="${opts.type || "text"}" class="ltl-input" data-li-edit="${key}" value="${val}"${ph} />
+			</div>`;
+	}
+
+	render_line_item_editor(item) {
+		this.editing_line_item = item;
+		const nmfc_opts = { type: "select", options: FREIGHT_CLASSES };
+		return `
+			<div class="ltl-line-item-edit">
+				<div class="ltl-line-item-edit-hero">
+					<div class="ltl-line-item-edit-hero-left">
+						<span class="ltl-line-item-edit-hero-icon"><i class="fa fa-cube"></i></span>
+						<div>
+							<div class="ltl-line-item-edit-hero-title">Line Item Details</div>
+							<div class="ltl-line-item-edit-hero-sub">Edit commodity, dimensions, classification, and locations</div>
+						</div>
+					</div>
+				</div>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-cube"></i> Item Details</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("Item Number", "item_number")}
+							${this.li_input("Item Name", "item_name")}
+							${this.li_input("Item ID", "item_id")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Rate", "rate", { type: "number", placeholder: "0.00" })}
+							${this.li_input("Description", "description", { type: "textarea", rows: 5 })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Units", "units")}
+							${this.li_input("Quantity", "quantity", { type: "number" })}
+							${this.li_input("Packaging Units", "packaging_units")}
+							${this.li_input("Packaging Unit Count", "packaging_unit_count", { type: "number" })}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-arrows-h"></i> Dimensions &amp; Weight</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("Dimension Units", "dimension_units", { placeholder: "IN" })}
+							${this.li_input("Length", "length", { type: "number" })}
+							${this.li_input("Width", "width", { type: "number" })}
+							${this.li_input("Height", "height", { type: "number" })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Volume Units", "volume_units")}
+							${this.li_input("Volume", "volume", { type: "number" })}
+							${this.li_input("Area Units", "area_units")}
+							${this.li_input("Area", "area", { type: "number" })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Weight Units", "weight_units", { placeholder: "LBS" })}
+							${this.li_input("Weight", "weight", { type: "number" })}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-tag"></i> Commodity &amp; Classification</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("HazMat Class/Division", "hazmat_class_division")}
+							${this.li_input("HAZ Mat Phone Number", "hazmat_phone")}
+							${this.li_input("HAZ Mat Contact Company", "hazmat_contact_company")}
+							${this.li_input("HazMat Contact", "hazmat_contact")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("HazMat Number", "hazmat_number")}
+							${this.li_input("HazMat Packaging Group", "hazmat_packaging_group")}
+							${this.li_input("HazMat", "hazmat")}
+							${this.li_input("HazMat Number Type", "hazmat_number_type")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Linear Feet", "linear_feet", { type: "number" })}
+							${this.li_input("NMFC Class", "nmfc_class", nmfc_opts)}
+							${this.li_input("NMFC Number", "nmfc_number")}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-map-marker"></i> Locations</div>
+					<div class="ltl-li-edit-locations">
+						<div class="ltl-li-edit-loc-block">
+							<div class="ltl-li-edit-loc-title">Pickup</div>
+							<div class="ltl-li-edit-grid ltl-li-edit-grid-2">
+								${this.li_input("Pickup Stop Location", "pickup_stop_location")}
+								${this.li_input("Pickup", "pickup")}
+							</div>
+						</div>
+						<div class="ltl-li-edit-loc-block">
+							<div class="ltl-li-edit-loc-title">Drop</div>
+							<div class="ltl-li-edit-grid ltl-li-edit-grid-2">
+								${this.li_input("Drop Stop Location", "drop_stop_location")}
+								${this.li_input("Drop", "drop")}
+							</div>
+						</div>
+					</div>
+				</section>
+
+				<div class="ltl-li-edit-footer">
+					<button type="button" class="ltl-btn ltl-btn-line-cancel" data-action="cancel-line-item">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="save-line-item">
+						Save Item Details
+					</button>
+				</div>
+			</div>`;
+	}
+
+	open_line_item_editor(item, is_new) {
+		this.editing_line_item = Object.assign({}, item);
+		this.editing_line_item_is_new = !!is_new;
+		this.body.find(".ltl-line-item-edit-body").html(this.render_line_item_editor(this.editing_line_item));
+		this.show_view("line-item");
+	}
+
+	close_line_item_editor() {
+		this.editing_line_item = null;
+		this.editing_line_item_is_new = false;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+		this.show_view("quote");
+		if (!this.expanded) this.toggle_shipment();
+		else {
+			this.body.find(".ltl-ship-card").addClass("expanded");
+			this.body.find(".ltl-ship-collapsed").hide();
+			this.body.find(".ltl-ship-expanded").show();
+		}
+		this.refresh_line_items_table();
+		const el = this.body.find(".ltl-line-items")[0];
+		if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+	}
+
+	collect_line_item_form() {
+		const data = Object.assign({}, this.editing_line_item || new_line_item());
+		this.body.find("[data-li-edit]").each(function () {
+			const key = $(this).attr("data-li-edit");
+			data[key] = ($(this).val() || "").toString().trim();
+		});
+		return data;
+	}
+
+	save_line_item_editor() {
+		const data = this.collect_line_item_form();
+		if (!data.description && !data.item_name) {
+			frappe.show_alert({ message: __("Please enter Item Description or Item Name"), indicator: "orange" }, 5);
+			return;
+		}
+		if (!data.nmfc_class) {
+			frappe.show_alert({ message: __("Please select NMFC Class"), indicator: "orange" }, 5);
+			return;
+		}
+		if (!data.description && data.item_name) data.description = data.item_name;
+
+		if (this.editing_line_item_is_new) {
+			this.line_items.push(data);
+		} else {
+			const idx = this.line_items.findIndex((r) => r.id === data.id);
+			if (idx >= 0) this.line_items[idx] = data;
+			else this.line_items.push(data);
+		}
+		frappe.show_alert({ message: __("Item details saved"), indicator: "green" }, 3);
+		this.close_line_item_editor();
+	}
+
+	collect_line_items() {
+		return (this.line_items || [])
+			.filter((row) => row.description || row.item_name || row.item_number || row.nmfc_class)
+			.map((row) => ({
+				...row,
+				classification: row.nmfc_class,
+				freight_class: row.nmfc_class,
+				nmfc: row.nmfc_number,
+				qty: parseInt(row.quantity || 1, 10) || 1,
+				quantity: parseInt(row.quantity || 1, 10) || 1,
+				weight: row.weight || "",
+			}));
+	}
+
+	require_line_items() {
+		const items = this.collect_line_items();
+		const valid = items.filter((row) => (row.description || row.item_name) && (row.nmfc_class || row.freight_class));
+		if (!valid.length) {
+			frappe.show_alert(
+				{
+					message: __(
+						"Add at least one Line Item (Description + NMFC Class) under Shipment Details, then click Save Item Details."
+					),
+					indicator: "orange",
+				},
+				8
+			);
+			if (!this.expanded) this.toggle_shipment();
+			const el = this.body.find(".ltl-line-items")[0];
+			if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+			return null;
+		}
+		return valid;
 	}
 
 	render_shipment_form() {
@@ -523,6 +924,35 @@ ltl_quote.Dashboard = class Dashboard {
 			card.find(".ltl-tab-pane").hide();
 			card.find(`[data-tab-pane='${target}']`).show();
 		});
+
+		this.body.on("click", "[data-action='add-line-item']", () => {
+			this.open_line_item_editor(new_line_item(), true);
+		});
+
+		this.body.on("click", "[data-action='edit-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).closest(".ltl-line-item-row").attr("data-line-id");
+			const item = (this.line_items || []).find((r) => r.id === id);
+			if (!item) return;
+			this.open_line_item_editor(item, false);
+		});
+
+		this.body.on("click", "[data-action='remove-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).closest(".ltl-line-item-row").attr("data-line-id");
+			this.line_items = (this.line_items || []).filter((r) => r.id !== id);
+			this.refresh_line_items_table();
+		});
+
+		this.body.on("click", "[data-action='cancel-line-item']", () => this.close_line_item_editor());
+		this.body.on("click", "[data-action='save-line-item']", () => this.save_line_item_editor());
+
+		this.body.on("change", ".ltl-li-select-all", (e) => {
+			const checked = $(e.currentTarget).is(":checked");
+			this.body.find(".ltl-li-row-check").prop("checked", checked);
+		});
 	}
 
 	toggle_shipment() {
@@ -598,10 +1028,47 @@ ltl_quote.Dashboard = class Dashboard {
 				pickup_date: val("exp_origin_date"),
 			});
 		}
+
+		const line_items = this.collect_line_items();
+		if (line_items.length) {
+			payload.items = line_items;
+			payload.commodity_description = line_items[0].description || line_items[0].item_name || "";
+			payload.nmfc = line_items[0].nmfc || line_items[0].nmfc_number || "";
+			if (!payload.freight_class && line_items[0].freight_class) {
+				payload.freight_class = line_items[0].freight_class;
+			}
+
+			const rolled_weight = line_items.reduce((sum, row) => {
+				const w = parseFloat(row.weight);
+				const qty = Math.max(parseInt(row.quantity || row.qty || 1, 10) || 1, 1);
+				return sum + (Number.isFinite(w) ? w * qty : 0);
+			}, 0);
+			if (rolled_weight > 0) {
+				payload.weight = String(rolled_weight);
+			}
+
+			const rolled_pieces = line_items.reduce((sum, row) => {
+				return sum + Math.max(parseInt(row.quantity || row.qty || 1, 10) || 1, 1);
+			}, 0);
+			if (rolled_pieces > 0) {
+				payload.pieces = rolled_pieces;
+			}
+
+			const first_with_dims = line_items.find((row) => row.length && row.width && row.height);
+			if (first_with_dims) {
+				payload.length = first_with_dims.length;
+				payload.width = first_with_dims.width;
+				payload.height = first_with_dims.height;
+				payload.dimension_uom = first_with_dims.dimension_unit || first_with_dims.dimension_units || "IN";
+			}
+		}
+
 		return payload;
 	}
 
 	fetch_rates() {
+		if (!this.require_line_items()) return;
+
 		const payload = this.collect_payload();
 		const missing = [];
 		if (!payload.origin_zip) missing.push("Origin ZIP");
@@ -810,6 +1277,8 @@ ltl_quote.Dashboard = class Dashboard {
 		const quote = this.quotes[idx];
 		if (!quote || !this.quote_request_id) return;
 
+		if (!this.require_line_items()) return;
+
 		const code = this.normalize_carrier_code(quote.carrier_code || quote.carrier);
 		const booked = this.booking_context?.booked_carrier_code;
 		if (this.booking_context?.shipment) {
@@ -832,6 +1301,7 @@ ltl_quote.Dashboard = class Dashboard {
 			fields: [{ fieldtype: "HTML", fieldname: "summary" }],
 			primary_action_label: __("Confirm Booking"),
 			primary_action: () => {
+				if (!this.require_line_items()) return;
 				dialog.hide();
 				this.execute_booking(quote);
 			},
@@ -928,6 +1398,10 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	execute_booking(quote) {
+		const line_items = this.require_line_items();
+		if (!line_items) return;
+
+		const first = line_items[0] || {};
 		frappe.call({
 			method: "ltl_quote.api.quote.accept_carrier_quote",
 			args: {
@@ -935,6 +1409,9 @@ ltl_quote.Dashboard = class Dashboard {
 				carrier_code: quote.carrier_code,
 				total_charge: quote.total_cost,
 				carrier_quote_id: quote.carrier_quote_id || "",
+				items: JSON.stringify(line_items),
+				commodity_description: first.description || first.item_name || "",
+				nmfc: first.nmfc || first.nmfc_number || "",
 			},
 			freeze: true,
 			freeze_message: __("Booking shipment…"),
@@ -1012,24 +1489,34 @@ ltl_quote.Dashboard = class Dashboard {
 			}[s] || "grey");
 
 		const body = rows
-			.map(
-				(row) => `
+			.map((row) => {
+				const carrier =
+					row.carrier_name || row.final_carrier
+						? frappe.utils.escape_html(row.carrier_name || row.final_carrier)
+						: "—";
+				const rate =
+					row.final_charge != null && row.final_charge !== ""
+						? format_currency(row.final_charge, "USD")
+						: "—";
+				return `
 			<tr>
 				<td class="ltl-mono">${frappe.utils.escape_html(row.name)}</td>
 				<td>${loc(row.origin_city, row.origin_state, row.origin_zip)}</td>
 				<td>${loc(row.destination_city, row.destination_state, row.destination_zip)}</td>
 				<td>${row.total_weight ? Number(row.total_weight).toLocaleString() : "—"}</td>
+				<td>${carrier}</td>
+				<td>${rate}</td>
 				<td>${frappe.datetime.str_to_user(row.creation)}</td>
 				<td><span class="ltl-status ltl-status-${status_class(row.status)}">${frappe.utils.escape_html(row.status || "—")}</span></td>
 				<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="View"><i class="fa fa-eye"></i></span></td>
-			</tr>`
-			)
+			</tr>`;
+			})
 			.join("");
 
 		container.html(`
 			<table class="ltl-table">
 				<thead>
-					<tr><th>Request ID</th><th>Origin</th><th>Destination</th><th>Weight (lbs)</th><th>Created On</th><th>Status</th><th>Action</th></tr>
+					<tr><th>Request ID</th><th>Origin</th><th>Destination</th><th>Weight (lbs)</th><th>Carrier</th><th>Rate</th><th>Created On</th><th>Status</th><th>Action</th></tr>
 				</thead>
 				<tbody>${body}</tbody>
 			</table>`);
@@ -1038,9 +1525,11 @@ ltl_quote.Dashboard = class Dashboard {
 	show_view(key) {
 		const is_quote = key === "quote";
 		const is_detail = key === "detail";
+		const is_line_item = key === "line-item";
 		this.body.find(".ltl-view-quote").toggle(is_quote);
-		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail);
+		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail && !is_line_item);
 		this.body.find(".ltl-view-detail").toggle(is_detail);
+		this.body.find(".ltl-view-line-item").toggle(is_line_item);
 		this.body.find(".ltl-scroll")[0].scrollTo(0, 0);
 
 		if (is_quote) {
@@ -1048,6 +1537,11 @@ ltl_quote.Dashboard = class Dashboard {
 			this.detail_doc = null;
 			this.detail_type = null;
 			this.body.find(".ltl-breadcrumb .current").text("New Carrier Quote");
+			return;
+		}
+
+		if (is_line_item) {
+			this.body.find(".ltl-breadcrumb .current").text("Line Item Details");
 			return;
 		}
 
@@ -1765,10 +2259,12 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	clear_form() {
-		this.body.find(".ltl-input").each(function () {
+		this.body.find(".ltl-view-quote .ltl-input").each(function () {
 			this.value = "";
 		});
 		this.body.find("input[data-acc]").prop("checked", false);
+		this.line_items = [];
+		this.refresh_line_items_table();
 		this.quotes = [];
 		this.quote_request_id = null;
 		this.booking_context = null;

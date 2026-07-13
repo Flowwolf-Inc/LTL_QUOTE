@@ -54,7 +54,7 @@ def get_recent_quote_requests(limit: int = 10, origin_zip: str = None, destinati
 	if destination_zip and str(destination_zip).strip():
 		filters["destination_zip"] = str(destination_zip).strip()
 
-	return frappe.get_list(
+	rows = frappe.get_list(
 		"LTL Quote Request",
 		filters=filters,
 		fields=[
@@ -68,11 +68,29 @@ def get_recent_quote_requests(limit: int = 10, origin_zip: str = None, destinati
 			"total_weight",
 			"creation",
 			"status",
+			"final_carrier",
+			"final_charge",
 		],
 		order_by="creation desc",
 		limit_page_length=int(limit or 10),
 		ignore_permissions=False,
 	)
+
+	carrier_codes = {r.final_carrier for r in rows if r.get("final_carrier")}
+	name_by_code = {}
+	if carrier_codes:
+		for carrier in frappe.get_all(
+			"LTL Carrier",
+			filters={"name": ("in", list(carrier_codes))},
+			fields=["name", "carrier_name"],
+		):
+			name_by_code[carrier.name] = carrier.carrier_name
+
+	for row in rows:
+		code = row.get("final_carrier")
+		row["carrier_name"] = name_by_code.get(code) if code else None
+
+	return rows
 
 
 @frappe.whitelist()

@@ -41,6 +41,8 @@
   "dimension_uom",
   "pieces",
   "stackable",
+  "line_items_section",
+  "line_items",
   "accessorials_section",
   "accessorials",
   "carrier_quotes_section",
@@ -260,6 +262,18 @@
    "fieldname": "stackable",
    "fieldtype": "Check",
    "label": "Stackable"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "line_items_section",
+   "fieldtype": "Section Break",
+   "label": "Line Items"
+  },
+  {
+   "fieldname": "line_items",
+   "fieldtype": "Table",
+   "label": "Line Items",
+   "options": "LTL Quote Request Line Item"
   },
   {
    "fieldname": "accessorials_section",

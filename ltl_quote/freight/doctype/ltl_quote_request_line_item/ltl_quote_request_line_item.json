@@ -1,0 +1,237 @@
+{
+ "actions": [],
+ "creation": "2026-07-13 18:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_number",
+  "item_name",
+  "item_id",
+  "description",
+  "quantity",
+  "units",
+  "packaging_units",
+  "packaging_unit_count",
+  "rate",
+  "freight_class",
+  "nmfc",
+  "hazmat",
+  "weight",
+  "weight_unit",
+  "length",
+  "width",
+  "height",
+  "dimension_unit",
+  "volume",
+  "volume_units",
+  "area",
+  "area_units",
+  "linear_feet",
+  "hazmat_class_division",
+  "hazmat_phone",
+  "hazmat_contact_company",
+  "hazmat_contact",
+  "hazmat_number",
+  "hazmat_packaging_group",
+  "hazmat_number_type",
+  "pickup_stop_location",
+  "pickup",
+  "drop_stop_location",
+  "drop"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Number"
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Name"
+  },
+  {
+   "fieldname": "item_id",
+   "fieldtype": "Data",
+   "label": "Item ID"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description"
+  },
+  {
+   "default": "1",
+   "fieldname": "quantity",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "units",
+   "fieldtype": "Data",
+   "label": "Units"
+  },
+  {
+   "fieldname": "packaging_units",
+   "fieldtype": "Data",
+   "label": "Packaging Units"
+  },
+  {
+   "fieldname": "packaging_unit_count",
+   "fieldtype": "Int",
+   "label": "Packaging Unit Count"
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Float",
+   "label": "Rate"
+  },
+  {
+   "fieldname": "freight_class",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "NMFC Class"
+  },
+  {
+   "fieldname": "nmfc",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "NMFC Number"
+  },
+  {
+   "default": "0",
+   "fieldname": "hazmat",
+   "fieldtype": "Check",
+   "label": "Hazmat"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Weight"
+  },
+  {
+   "default": "LBS",
+   "fieldname": "weight_unit",
+   "fieldtype": "Data",
+   "label": "Weight Unit"
+  },
+  {
+   "fieldname": "length",
+   "fieldtype": "Float",
+   "label": "Length"
+  },
+  {
+   "fieldname": "width",
+   "fieldtype": "Float",
+   "label": "Width"
+  },
+  {
+   "fieldname": "height",
+   "fieldtype": "Float",
+   "label": "Height"
+  },
+  {
+   "default": "IN",
+   "fieldname": "dimension_unit",
+   "fieldtype": "Data",
+   "label": "Dimension Unit"
+  },
+  {
+   "fieldname": "volume",
+   "fieldtype": "Float",
+   "label": "Volume"
+  },
+  {
+   "fieldname": "volume_units",
+   "fieldtype": "Data",
+   "label": "Volume Units"
+  },
+  {
+   "fieldname": "area",
+   "fieldtype": "Float",
+   "label": "Area"
+  },
+  {
+   "fieldname": "area_units",
+   "fieldtype": "Data",
+   "label": "Area Units"
+  },
+  {
+   "fieldname": "linear_feet",
+   "fieldtype": "Float",
+   "label": "Linear Feet"
+  },
+  {
+   "fieldname": "hazmat_class_division",
+   "fieldtype": "Data",
+   "label": "HazMat Class/Division"
+  },
+  {
+   "fieldname": "hazmat_phone",
+   "fieldtype": "Data",
+   "label": "HAZ Mat Phone Number"
+  },
+  {
+   "fieldname": "hazmat_contact_company",
+   "fieldtype": "Data",
+   "label": "HAZ Mat Contact Company"
+  },
+  {
+   "fieldname": "hazmat_contact",
+   "fieldtype": "Data",
+   "label": "HazMat Contact"
+  },
+  {
+   "fieldname": "hazmat_number",
+   "fieldtype": "Data",
+   "label": "HazMat Number"
+  },
+  {
+   "fieldname": "hazmat_packaging_group",
+   "fieldtype": "Data",
+   "label": "HazMat Packaging Group"
+  },
+  {
+   "fieldname": "hazmat_number_type",
+   "fieldtype": "Data",
+   "label": "HazMat Number Type"
+  },
+  {
+   "fieldname": "pickup_stop_location",
+   "fieldtype": "Data",
+   "label": "Pickup Stop Location"
+  },
+  {
+   "fieldname": "pickup",
+   "fieldtype": "Data",
+   "label": "Pickup"
+  },
+  {
+   "fieldname": "drop_stop_location",
+   "fieldtype": "Data",
+   "label": "Drop Stop Location"
+  },
+  {
+   "fieldname": "drop",
+   "fieldtype": "Data",
+   "label": "Drop"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-13 18:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Quote Request Line Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

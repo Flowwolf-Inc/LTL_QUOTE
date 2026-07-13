@@ -1,7 +1,8 @@
 """
-FlowWolf Unified Multi-Carrier LTL Rating Gateway API
+FlowWolf Unified Multi-Carrier LTL Rating + BOL Gateway API
 
 POST /api/method/ltl_quote.api.flowwolf.get_rates
+POST /api/method/ltl_quote.api.flowwolf.create_bol
 """
 
 from __future__ import annotations
@@ -9,19 +10,27 @@ from __future__ import annotations
 import json
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import add_days, flt, getdate, now_datetime
 
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
 from ltl_quote.api.payload import parse_rating_payload
-from ltl_quote.api.quote import _build_shipment_request_from_payload, _create_quote_request
+from ltl_quote.api.quote import (
+	_build_shipment_request_from_payload,
+	_create_quote_request,
+	_upsert_quote_request_line_items,
+)
 from ltl_quote.booking.executor import ShipmentExecutor
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.decision_engine.recommender import rank_quotes
+from ltl_quote.utils.booking import resolve_shipment_bol_url
+from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
 
-FLOWWOLF_API_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_rates"
+FLOWWOLF_RATES_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_rates"
+FLOWWOLF_BOL_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.create_bol"
 FLOWWOLF_ENGINE = "FlowWolf Aggregator Engine v1"
+FLOWWOLF_API_ENDPOINT = FLOWWOLF_RATES_ENDPOINT
 
 
 @frappe.whitelist(allow_guest=False)
@@ -47,6 +56,7 @@ def get_rates(payload=None, **kwargs):
 
 		quote_request = _create_quote_request({**request, "save_request": request.get("save_request", True)})
 		aggregated_quotes, errors = _broadcast_carrier_rates(carrier_docs, shipment_request)
+		_persist_carrier_quotes(quote_request, aggregated_quotes, errors)
 		ranked_quotes = rank_quotes(aggregated_quotes)
 
 		recommendations = _build_flowwolf_recommendations(ranked_quotes)
@@ -100,19 +110,177 @@ def book_carrier_quote(
 	quote_row_idx: int | None = None,
 	transit_days: int | None = None,
 	is_test: bool = False,
+	carrier_quote_id: str | None = None,
 ):
 	"""Server-side gateway to book an engineered quote from the Frappe desk UI."""
+	result = _book_quote_core(
+		quote_request_id=quote_request_id,
+		carrier_code=carrier_code,
+		quote_row_idx=quote_row_idx,
+		carrier_quote_id=carrier_quote_id,
+		transit_days=transit_days,
+		is_test=is_test,
+	)
+	return {
+		"status": "success",
+		"message": (
+			f"Successfully booked with {result['carrier_name']}! "
+			f"BOL Generated: {result.get('bol_number')}"
+		),
+		"data": result,
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def create_bol(payload=None, **kwargs):
+	"""
+	FlowWolf unified multi-carrier BOL gateway.
+
+	POST /api/method/ltl_quote.api.flowwolf.create_bol
+
+	Request body (JSON):
+	    {
+	        "quote_request_id": "LTL-QR-2026-00141",
+	        "is_test": false,
+	        "items": [
+	            {
+	                "description": "Quiet Qurl Perimeter Isolation 2\\"",
+	                "freight_class": "300",
+	                "nmfc": "103300-2",
+	                "quantity": 1,
+	                "weight": 1200
+	            }
+	        ]
+	    }
+
+	Optional overrides:
+	    - carrier_preference / carrier_code — book that carrier only
+	    - carrier_quote_id — book the matching rate line
+	    - quote_row_idx — book by child-table index
+	    - items — upsert quote-request line items before booking (BOL commodities)
+
+	When none of the carrier selectors are provided (or carrier_quote_id is a
+	placeholder), defaults to the cheapest quote on the request (or
+	selected_carrier_quote if set).
+
+	If the quote is already booked, returns status ``already_booked`` with the
+	existing shipment / BOL fields (does not create a second BOL).
+	"""
+	headers, body = _read_request_context()
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = None
+	request = {}
+
+	try:
+		raw = payload if isinstance(payload, dict) else {}
+		if not raw:
+			raw = body or {}
+		request = {**raw, **{k: v for k, v in kwargs.items() if v is not None}}
+		for key in ("quote_request_id", "carrier_preference", "carrier_code", "carrier_quote_id", "items"):
+			if body.get(key) is not None and not request.get(key):
+				request[key] = body[key]
+
+		quote_request_id = request.get("quote_request_id")
+		if not quote_request_id:
+			frappe.throw("quote_request_id is required to create a BOL.")
+
+		carrier_preference = (
+			request.get("carrier_preference") or request.get("carrier_code") or ""
+		)
+		carrier_id = resolve_carrier_id(carrier_preference) if carrier_preference else None
+
+		quote_row_idx = request.get("quote_row_idx")
+		if quote_row_idx is not None and quote_row_idx != "":
+			quote_row_idx = int(quote_row_idx)
+		else:
+			quote_row_idx = None
+
+		is_test = request.get("is_test")
+		if isinstance(is_test, str):
+			is_test = is_test.strip().lower() in ("1", "true", "yes", "y")
+		else:
+			is_test = bool(is_test)
+
+		booking = _book_quote_core(
+			quote_request_id=str(quote_request_id),
+			carrier_code=carrier_preference or None,
+			quote_row_idx=quote_row_idx,
+			carrier_quote_id=request.get("carrier_quote_id"),
+			transit_days=request.get("transit_days"),
+			is_test=is_test,
+			items=request.get("items"),
+		)
+		carrier_id = booking.get("carrier_code") or carrier_id
+
+		booking_status = booking.get("status") or "success"
+		response_payload = {
+			"status": booking_status,
+			"engine": FLOWWOLF_ENGINE,
+			"quote_request_id": quote_request_id,
+			"message": booking.get("message") or "",
+			"data": {
+				"shipment": booking.get("shipment"),
+				"carrier_code": booking.get("carrier_code"),
+				"carrier_name": booking.get("carrier_name"),
+				"bol_number": booking.get("bol_number"),
+				"pro_number": booking.get("pro_number"),
+				"bol_document_url": booking.get("bol_document_url") or "",
+				"total_charge": booking.get("total_charge"),
+			},
+		}
+		status = "Already Booked" if booking_status == "already_booked" else "Booked"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf create_bol API Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(request or body or {}), "api_url": FLOWWOLF_BOL_ENDPOINT}
+		log_carrier_id = carrier_id or "Multi-Carrier"
+		log_api_transaction(headers, log_body, response_payload, status, log_carrier_id)
+
+	return response_payload
+
+
+def _book_quote_core(
+	quote_request_id: str,
+	carrier_code: str | None = None,
+	quote_row_idx: int | None = None,
+	carrier_quote_id: str | None = None,
+	transit_days: int | None = None,
+	is_test: bool = False,
+	items=None,
+) -> dict:
+	"""Shared booking path for desk book_carrier_quote and FlowWolf create_bol."""
 	if not frappe.db.exists("LTL Quote Request", quote_request_id):
 		frappe.throw(f"Quote Request record {quote_request_id} not found.")
 
 	quote_doc = frappe.get_doc("LTL Quote Request", quote_request_id)
-	if quote_doc.status == "Booked":
-		frappe.throw(f"Quote Request {quote_request_id} is already booked.")
+	existing_shipment = frappe.db.get_value("LTL Shipment", {"quote_request": quote_request_id}, "name")
+
+	if quote_doc.status == "Booked" or existing_shipment:
+		return _already_booked_result(quote_doc, existing_shipment)
+
+	# Optional Postman/UI line items → persist before Dayton eBOL build.
+	if items not in (None, "", []):
+		_upsert_quote_request_line_items(quote_doc, items)
+		quote_doc.save(ignore_permissions=True)
+		quote_doc.reload()
 
 	if not quote_doc.carrier_quotes:
 		frappe.throw("No carrier quotes are available on this request. Fetch rates before booking.")
 
-	row_idx = _resolve_quote_row_index(quote_doc, carrier_code, quote_row_idx)
+	row_idx = _resolve_quote_row_index(
+		quote_doc,
+		carrier_code=carrier_code,
+		quote_row_idx=quote_row_idx,
+		carrier_quote_id=carrier_quote_id,
+	)
 	selected = quote_doc.carrier_quotes[row_idx]
 	carrier_id = resolve_carrier_id(carrier_code) if carrier_code else selected.carrier
 	if not carrier_id:
@@ -120,7 +288,7 @@ def book_carrier_quote(
 
 	carrier_docs, carrier_label = load_carrier_for_rating(carrier_id)
 	carrier_doc = carrier_docs[0]
-	if carrier_doc.connector_type == "Mock" and carrier_code and carrier_code.upper() != "MOCK":
+	if carrier_doc.connector_type == "Mock" and carrier_code and str(carrier_code).upper() != "MOCK":
 		frappe.throw(f"Booking automation for {carrier_code} is not implemented yet.")
 
 	enrich_location_fields(quote_doc, "origin")
@@ -141,32 +309,145 @@ def book_carrier_quote(
 	quote_doc.selected_carrier_quote = str(row_idx)
 	quote_doc.origin_city = origin_city or quote_doc.origin_city
 	quote_doc.origin_state = origin_state
+	quote_doc.final_carrier = carrier_id
+	quote_doc.final_charge = flt(selected.total_charge)
+	quote_doc.carrier_reference_number = str(selected.carrier_quote_id or "")
 
 	try:
 		result = ShipmentExecutor(quote_doc).book(is_test=is_test)
 	except Exception:
-		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf Front-End Booking Error")
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf Booking Error")
 		raise
 
 	carrier_name = carrier_doc.carrier_name or carrier_label
+	bol_url = resolve_shipment_bol_url(
+		shipment_name=result.get("shipment"),
+		quote_request=quote_doc,
+	) or result.get("bol_document_url") or ""
+
 	return {
+		**result,
 		"status": "success",
-		"message": (
-			f"Successfully booked with {carrier_name}! "
-			f"BOL Generated: {result.get('bol_number')}"
-		),
-		"data": {
-			**result,
-			"carrier_code": carrier_id,
-			"carrier_name": carrier_name,
-			"origin_city": origin_city,
-			"origin_state": origin_state,
-		},
+		"carrier_code": carrier_id,
+		"carrier_name": carrier_name,
+		"origin_city": origin_city,
+		"origin_state": origin_state,
+		"bol_document_url": bol_url,
+		"total_charge": flt(selected.total_charge),
 	}
 
 
-def _resolve_quote_row_index(quote_doc, carrier_code: str | None, quote_row_idx: int | None) -> int:
+def _already_booked_result(quote_doc, shipment_name: str | None = None) -> dict:
+	"""Return existing shipment/BOL details instead of throwing on re-book."""
+	shipment_name = shipment_name or frappe.db.get_value(
+		"LTL Shipment", {"quote_request": quote_doc.name}, "name"
+	)
+	shipment = frappe.get_doc("LTL Shipment", shipment_name) if shipment_name else None
+
+	bol_number = (
+		(shipment.bol_number if shipment else None)
+		or getattr(quote_doc, "bol_number", None)
+		or ""
+	)
+	pro_number = (
+		(shipment.pro_number if shipment else None)
+		or getattr(quote_doc, "pro_number", None)
+		or ""
+	)
+	bol_url = resolve_shipment_bol_url(
+		shipment_name=shipment_name,
+		quote_request=quote_doc,
+	) or (getattr(shipment, "bol_document_url", None) if shipment else "") or getattr(
+		quote_doc, "bol_document_url", None
+	) or ""
+
+	carrier_code = (
+		(shipment.carrier if shipment else None)
+		or getattr(quote_doc, "final_carrier", None)
+		or ""
+	)
+	carrier_name = ""
+	if shipment and getattr(shipment, "carrier_name", None):
+		carrier_name = shipment.carrier_name
+	elif carrier_code and frappe.db.exists("LTL Carrier", carrier_code):
+		carrier_name = frappe.db.get_value("LTL Carrier", carrier_code, "carrier_name") or ""
+
+	total_charge = (
+		flt(shipment.total_charge) if shipment and shipment.total_charge is not None else flt(quote_doc.final_charge)
+	)
+
+	return {
+		"status": "already_booked",
+		"message": f"Quote Request {quote_doc.name} is already booked.",
+		"shipment": shipment_name,
+		"bol_number": bol_number,
+		"pro_number": pro_number,
+		"bol_document_url": bol_url,
+		"dayton_bol_id": getattr(shipment, "dayton_bol_id", None) if shipment else None,
+		"carrier_code": carrier_code,
+		"carrier_name": carrier_name,
+		"total_charge": total_charge,
+	}
+
+
+PLACEHOLDER_CARRIER_QUOTE_IDS = frozenset(
+	{
+		"paste_from_rates_response",
+		"paste-from-rates-response",
+		"carrier_quote_id",
+		"your_carrier_quote_id",
+		"todo",
+		"string",
+		"null",
+		"none",
+	}
+)
+
+
+def _normalize_carrier_quote_id(carrier_quote_id: str | None) -> str | None:
+	"""Return a usable quote id, or None for empty / placeholder values."""
+	wanted = str(carrier_quote_id or "").strip()
+	if not wanted:
+		return None
+	if wanted.lower() in PLACEHOLDER_CARRIER_QUOTE_IDS:
+		return None
+	return wanted
+
+
+def _resolve_quote_row_index(
+	quote_doc,
+	carrier_code: str | None = None,
+	quote_row_idx: int | None = None,
+	carrier_quote_id: str | None = None,
+) -> int:
 	carrier_id = resolve_carrier_id(carrier_code) if carrier_code else None
+	wanted_quote_id = _normalize_carrier_quote_id(carrier_quote_id)
+
+	if wanted_quote_id:
+		matches = []
+		for idx, row in enumerate(quote_doc.carrier_quotes):
+			row_id = str(row.carrier_quote_id or "").strip()
+			if not row_id:
+				continue
+			if row_id == wanted_quote_id or row_id.replace("ABF-", "") == wanted_quote_id.replace(
+				"ABF-", ""
+			):
+				if carrier_id and row.carrier != carrier_id:
+					continue
+				matches.append(idx)
+		if len(matches) == 1:
+			if quote_row_idx is not None and int(quote_row_idx) != matches[0]:
+				frappe.throw(
+					f"carrier_quote_id maps to quote row {matches[0]}, "
+					f"but quote_row_idx {int(quote_row_idx)} was provided."
+				)
+			return matches[0]
+		if len(matches) > 1 and quote_row_idx is None and not carrier_id:
+			frappe.throw("Multiple quote lines match carrier_quote_id. Provide carrier_preference.")
+		if matches:
+			return matches[0]
+		# Real id provided but no match — fail clearly instead of silently auto-picking.
+		frappe.throw(f"No quote line found for carrier_quote_id {wanted_quote_id}.")
 
 	if carrier_id:
 		for idx, row in enumerate(quote_doc.carrier_quotes):
@@ -188,7 +469,18 @@ def _resolve_quote_row_index(quote_doc, carrier_code: str | None, quote_row_idx:
 	if len(quote_doc.carrier_quotes) == 1:
 		return 0
 
-	frappe.throw("Select a carrier quote before booking.")
+	# Prefer an already-selected row on the quote request when still valid.
+	selected_raw = str(getattr(quote_doc, "selected_carrier_quote", None) or "").strip()
+	if selected_raw.isdigit():
+		selected_idx = int(selected_raw)
+		if 0 <= selected_idx < len(quote_doc.carrier_quotes):
+			return selected_idx
+
+	# Default: cheapest quote (FlowWolf multicarrier without preference).
+	return min(
+		range(len(quote_doc.carrier_quotes)),
+		key=lambda i: flt(quote_doc.carrier_quotes[i].total_charge),
+	)
 
 
 def _read_request_context() -> tuple[dict, dict]:
@@ -228,6 +520,8 @@ def _broadcast_carrier_rates(carrier_docs, shipment_request) -> tuple[list, list
 			quote = adapter.get_rates(shipment_request)
 
 			if quote and not quote.error and quote.total_charge and quote.total_charge > 0:
+				# Persist against LTL Carrier document name (Link field on quote lines).
+				quote.carrier_code = carrier_doc.name
 				aggregated_quotes.append(quote)
 			elif quote and quote.error:
 				errors.append({"carrier": carrier_doc.carrier_name or carrier_id, "error": quote.error})
@@ -243,6 +537,46 @@ def _broadcast_carrier_rates(carrier_docs, shipment_request) -> tuple[list, list
 			errors.append({"carrier": carrier_doc.carrier_name or carrier_id, "error": f"Adapter crash: {ex}"})
 
 	return aggregated_quotes, errors
+
+
+def _persist_carrier_quotes(quote_request, quotes, errors: list | None = None) -> None:
+	"""Write successful CarrierRateQuote rows onto the LTL Quote Request for later BOL booking."""
+	quote_currency = get_quote_currency()
+	quote_request.carrier_quotes = []
+	for q in sorted(quotes, key=lambda x: x.total_charge):
+		est_delivery = add_days(getdate(), q.transit_days) if q.transit_days else None
+		quote_request.append(
+			"carrier_quotes",
+			{
+				"carrier": q.carrier_code,
+				"carrier_name": q.carrier_name,
+				"carrier_quote_id": q.carrier_quote_id,
+				"status": "Received",
+				"total_charge": q.total_charge,
+				"currency": q.currency or quote_currency,
+				"transit_days": q.transit_days,
+				"estimated_delivery_date": est_delivery,
+				"linehaul_charge": q.linehaul_charge,
+				"fuel_surcharge": q.fuel_surcharge,
+				"accessorial_charge": q.accessorial_charge,
+				"reliability_score": q.reliability_score,
+				"service_level": q.service_level,
+				"accessorial_breakdown": json.dumps(q.accessorial_breakdown)
+				if q.accessorial_breakdown
+				else None,
+				"raw_response": json.dumps(q.raw_response, indent=2) if q.raw_response else None,
+			},
+		)
+
+	quote_request.status = "Quoted" if quotes else "Error"
+	quote_request.aggregated_on = now_datetime()
+	if errors:
+		quote_request.error_log = "\n".join(
+			f"{item['carrier']}: {item['error']}" if isinstance(item, dict) else str(item)
+			for item in errors
+		)
+	quote_request.save(ignore_permissions=True)
+	frappe.db.commit()
 
 
 def _build_flowwolf_recommendations(ranked_quotes: list[dict]) -> dict:

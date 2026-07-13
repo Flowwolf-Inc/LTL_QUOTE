@@ -72,8 +72,20 @@ def resolve_shipper_context(quote_data: dict | None = None, quote_request=None) 
 	}
 
 
+def _absolute_site_url(url: str) -> str:
+	"""Return an absolute site URL for relative file paths."""
+	url = str(url or "").strip()
+	if not url:
+		return ""
+	if url.startswith("http://") or url.startswith("https://"):
+		return url
+	if url.startswith("/"):
+		return f"{frappe.utils.get_url()}{url}"
+	return f"{frappe.utils.get_url()}/{url.lstrip('/')}"
+
+
 def resolve_shipment_bol_url(shipment_name: str | None = None, quote_request=None) -> str:
-	"""Resolve a browser-openable BOL URL from shipment or quote request records."""
+	"""Resolve a browser-openable absolute BOL URL from shipment or quote request records."""
 	if shipment_name:
 		row = frappe.db.get_value(
 			"LTL Shipment",
@@ -84,10 +96,10 @@ def resolve_shipment_bol_url(shipment_name: str | None = None, quote_request=Non
 		if row:
 			url = str(row.get("bol_document_url") or "").strip()
 			if url:
-				return url
+				return _absolute_site_url(url)
 			attach = str(row.get("bol_document") or "").strip()
 			if attach:
-				return attach if attach.startswith("http") else f"{frappe.utils.get_url()}{attach}"
+				return _absolute_site_url(attach)
 
 	if quote_request:
 		if isinstance(quote_request, str):
@@ -100,8 +112,10 @@ def resolve_shipment_bol_url(shipment_name: str | None = None, quote_request=Non
 		else:
 			doc = quote_request
 		if doc:
-			url = str(doc.get("bol_document_url") if isinstance(doc, dict) else getattr(doc, "bol_document_url", None) or "").strip()
+			url = str(
+				doc.get("bol_document_url") if isinstance(doc, dict) else getattr(doc, "bol_document_url", None) or ""
+			).strip()
 			if url:
-				return url
+				return _absolute_site_url(url)
 
 	return ""

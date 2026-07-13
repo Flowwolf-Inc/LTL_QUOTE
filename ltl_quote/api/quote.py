@@ -7,12 +7,9 @@ returns a normalized JSON schema (BlueShip / project44 style).
 """
 
 import json
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
 
 import frappe
-from frappe.utils import cint, flt, getdate, now_datetime, nowdate
+from frappe.utils import cint, flt, now_datetime
 
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
 from ltl_quote.api.payload import parse_rating_payload
@@ -25,10 +22,6 @@ from ltl_quote.utils.booking import resolve_shipper_context, resolve_shipment_bo
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
-
-ARCBEST_BOL_URL = "https://www.abfs.com/xml/bolxml.asp"
-ARCBEST_DEFAULT_API_ID = "H0TTC3W3"
-ARCBEST_SANDBOX_QUOTE_ID = "1234567890"
 
 
 @frappe.whitelist(allow_guest=False)
@@ -178,6 +171,7 @@ def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 
 
 def _create_quote_request(request: dict):
+	line_items = _map_request_line_items(request.get("items") or [])
 	doc = frappe.get_doc(
 		{
 			"doctype": "LTL Quote Request",
@@ -213,6 +207,7 @@ def _create_quote_request(request: dict):
 			"requested_on": now_datetime(),
 			"status": "Draft",
 			"accessorials": request.get("accessorial_rows") or [],
+			"line_items": line_items,
 		}
 	)
 
@@ -220,6 +215,70 @@ def _create_quote_request(request: dict):
 		doc.insert(ignore_permissions=True)
 
 	return doc
+
+
+def _map_request_line_items(items: list) -> list[dict]:
+	"""Map rating/UI `items` array into LTL Quote Request Line Item rows."""
+	rows = []
+	for item in items or []:
+		if not isinstance(item, dict):
+			continue
+		description = (
+			item.get("description")
+			or item.get("commodity_description")
+			or item.get("item_name")
+			or ""
+		)
+		freight_class = (
+			item.get("freight_class")
+			or item.get("nmfc_class")
+			or item.get("classification")
+			or ""
+		)
+		nmfc = item.get("nmfc") or item.get("nmfc_number") or ""
+		qty = item.get("quantity") if item.get("quantity") not in (None, "") else item.get("qty")
+		hazmat_raw = item.get("hazmat")
+		if hazmat_raw in (None, ""):
+			hazmat_raw = item.get("hazardous")
+		rows.append(
+			{
+				"item_number": item.get("item_number") or "",
+				"item_name": item.get("item_name") or "",
+				"item_id": item.get("item_id") or "",
+				"description": description,
+				"quantity": cint(qty or 1),
+				"units": item.get("units") or "",
+				"packaging_units": item.get("packaging_units") or "",
+				"packaging_unit_count": cint(item.get("packaging_unit_count") or 0) or None,
+				"rate": flt(item.get("rate") or 0) or None,
+				"freight_class": str(freight_class or ""),
+				"nmfc": str(nmfc or ""),
+				"hazmat": 1 if hazmat_raw in (True, 1, "1", "true", "True", "yes", "Y") else 0,
+				"weight": flt(item.get("weight") or 0) or None,
+				"weight_unit": item.get("weight_unit") or item.get("weight_units") or "LBS",
+				"length": flt(item.get("length") or 0) or None,
+				"width": flt(item.get("width") or 0) or None,
+				"height": flt(item.get("height") or 0) or None,
+				"dimension_unit": item.get("dimension_unit") or item.get("dimension_units") or "IN",
+				"volume": flt(item.get("volume") or 0) or None,
+				"volume_units": item.get("volume_units") or "",
+				"area": flt(item.get("area") or 0) or None,
+				"area_units": item.get("area_units") or "",
+				"linear_feet": flt(item.get("linear_feet") or 0) or None,
+				"hazmat_class_division": item.get("hazmat_class_division") or "",
+				"hazmat_phone": item.get("hazmat_phone") or "",
+				"hazmat_contact_company": item.get("hazmat_contact_company") or "",
+				"hazmat_contact": item.get("hazmat_contact") or "",
+				"hazmat_number": item.get("hazmat_number") or "",
+				"hazmat_packaging_group": item.get("hazmat_packaging_group") or "",
+				"hazmat_number_type": item.get("hazmat_number_type") or "",
+				"pickup_stop_location": item.get("pickup_stop_location") or "",
+				"pickup": item.get("pickup") or "",
+				"drop_stop_location": item.get("drop_stop_location") or "",
+				"drop": item.get("drop") or "",
+			}
+		)
+	return rows
 
 
 def _enrich_ranked_quotes_from_doc(quote_request, ranked_quotes: list[dict]):
@@ -288,10 +347,14 @@ def get_quote_booking_context(quote_request_id: str) -> dict:
 
 
 @frappe.whitelist(allow_guest=False)
-def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_quote_id):
+def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_quote_id, items=None):
 	"""
 	Save the selected rate, transition status to Accepted, and trigger the
 	carrier's electronic BOL gateway API (ArcBest XML or Dayton eBOL).
+
+	Optional ``items`` (JSON list or list of dicts) upserts quote-request line
+	items before booking so the BOL gets UI commodities even if rates were
+	fetched without them.
 	"""
 	try:
 		doc = frappe.get_doc("LTL Quote Request", quote_request_id)
@@ -313,6 +376,8 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 				"data": {"shipment": shipment_name} if shipment_name else {},
 			}
 
+		_upsert_quote_request_line_items(doc, items)
+
 		doc.status = "Accepted"
 		doc.final_carrier = carrier_key
 		doc.final_charge = flt(total_charge)
@@ -322,32 +387,46 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 		enrich_location_fields(doc, "origin")
 		enrich_location_fields(doc, "destination")
 
+		automated = carrier_key in ("ARCB", "ARCBEST", "DAYTON", "MOCK") or str(carrier_code).upper() in (
+			"ARCB",
+			"ARCBEST",
+			"DAYTON",
+			"MOCK",
+		)
 		shipment_name = None
-		if carrier_key in ("ARCB", "ARCBEST") or str(carrier_code).upper() in ("ARCB", "ARCBEST"):
-			arcb_result = _route_arcbest_bol(doc, carrier_quote_id, flt(total_charge))
-			if arcb_result and arcb_result.get("status") == "failed":
-				doc.save(ignore_permissions=True)
-				frappe.db.commit()
-				return arcb_result
-			shipment_name = (arcb_result or {}).get("shipment")
-		elif carrier_key == "DAYTON" or str(carrier_code).upper() == "DAYTON":
-			dayton_result = _route_dayton_bol(doc, carrier_quote_id, total_charge)
-			if dayton_result:
-				shipment_name = _create_dayton_shipment(
-					doc,
-					flt(total_charge),
-					carrier_quote_id,
-					bol_result=dayton_result.get("bol_result"),
-					booking_payload=dayton_result.get("booking_payload"),
+
+		if automated:
+			from ltl_quote.api.flowwolf import _book_quote_core
+
+			# Ensure quote lines exist; if missing, synthesize a row so executor can book.
+			if not doc.carrier_quotes:
+				doc.append(
+					"carrier_quotes",
+					{
+						"carrier": carrier_key if frappe.db.exists("LTL Carrier", carrier_key) else "ARCB",
+						"carrier_name": carrier_code,
+						"carrier_quote_id": carrier_quote_id,
+						"status": "Received",
+						"total_charge": flt(total_charge),
+						"currency": get_quote_currency(),
+					},
 				)
+				doc.save(ignore_permissions=True)
+
+			booking = _book_quote_core(
+				quote_request_id=doc.name,
+				carrier_code=carrier_code,
+				carrier_quote_id=carrier_quote_id,
+				is_test=False,
+			)
+			shipment_name = booking.get("shipment")
+			doc.reload()
 		else:
 			doc.add_comment(
 				text=f"Quote accepted for {carrier_code}. No automated BOL gateway configured for this carrier."
 			)
-
-		doc.save(ignore_permissions=True)
-		frappe.db.commit()
-		doc.reload()
+			doc.save(ignore_permissions=True)
+			frappe.db.commit()
 
 		bol_url = resolve_shipment_bol_url(shipment_name=shipment_name, quote_request=doc)
 		return {
@@ -367,77 +446,93 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 		return {"status": "failed", "error": str(e)}
 
 
+def _upsert_quote_request_line_items(doc, items) -> None:
+	"""Replace quote request line_items from UI/API payload when provided."""
+	if items in (None, "", []):
+		return
+
+	if isinstance(items, str):
+		try:
+			items = json.loads(items)
+		except (TypeError, ValueError):
+			frappe.throw("Invalid items payload; expected a JSON list of line items.")
+
+	if not isinstance(items, list) or not items:
+		return
+
+	mapped = _map_request_line_items(items)
+	if not mapped:
+		return
+
+	doc.set("line_items", [])
+	for row in mapped:
+		doc.append("line_items", row)
+
+	# Keep top-level freight aggregates aligned with commodities when present.
+	first = mapped[0]
+	if first.get("freight_class"):
+		doc.freight_class = first["freight_class"]
+	weights = [flt(r.get("weight") or 0) * max(cint(r.get("quantity") or 1), 1) for r in mapped]
+	total_weight = sum(weights)
+	if total_weight > 0:
+		doc.total_weight = total_weight
+	pieces = sum(max(cint(r.get("quantity") or 1), 1) for r in mapped)
+	if pieces > 0:
+		doc.pieces = pieces
+
+
 def _route_arcbest_bol(doc, carrier_quote_id, total_charge=0):
-	"""Fire ArcBest bolxml.asp GET, parse XML, and map nodes to quote request fields."""
+	"""Thin wrapper: ArcBest BOL via adapter + shipment create (legacy accept path)."""
 	try:
 		carrier_doc = frappe.get_doc("LTL Carrier", "ARCB") if frappe.db.exists("LTL Carrier", "ARCB") else None
-		api_id = _get_arcbest_api_id(carrier_doc)
-		shipper = resolve_shipper_context(quote_request=doc)
-		quote_id = _resolve_arcbest_bol_quote_id(carrier_quote_id, doc)
+		if not carrier_doc:
+			return {
+				"status": "failed",
+				"message": "ArcBest carrier record (ARCB) not found.",
+				"quote_request_id": doc.name,
+				"bol_number": "Failed",
+				"pro_number": "Failed",
+				"bol_document_url": "",
+			}
 
-		query_params = {
-			"ID": api_id,
-			"TEST": "N",
-			"RequesterType": "1",
-			"PayTerms": "P",
-			"RequesterName": shipper["contact_name"] or "JOHN BLACK",
-			"RequesterPhone": shipper["contact_phone"] or "5555555555",
-			"ShipName": doc.shipper_company_name or shipper["shipper_name"] or "XYZ Corp",
-			"ShipAddress": doc.shipper_address or shipper["shipper_address"] or "123 MAIN",
-			"ShipCity": doc.origin_city or "Dyer",
-			"ShipState": doc.origin_state or "AR",
-			"ShipZip": doc.origin_zip or "72935",
-			"ConsName": doc.consignee_company_name or shipper["consignee_name"] or "ABC Corp",
-			"ConsAddress": doc.consignee_address or shipper["consignee_address"] or "321 Elm",
-			"ConsCity": doc.destination_city or "LAWRENCE",
-			"ConsState": doc.destination_state or "KS",
-			"ConsZip": doc.destination_zip or "66044",
-			"ShipDate": getdate(nowdate()).strftime("%m/%d/%Y"),
-			"HN1": str(cint(doc.pieces or 100)),
-			"HT1": "PLT",
-			"WT1": str(cint(doc.total_weight or 1000)),
-			"CL1": str(doc.freight_class or "65"),
-			"Desc1": "MISC AUTO PARTS",
-			"QuoteID": quote_id,
+		from ltl_quote.utils.booking import resolve_shipper_context as _shipper
+
+		adapter = get_adapter(carrier_doc)
+		shipper = _shipper(quote_request=doc)
+		booking_payload = {
+			"carrier_quote_id": carrier_quote_id,
+			"total_charge": flt(total_charge),
+			"origin_zip": doc.origin_zip,
+			"destination_zip": doc.destination_zip,
+			"origin_city": doc.origin_city,
+			"origin_state": doc.origin_state,
+			"destination_city": doc.destination_city,
+			"destination_state": doc.destination_state,
+			"total_weight": doc.total_weight,
+			"pieces": doc.pieces or 1,
+			"freight_class": doc.freight_class,
+			"quote_request": doc.name,
+			"shipper_name": shipper["shipper_name"],
+			"shipper_address": shipper["shipper_address"],
+			"consignee_name": shipper["consignee_name"],
+			"consignee_address": shipper["consignee_address"],
+			"contact_name": shipper["contact_name"],
+			"contact_phone": shipper["contact_phone"],
+			"is_test": False,
 		}
-
-		encoded_url = f"{ARCBEST_BOL_URL}?{urllib.parse.urlencode(query_params)}"
-		settings = frappe.get_single("LTL Platform Settings")
-		timeout = cint(settings.rate_request_timeout_seconds) or 15
-
-		response = urllib.request.urlopen(encoded_url, timeout=timeout)
-		xml_response_data = response.read()
-
-		root = ET.fromstring(xml_response_data)
-
-		num_errors_node = _find_arcbest_xml_node(root, "NUMERRORS")
-		num_errors = int(num_errors_node.text) if num_errors_node is not None and num_errors_node.text else 0
-
-		if num_errors == 0:
-			doc.bol_document_url = _arcbest_xml_text(root, "DOCUMENT")
-			doc.bol_number = _arcbest_xml_text(root, "BOLNUMBER") or str(carrier_quote_id)
-			doc.pro_number = _arcbest_xml_text(root, "PRONUMBER") or "Auto-Assigned"
-
+		bol_result = adapter.book_shipment(booking_payload)
+		doc.bol_document_url = bol_result.get("bol_document_url") or ""
+		doc.bol_number = bol_result.get("bol_number") or str(carrier_quote_id)
+		doc.pro_number = bol_result.get("pro_number") or "Auto-Assigned"
+		if doc.bol_document_url:
 			doc.add_comment(
 				text=(
 					f"<b>ArcBest BOL Generated!</b><br>"
 					f"<a href='{doc.bol_document_url}' target='_blank'>Download PDF</a>"
 				)
 			)
-			shipment_name = _create_arcbest_shipment(doc, total_charge)
-			return {"shipment": shipment_name}
-
-		error_msg = _extract_arcbest_error_message(root)
-		doc.add_comment(text=f"ArcBest API rejected payload: {error_msg}")
-		return {
-			"status": "failed",
-			"message": f"ArcBest API Rejected: {error_msg}",
-			"quote_request_id": doc.name,
-			"bol_number": "Failed",
-			"pro_number": "Failed",
-			"bol_document_url": "",
-		}
-
+		shipment_name = _create_arcbest_shipment(doc, total_charge)
+		return {"shipment": shipment_name}
 	except Exception as exc:
 		frappe.log_error(title="ArcBest Parsing Gateway Issue", message=frappe.get_traceback())
 		return {
@@ -451,55 +546,22 @@ def _route_arcbest_bol(doc, carrier_quote_id, total_charge=0):
 
 
 def _find_arcbest_xml_node(root, tag_name: str):
-	"""Locate an ArcBest XML node case-insensitively, including namespaced parent wrappers."""
-	tag_upper = tag_name.upper()
+	"""Locate an ArcBest XML node case-insensitively (delegates to adapter helpers)."""
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
 
-	node = root.find(tag_name)
-	if node is not None:
-		return node
-
-	for variant in (tag_name.upper(), tag_name.lower(), tag_name.title()):
-		node = root.find(variant)
-		if node is not None:
-			return node
-
-	node = root.find(f".//{tag_name}")
-	if node is not None:
-		return node
-
-	for elem in root.iter():
-		local_tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-		if local_tag.upper() == tag_upper:
-			return elem
-
-	return None
+	return ArcBestCarrierAdapter._find_xml_node(root, tag_name)
 
 
 def _arcbest_xml_text(root, tag_name: str, default: str = "") -> str:
-	node = _find_arcbest_xml_node(root, tag_name)
-	if node is not None and node.text:
-		return node.text.strip()
-	return default
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
+
+	return ArcBestCarrierAdapter._xml_text(root, tag_name, default)
 
 
 def _extract_arcbest_error_message(root) -> str:
-	"""Collect ArcBest validation errors from ERRORMESSAGE nodes and ERROR blocks."""
-	error_elements = root.findall(".//ERROR")
-	messages: list[str] = []
-	for err in error_elements:
-		code = _arcbest_xml_text(err, "ERRORCODE")
-		msg = _arcbest_xml_text(err, "ERRORMESSAGE")
-		if msg:
-			messages.append(f"Code {code}: {msg}" if code else msg)
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
 
-	if messages:
-		return " | ".join(messages)
-
-	error_node = _find_arcbest_xml_node(root, "ERRORMESSAGE")
-	if error_node is not None and error_node.text:
-		return error_node.text.strip()
-
-	return "Validation Error"
+	return ArcBestCarrierAdapter._extract_error_message(root)
 
 
 def _create_arcbest_shipment(doc, total_charge=0) -> str | None:
@@ -609,7 +671,7 @@ def _create_dayton_shipment(doc, total_charge, carrier_quote_id, bol_result=None
 
 
 def _route_dayton_bol(doc, carrier_quote_id, total_charge):
-	"""Route acceptance to the existing Dayton eBOL adapter."""
+	"""Thin wrapper: Dayton eBOL via adapter (legacy accept path)."""
 	try:
 		from ltl_quote.carrier_network.adapters.dayton import resolve_dayton_bol_download
 
@@ -665,9 +727,39 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 				}
 				for row in (doc.accessorials or [])
 			],
+			"items": _map_request_line_items(
+				[
+					{
+						"item_number": getattr(row, "item_number", None),
+						"item_name": getattr(row, "item_name", None),
+						"item_id": getattr(row, "item_id", None),
+						"description": getattr(row, "description", None),
+						"quantity": getattr(row, "quantity", None),
+						"units": getattr(row, "units", None),
+						"packaging_units": getattr(row, "packaging_units", None),
+						"packaging_unit_count": getattr(row, "packaging_unit_count", None),
+						"rate": getattr(row, "rate", None),
+						"freight_class": getattr(row, "freight_class", None),
+						"nmfc": getattr(row, "nmfc", None),
+						"hazmat": getattr(row, "hazmat", None),
+						"weight": getattr(row, "weight", None),
+						"weight_unit": getattr(row, "weight_unit", None),
+						"length": getattr(row, "length", None),
+						"width": getattr(row, "width", None),
+						"height": getattr(row, "height", None),
+						"dimension_unit": getattr(row, "dimension_unit", None),
+					}
+					for row in (doc.line_items or [])
+				]
+			),
 		}
+		if booking_payload["items"]:
+			first = booking_payload["items"][0]
+			booking_payload["commodity_description"] = first.get("description") or ""
+			booking_payload["nmfc"] = first.get("nmfc") or ""
+			booking_payload["is_hazardous"] = bool(first.get("hazmat"))
 
-		bol_result = adapter.generate_bill_of_lading(booking_payload)
+		bol_result = adapter.book_shipment(booking_payload)
 		doc.bol_number = bol_result.get("bol_number") or doc.bol_number
 		doc.pro_number = bol_result.get("pro_number") or doc.pro_number
 
@@ -698,68 +790,23 @@ def _route_dayton_bol(doc, carrier_quote_id, total_charge):
 
 
 def _get_arcbest_api_id(carrier_doc) -> str:
-	if carrier_doc and hasattr(carrier_doc, "get_password"):
-		api_id = carrier_doc.get_password("api_key", raise_exception=False) or ""
-		if api_id:
-			return api_id
-		plain_key = carrier_doc.get("api_key")
-		if plain_key and not carrier_doc.is_dummy_password(plain_key):
-			return plain_key
-	return ARCBEST_DEFAULT_API_ID
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter, DEFAULT_API_ID
+
+	if carrier_doc:
+		return ArcBestCarrierAdapter(carrier_doc)._get_api_id()
+	return DEFAULT_API_ID
 
 
 def _normalize_arcbest_quote_id(carrier_quote_id) -> str:
-	"""Strip ABF- prefix and pad to 10 chars for ArcBest Code 154 validation."""
-	raw = str(carrier_quote_id or "").strip()
-	if raw.upper().startswith("ABF-"):
-		raw = raw[4:].strip()
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
 
-	clean_id = raw
-
-	if len(clean_id) < 10 and clean_id:
-		clean_id = clean_id.zfill(10)
-
-	return clean_id
+	return ArcBestCarrierAdapter._normalize_quote_id(carrier_quote_id)
 
 
 def _resolve_arcbest_bol_quote_id(carrier_quote_id, doc) -> str:
-	"""
-	Resolve QuoteID for ArcBest BOL requests.
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
 
-	Priority:
-	1. Live carrier_quote_id from ArcBest rate lines on this quote request
-	2. Known sandbox placeholder (1234567890)
-	3. Empty string when ID is synthetic / not recognized (avoids Code 998)
-	4. Normalized incoming ID as fallback
-	"""
-	incoming = str(carrier_quote_id or "").strip()
-	arcb_rows = [row for row in (doc.carrier_quotes or []) if row.carrier in ("ARCB", "ARCBEST")]
-
-	if arcb_rows:
-		incoming_norm = _normalize_arcbest_quote_id(incoming) if incoming else ""
-		for row in arcb_rows:
-			row_norm = _normalize_arcbest_quote_id(row.carrier_quote_id)
-			if not row_norm:
-				continue
-			if incoming and (
-				incoming == row.carrier_quote_id
-				or incoming_norm == row_norm
-				or incoming.replace("ABF-", "").replace("abf-", "").strip() == row_norm.lstrip("0")
-			):
-				return row_norm
-		if arcb_rows[0].carrier_quote_id:
-			return _normalize_arcbest_quote_id(arcb_rows[0].carrier_quote_id)
-
-	if not incoming:
-		return ""
-
-	normalized = _normalize_arcbest_quote_id(incoming)
-
-	if normalized == ARCBEST_SANDBOX_QUOTE_ID:
-		return normalized
-
-	clean = incoming.upper().replace("ABF-", "").strip()
-	if clean in ("3322EF35",) or "3322EF35" in clean:
-		return ""
-
-	return normalized
+	adapter = ArcBestCarrierAdapter()
+	return adapter._resolve_bol_quote_id(
+		{"carrier_quote_id": carrier_quote_id, "quote_request": getattr(doc, "name", None)}
+	)

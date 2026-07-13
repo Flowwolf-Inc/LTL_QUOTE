@@ -105,22 +105,40 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 
 
 def _expand_items_payload(data: dict) -> None:
-	"""Map Postman-style `items` array into top-level freight fields."""
+	"""Map Postman-style `items` array into top-level freight fields.
+
+	Keeps the original `items` array on `data` for persistence / BOL booking.
+	"""
 	items = data.get("items") or []
 	if not items:
 		return
 
+	# Normalize to a plain list of dicts so downstream code can rely on it.
+	normalized = [item for item in items if isinstance(item, dict)]
+	data["items"] = normalized
+	if not normalized:
+		return
+
+	first = normalized[0]
 	if not data.get("freight_class"):
-		data["freight_class"] = items[0].get("classification") or items[0].get("freight_class")
+		data["freight_class"] = first.get("classification") or first.get("freight_class") or first.get("nmfc_class")
+
+	if not data.get("commodity_description"):
+		data["commodity_description"] = (
+			first.get("description") or first.get("commodity_description") or first.get("item_name") or ""
+		)
+
+	if not data.get("nmfc"):
+		data["nmfc"] = first.get("nmfc") or first.get("nmfc_number") or ""
 
 	if not data.get("weight") and not data.get("total_weight"):
 		data["total_weight"] = sum(
 			float(item.get("weight") or 0) * max(int(item.get("qty") or item.get("quantity") or 1), 1)
-			for item in items
+			for item in normalized
 		)
 
 	if not data.get("pieces"):
-		data["pieces"] = sum(max(int(item.get("qty") or item.get("quantity") or 1), 1) for item in items)
+		data["pieces"] = sum(max(int(item.get("qty") or item.get("quantity") or 1), 1) for item in normalized)
 
 
 def _validate_required(data: dict) -> None:
@@ -147,6 +165,14 @@ def _normalize_fields(data: dict) -> dict:
 	data["pieces"] = int(data.get("pieces") or 1)
 	data["timeout"] = int(data.get("timeout") or 0)
 	data["save_request"] = _as_bool(data.get("save_request", True))
+	if data.get("commodity_description"):
+		data["commodity_description"] = str(data["commodity_description"]).strip()
+	if data.get("nmfc"):
+		data["nmfc"] = str(data["nmfc"]).strip()
+	# Keep items as a list of dicts for quote request persistence / BOL.
+	items = data.get("items")
+	if isinstance(items, list):
+		data["items"] = [item for item in items if isinstance(item, dict)]
 	for field in ("origin_city", "origin_state", "destination_city", "destination_state"):
 		if data.get(field):
 			data[field] = str(data[field]).strip()

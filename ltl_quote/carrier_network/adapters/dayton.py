@@ -62,13 +62,20 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		self.username = self.carrier_doc.get_password("api_key", raise_exception=False) or ""
 		self.password = self.carrier_doc.get_password("api_secret", raise_exception=False) or ""
 
+	def get_auth(self) -> tuple[str, str] | None:
+		"""HTTP Basic auth tuple for requests (username truncated to 10 chars per Dayton)."""
+		if self.username and self.password:
+			return (self.username[:10], self.password)
+		return None
+
 	def get_headers(self) -> dict:
 		"""Compile a standard Base64 Basic Authentication block using web credentials."""
 		headers = {"Content-Type": "application/json"}
 
-		if self.username and self.password:
-			clean_username = self.username[:10]
-			auth_string = f"{clean_username}:{self.password}"
+		auth = self.get_auth()
+		if auth:
+			clean_username, password = auth
+			auth_string = f"{clean_username}:{password}"
 			encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
 			headers["Authorization"] = f"Basic {encoded_auth}"
 
@@ -185,8 +192,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			response = requests.post(
 				endpoint,
 				headers=self.get_headers(),
+				auth=self.get_auth(),
 				json=dayton_ebol_payload,
-				timeout=20,
+				timeout=60,
 			)
 			frappe.log_error(response.text, "DAYTON RESPONSE")
 			frappe.logger("dayton").info(f"DAYTON RAW RESPONSE: {response.text}")
@@ -366,32 +374,35 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		if dimensions_unit not in ("IN", "CM"):
 			dimensions_unit = "IN"
 
-		handling_unit = {
-			"count": handling_unit_count,
-			"handlingUnitQuantity": handling_unit_count,
-			"handlingUnitType": "SKID",
-			"type": "SKID",
-			"weight": weight_lbs,
-			"class": str(quote_request.freight_class or "70"),
-			"lineItems": [
-				{
-					"handlingUnitId": "1",
-					"classification": str(quote_request.freight_class or "70"),
-					"description": "General Freight Cargo",
-					"hazardous": False,
-					"packagingType": "SKID",
-					"pieces": handling_unit_count,
-					"weight": weight_lbs,
-					"weightUnit": "LBS",
-				}
-			],
-		}
-		if length and width and height:
-			handling_unit["dimensionsUnit"] = dimensions_unit
-			handling_unit["length"] = length
-			handling_unit["width"] = width
-			handling_unit["height"] = height
-		handling_units = [handling_unit]
+		items = _resolve_dayton_items({}, quote_request)
+		first = items[0] if items else {}
+		handling_units, weight_lbs, handling_unit_count = _build_dayton_handling_units(
+			items=items,
+			fallback_weight=weight_lbs,
+			fallback_class=str(quote_request.freight_class or "70"),
+			fallback_pieces=handling_unit_count,
+			fallback_length=length,
+			fallback_width=width,
+			fallback_height=height,
+			fallback_dimension_unit=dimensions_unit,
+			fallback_description=str(
+				first.get("description") or first.get("item_name") or "General Freight Cargo"
+			),
+			fallback_nmfc=str(first.get("nmfc") or first.get("nmfc_number") or ""),
+			fallback_hazardous=bool(first.get("hazardous") or first.get("hazmat")),
+			hu_type="SKID",
+			include_hu_id=False,
+		)
+		# Update payload uses a few extra HU aliases Dayton expects on UPDATE.
+		for hu in handling_units:
+			count = cint(hu.get("count") or 1)
+			hu["handlingUnitQuantity"] = count
+			hu["handlingUnitType"] = hu.get("type") or "SKID"
+			hu["class"] = str(
+				((hu.get("lineItems") or [{}])[0] or {}).get("classification")
+				or quote_request.freight_class
+				or "70"
+			)
 
 		origin_contact_name = str(
 			getattr(quote_request, "contact_name", None) or shipper.get("contact_name") or "Shipping Desk"
@@ -652,40 +663,24 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		if dimensions_unit not in ("IN", "CM"):
 			dimensions_unit = "IN"
 
-		# Commodities: description only — Dayton appends HU Dims / QUOTE lines when
-		# dimensions or quoteId are present on the handling unit / references.
-		hu_id = "1"
-		handling_unit = {
-			"id": hu_id,
-			"count": handling_unit_count,
-			"type": "PALLET",
-			"weight": weight_lbs,
-			"weightUnit": "LBS",
-			"tareWeight": 0,
-			"stackable": False,
-			"lineItems": [
-				{
-					"handlingUnitId": hu_id,
-					"classification": freight_class,
-					"description": str(
-						quote_data.get("commodity_description") or "General Freight Cargo"
-					),
-					"hazardous": bool(quote_data.get("is_hazardous", False)),
-					"nmfc": str(quote_data.get("nmfc") or ""),
-					"packagingType": "SKID",
-					"pieces": handling_unit_count,
-					"weight": weight_lbs,
-					"weightUnit": "LBS",
-				}
-			],
-		}
-		if length and width and height:
-			handling_unit["dimensionsUnit"] = dimensions_unit
-			handling_unit["length"] = length
-			handling_unit["width"] = width
-			handling_unit["height"] = height
-
-		handling_units = [handling_unit]
+		items = _resolve_dayton_items(quote_data, quote_request)
+		handling_units, weight_lbs, handling_unit_count = _build_dayton_handling_units(
+			items=items,
+			fallback_weight=weight_lbs,
+			fallback_class=freight_class,
+			fallback_pieces=handling_unit_count,
+			fallback_length=length,
+			fallback_width=width,
+			fallback_height=height,
+			fallback_dimension_unit=dimensions_unit,
+			fallback_description=str(
+				quote_data.get("commodity_description") or "General Freight Cargo"
+			),
+			fallback_nmfc=str(quote_data.get("nmfc") or ""),
+			fallback_hazardous=bool(quote_data.get("is_hazardous", False)),
+			hu_type="PALLET",
+			include_hu_id=True,
+		)
 
 		pickup_date = quote_data.get("pickup_date") or getattr(quote_request, "pickup_date", None)
 		if pickup_date:
@@ -1288,6 +1283,181 @@ def _dayton_int_weight(value) -> int:
 	return int(float(value or 0))
 
 
+def _item_as_dict(item) -> dict:
+	"""Normalize a booking item dict or quote-request child row into a plain dict."""
+	if isinstance(item, dict):
+		return item
+	return {
+		"description": getattr(item, "description", None) or getattr(item, "item_name", None) or "",
+		"item_name": getattr(item, "item_name", None) or "",
+		"item_number": getattr(item, "item_number", None) or "",
+		"freight_class": getattr(item, "freight_class", None) or "",
+		"classification": getattr(item, "freight_class", None) or "",
+		"nmfc": getattr(item, "nmfc", None) or "",
+		"nmfc_number": getattr(item, "nmfc", None) or "",
+		"quantity": getattr(item, "quantity", None) or 1,
+		"qty": getattr(item, "quantity", None) or 1,
+		"weight": getattr(item, "weight", None),
+		"weight_unit": getattr(item, "weight_unit", None) or "LBS",
+		"length": getattr(item, "length", None),
+		"width": getattr(item, "width", None),
+		"height": getattr(item, "height", None),
+		"dimension_unit": getattr(item, "dimension_unit", None) or "IN",
+		"packaging_units": getattr(item, "packaging_units", None) or "",
+		"hazmat": getattr(item, "hazmat", None),
+		"hazardous": bool(getattr(item, "hazmat", None)),
+	}
+
+
+def _resolve_dayton_items(quote_data: dict | None = None, quote_request=None) -> list[dict]:
+	"""Prefer booking payload items; fall back to quote request line_items."""
+	quote_data = quote_data or {}
+	raw_items = quote_data.get("items")
+	if not raw_items and quote_request is not None:
+		raw_items = getattr(quote_request, "line_items", None) or []
+	return [_item_as_dict(item) for item in (raw_items or []) if item]
+
+
+def _build_dayton_handling_units(
+	*,
+	items: list[dict],
+	fallback_weight: float | int,
+	fallback_class: str,
+	fallback_pieces: int,
+	fallback_length=None,
+	fallback_width=None,
+	fallback_height=None,
+	fallback_dimension_unit: str = "IN",
+	fallback_description: str = "General Freight Cargo",
+	fallback_nmfc: str = "",
+	fallback_hazardous: bool = False,
+	hu_type: str = "PALLET",
+	include_hu_id: bool = True,
+) -> tuple[list[dict], int, int]:
+	"""Build Dayton handlingUnits from line items (one HU per item).
+
+	Returns (handling_units, total_weight_lbs, total_pieces).
+	"""
+	fallback_pieces = max(1, cint(fallback_pieces or 1))
+	fallback_weight_lbs = _dayton_int_weight(fallback_weight)
+	fallback_class = str(fallback_class or "70")
+	fallback_dimension_unit = str(fallback_dimension_unit or "IN").upper()
+	if fallback_dimension_unit not in ("IN", "CM"):
+		fallback_dimension_unit = "IN"
+
+	if not items:
+		hu_id = "1"
+		hu = {
+			"count": fallback_pieces,
+			"type": hu_type,
+			"weight": fallback_weight_lbs,
+			"weightUnit": "LBS",
+			"tareWeight": 0,
+			"stackable": False,
+			"lineItems": [
+				{
+					"handlingUnitId": hu_id,
+					"classification": fallback_class,
+					"description": str(fallback_description or "General Freight Cargo"),
+					"hazardous": bool(fallback_hazardous),
+					"nmfc": str(fallback_nmfc or ""),
+					"packagingType": "SKID",
+					"pieces": fallback_pieces,
+					"weight": fallback_weight_lbs,
+					"weightUnit": "LBS",
+				}
+			],
+		}
+		if include_hu_id:
+			hu["id"] = hu_id
+		length = _optional_dayton_dimension(fallback_length)
+		width = _optional_dayton_dimension(fallback_width)
+		height = _optional_dayton_dimension(fallback_height)
+		if length and width and height:
+			hu["dimensionsUnit"] = fallback_dimension_unit
+			hu["length"] = length
+			hu["width"] = width
+			hu["height"] = height
+		return [hu], fallback_weight_lbs, fallback_pieces
+
+	handling_units = []
+	total_weight = 0
+	total_pieces = 0
+	for idx, item in enumerate(items, start=1):
+		hu_id = str(idx)
+		pieces = max(1, cint(item.get("quantity") if item.get("quantity") not in (None, "") else item.get("qty") or 1))
+		item_weight = item.get("weight")
+		if item_weight in (None, ""):
+			# Spread fallback weight across lines when rows omit weight.
+			item_weight = fallback_weight_lbs / max(len(items), 1)
+		weight_lbs = _dayton_int_weight(item_weight)
+		if weight_lbs <= 0:
+			weight_lbs = max(1, fallback_weight_lbs // max(len(items), 1))
+
+		freight_class = str(
+			item.get("classification")
+			or item.get("freight_class")
+			or item.get("nmfc_class")
+			or fallback_class
+		)
+		description = str(
+			item.get("description")
+			or item.get("commodity_description")
+			or item.get("item_name")
+			or fallback_description
+			or "General Freight Cargo"
+		)
+		nmfc = str(item.get("nmfc") or item.get("nmfc_number") or fallback_nmfc or "")
+		hazardous = bool(
+			item.get("hazardous")
+			or item.get("hazmat") in (True, 1, "1", "true", "True", "yes", "Y")
+			or fallback_hazardous
+		)
+		packaging = str(item.get("packaging_units") or item.get("packagingType") or "SKID").upper() or "SKID"
+		dim_unit = str(item.get("dimension_unit") or item.get("dimension_units") or fallback_dimension_unit).upper()
+		if dim_unit not in ("IN", "CM"):
+			dim_unit = fallback_dimension_unit
+
+		length = _optional_dayton_dimension(item.get("length") if item.get("length") not in (None, "") else fallback_length)
+		width = _optional_dayton_dimension(item.get("width") if item.get("width") not in (None, "") else fallback_width)
+		height = _optional_dayton_dimension(item.get("height") if item.get("height") not in (None, "") else fallback_height)
+
+		hu = {
+			"count": pieces,
+			"type": hu_type,
+			"weight": weight_lbs,
+			"weightUnit": "LBS",
+			"tareWeight": 0,
+			"stackable": False,
+			"lineItems": [
+				{
+					"handlingUnitId": hu_id,
+					"classification": freight_class,
+					"description": description,
+					"hazardous": hazardous,
+					"nmfc": nmfc,
+					"packagingType": packaging if packaging in ("SKID", "PALLET", "CARTON", "CRATE", "DRUM", "TOTE", "BUNDLE", "ROLL", "OTHER") else "SKID",
+					"pieces": pieces,
+					"weight": weight_lbs,
+					"weightUnit": "LBS",
+				}
+			],
+		}
+		if include_hu_id:
+			hu["id"] = hu_id
+		if length and width and height:
+			hu["dimensionsUnit"] = dim_unit
+			hu["length"] = length
+			hu["width"] = width
+			hu["height"] = height
+
+		handling_units.append(hu)
+		total_weight += weight_lbs
+		total_pieces += pieces
+
+	return handling_units, max(1, total_weight), max(1, total_pieces)
+
+
 def _dayton_int_dimension(value, default: int = 48) -> int:
 	"""Dayton requires handling-unit length/width/height as integers in 1..999."""
 	try:
@@ -1536,7 +1706,7 @@ def sync_dayton_bol_details_to_shipment(
 
 
 def attach_base64_pdf_to_shipment(shipment_id: str, base64_string: str):
-	"""Decode Dayton images.bol Base64 and attach a private PDF to the shipment BOL field."""
+	"""Decode Dayton images.bol Base64 and attach a public PDF to the shipment BOL field."""
 	filename = f"Dayton_Updated_BOL_{shipment_id}.pdf"
 	file_bytes = base64.b64decode(base64_string)
 
@@ -1545,16 +1715,17 @@ def attach_base64_pdf_to_shipment(shipment_id: str, base64_string: str):
 		content=file_bytes,
 		dt="LTL Shipment",
 		dn=shipment_id,
-		is_private=1,
+		is_private=0,
 		decode=False,
 		df="bol_document",
 	)
+	absolute_url = f"{frappe.utils.get_url()}{file_doc.file_url}"
 	frappe.db.set_value(
 		"LTL Shipment",
 		shipment_id,
 		{
 			"bol_document": file_doc.file_url,
-			"bol_document_url": file_doc.file_url,
+			"bol_document_url": absolute_url,
 		},
 	)
 	frappe.db.commit()
