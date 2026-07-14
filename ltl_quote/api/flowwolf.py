@@ -3,6 +3,11 @@ FlowWolf Unified Multi-Carrier LTL Rating + BOL Gateway API
 
 POST /api/method/ltl_quote.api.flowwolf.get_rates
 POST /api/method/ltl_quote.api.flowwolf.create_bol
+GET/POST /api/method/ltl_quote.api.flowwolf.get_shipment_details
+POST /api/method/ltl_quote.api.flowwolf.track_by_number
+POST /api/method/ltl_quote.api.flowwolf.track_history
+POST /api/method/ltl_quote.api.flowwolf.track_by_date
+POST /api/method/ltl_quote.api.flowwolf.track_pending
 """
 
 from __future__ import annotations
@@ -29,6 +34,11 @@ from ltl_quote.utils.transaction_log import log_api_transaction
 
 FLOWWOLF_RATES_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_rates"
 FLOWWOLF_BOL_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.create_bol"
+FLOWWOLF_SHIPMENT_DETAILS_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_shipment_details"
+FLOWWOLF_TRACK_BY_NUMBER_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.track_by_number"
+FLOWWOLF_TRACK_HISTORY_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.track_history"
+FLOWWOLF_TRACK_BY_DATE_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.track_by_date"
+FLOWWOLF_TRACK_PENDING_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.track_pending"
 FLOWWOLF_ENGINE = "FlowWolf Aggregator Engine v1"
 FLOWWOLF_API_ENDPOINT = FLOWWOLF_RATES_ENDPOINT
 
@@ -388,6 +398,567 @@ def _already_booked_result(quote_doc, shipment_name: str | None = None) -> dict:
 		"carrier_name": carrier_name,
 		"total_charge": total_charge,
 	}
+
+
+@frappe.whitelist(allow_guest=False)
+def get_shipment_details(shipment=None, quote_request_id=None, payload=None, **kwargs):
+	"""
+	Retrieve booked shipment / BOL / carrier details from stored LTL Shipment data.
+
+	GET or POST /api/method/ltl_quote.api.flowwolf.get_shipment_details
+
+	Provide either:
+	    { "shipment": "LTL-SHP-2026-00095" }
+	or:
+	    { "quote_request_id": "LTL-QR-2026-00201" }
+
+	Carrier is resolved from the shipment record — no ArcBest/Dayton parameter needed.
+	"""
+	headers, body = _read_request_context()
+	request = {}
+	if isinstance(payload, str) and payload.strip():
+		try:
+			request = json.loads(payload)
+		except Exception:
+			request = {}
+	elif isinstance(payload, dict):
+		request = payload
+	request = {**(body or {}), **request, **(kwargs or {})}
+
+	shipment_id = (
+		shipment
+		or request.get("shipment")
+		or request.get("shipment_id")
+		or request.get("shipment_name")
+	)
+	quote_id = (
+		quote_request_id
+		or request.get("quote_request_id")
+		or request.get("quote_request")
+	)
+	shipment_id = str(shipment_id or "").strip() or None
+	quote_id = str(quote_id or "").strip() or None
+
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = None
+
+	try:
+		if not shipment_id and not quote_id:
+			frappe.throw("Please provide either a shipment ID or a quote_request_id.")
+
+		filters = {}
+		if shipment_id:
+			filters["name"] = shipment_id
+		elif quote_id:
+			filters["quote_request"] = quote_id
+
+		shipment_doc = frappe.db.get_value(
+			"LTL Shipment",
+			filters,
+			[
+				"name",
+				"quote_request",
+				"carrier",
+				"carrier_name",
+				"bol_number",
+				"pro_number",
+				"dayton_bol_id",
+				"bol_document",
+				"bol_document_url",
+				"total_charge",
+				"status",
+			],
+			as_dict=True,
+		)
+
+		if not shipment_doc and quote_id and not shipment_id:
+			# Fall back to quote-request fields when shipment row is missing.
+			quote_doc = frappe.db.get_value(
+				"LTL Quote Request",
+				quote_id,
+				[
+					"name",
+					"status",
+					"final_carrier",
+					"bol_number",
+					"pro_number",
+					"bol_document_url",
+					"final_charge",
+				],
+				as_dict=True,
+			)
+			if not quote_doc:
+				frappe.throw("No shipment found matching the provided identifiers.")
+			carrier_id = quote_doc.final_carrier or None
+			carrier_name = ""
+			if carrier_id and frappe.db.exists("LTL Carrier", carrier_id):
+				carrier_name = frappe.db.get_value("LTL Carrier", carrier_id, "carrier_name") or ""
+			bol_url = resolve_shipment_bol_url(quote_request=quote_doc) or quote_doc.bol_document_url or ""
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": None,
+				"quote_request_id": quote_doc.name,
+				"carrier_code": carrier_id or "",
+				"carrier_name": carrier_name,
+				"bol_number": quote_doc.bol_number or "",
+				"pro_number": quote_doc.pro_number or "",
+				"bol_document_url": bol_url,
+				"total_charge": flt(quote_doc.final_charge),
+				"shipment_status": quote_doc.status or "",
+			}
+			status = "Quotes Received"
+		elif not shipment_doc:
+			frappe.throw("No shipment found matching the provided identifiers.")
+		else:
+			carrier_id = shipment_doc.carrier or None
+			bol_url = resolve_shipment_bol_url(
+				shipment_name=shipment_doc.name,
+				quote_request=shipment_doc.quote_request,
+			) or shipment_doc.bol_document_url or ""
+
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": shipment_doc.name,
+				"quote_request_id": shipment_doc.quote_request or quote_id or "",
+				"carrier_code": shipment_doc.carrier or "",
+				"carrier_name": shipment_doc.carrier_name or "",
+				"bol_number": shipment_doc.bol_number or "",
+				"pro_number": shipment_doc.pro_number or "",
+				"dayton_bol_id": shipment_doc.dayton_bol_id or "",
+				"bol_document_url": bol_url,
+				"total_charge": flt(shipment_doc.total_charge),
+				"shipment_status": shipment_doc.status or "",
+			}
+			status = "Booked" if (shipment_doc.status or "").lower() in {"booked", "dispatched", "in transit", "delivered"} else "Quotes Received"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf get_shipment_details API Error")
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {
+			**(body or {}),
+			"api_url": FLOWWOLF_SHIPMENT_DETAILS_ENDPOINT,
+			"shipment": shipment_id,
+			"quote_request_id": quote_id,
+		}
+		log_api_transaction(headers, log_body, response_payload, status, carrier_id or "Multi-Carrier")
+
+	return response_payload
+
+
+def _merge_flowwolf_request(payload=None, **kwargs) -> dict:
+	"""Merge JSON body, form dict, payload arg, and kwargs into one request map."""
+	_headers, body = _read_request_context()
+	request: dict = {}
+	if isinstance(payload, str) and payload.strip():
+		try:
+			request = json.loads(payload)
+		except Exception:
+			request = {}
+	elif isinstance(payload, dict):
+		request = payload
+	return {**(body or {}), **request, **(kwargs or {})}
+
+
+def _resolve_shipment_for_tracking(
+	shipment: str | None = None,
+	quote_request_id: str | None = None,
+	pro_number: str | None = None,
+) -> tuple[str | None, str | None]:
+	"""Return (shipment_name, pro_number) from any supported identifier."""
+	shipment_id = str(shipment or "").strip() or None
+	quote_id = str(quote_request_id or "").strip() or None
+	pro = str(pro_number or "").strip() or None
+
+	row = None
+	if shipment_id:
+		row = frappe.db.get_value(
+			"LTL Shipment",
+			shipment_id,
+			["name", "pro_number"],
+			as_dict=True,
+		)
+	elif quote_id:
+		row = frappe.db.get_value(
+			"LTL Shipment",
+			{"quote_request": quote_id},
+			["name", "pro_number"],
+			as_dict=True,
+		)
+	elif pro:
+		row = frappe.db.get_value(
+			"LTL Shipment",
+			{"pro_number": pro},
+			["name", "pro_number"],
+			as_dict=True,
+		)
+
+	if row:
+		return row.name, str(row.pro_number or "").strip() or pro
+	return None, pro
+
+
+def _serialize_tracking_events(shipment_doc) -> list[dict]:
+	events = []
+	for row in shipment_doc.get("tracking_events") or []:
+		events.append(
+			{
+				"event_datetime": row.event_datetime,
+				"status_code": row.status_code,
+				"status_description": row.status_description,
+				"location": row.location,
+				"is_exception": int(row.is_exception or 0),
+				"exception_type": row.exception_type,
+				"source": row.source,
+			}
+		)
+	return events
+
+
+def _enrich_dayton_results_with_local_shipments(results: list) -> list:
+	"""Attach matching local LTL Shipment ids to Dayton result rows when PRO matches."""
+	enriched = []
+	for item in results or []:
+		row = dict(item) if isinstance(item, dict) else {"raw": item}
+		pro = str(
+			row.get("pro")
+			or row.get("proNumber")
+			or row.get("pro_number")
+			or row.get("number")
+			or ""
+		).strip()
+		if pro:
+			shipment_name = frappe.db.get_value("LTL Shipment", {"pro_number": pro}, "name")
+			if shipment_name:
+				row["local_shipment"] = shipment_name
+				local = frappe.db.get_value(
+					"LTL Shipment",
+					shipment_name,
+					["status", "current_status", "quote_request"],
+					as_dict=True,
+				)
+				if local:
+					row["local_shipment_status"] = local.status
+					row["local_current_status"] = local.current_status
+					row["quote_request_id"] = local.quote_request
+		enriched.append(row)
+	return enriched
+
+
+@frappe.whitelist(allow_guest=False)
+def track_by_number(payload=None, **kwargs):
+	"""
+	Live Dayton Track-by-Number (PRO) and persist events when a local shipment matches.
+
+	POST /api/method/ltl_quote.api.flowwolf.track_by_number
+
+	Body examples:
+	    { "pro_number": "09019812894" }
+	    { "shipment": "LTL-SHP-2026-00095" }
+	    { "quote_request_id": "LTL-QR-2026-00201" }
+	"""
+	headers, body = _read_request_context()
+	request = _merge_flowwolf_request(payload, **kwargs)
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = "DAYTON"
+
+	shipment_id = (
+		request.get("shipment")
+		or request.get("shipment_id")
+		or request.get("shipment_name")
+	)
+	quote_id = request.get("quote_request_id") or request.get("quote_request")
+	pro_number = (
+		request.get("pro_number")
+		or request.get("pro")
+		or request.get("number")
+		or request.get("tracking_number")
+	)
+
+	try:
+		shipment_name, pro = _resolve_shipment_for_tracking(shipment_id, quote_id, pro_number)
+		if not pro and not shipment_name:
+			frappe.throw("Provide pro_number, shipment, or quote_request_id.")
+
+		if shipment_name:
+			shipment = frappe.get_doc("LTL Shipment", shipment_name)
+			if not pro:
+				pro = str(shipment.pro_number or "").strip()
+			if not pro:
+				frappe.throw(f"Shipment {shipment_name} has no PRO / tracking number yet.")
+			carrier_id = shipment.carrier or "DAYTON"
+			from ltl_quote.visibility.tracker import ShipmentTracker
+
+			result = ShipmentTracker(shipment).refresh()
+			shipment.reload()
+			events = result.get("events") or _serialize_tracking_events(shipment)
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": shipment.name,
+				"quote_request_id": shipment.quote_request,
+				"pro_number": pro,
+				"carrier_code": shipment.carrier,
+				"shipment_status": shipment.status,
+				"current_status": shipment.current_status,
+				"current_location": shipment.current_location,
+				"has_exception": bool(result.get("has_exception") or shipment.has_exception),
+				"events": events,
+				"message": (
+					"Tracking details synchronized successfully."
+					if events
+					else "Shipment registered, but transit tracking events are not populated yet."
+				),
+			}
+		else:
+			from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+
+			adapter = DaytonCarrierAdapter()
+			events = adapter.get_tracking(pro)
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": None,
+				"pro_number": pro,
+				"carrier_code": "DAYTON",
+				"events": events,
+				"message": (
+					"Live tracking events retrieved (no local shipment matched)."
+					if events
+					else "No tracking events returned for this PRO yet."
+				),
+			}
+		status = "Quotes Received" if response_payload.get("events") else "No Quotes Received"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf track_by_number API Error")
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "api_url": FLOWWOLF_TRACK_BY_NUMBER_ENDPOINT, **request}
+		log_api_transaction(headers, log_body, response_payload, status, carrier_id)
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def track_history(payload=None, **kwargs):
+	"""
+	Return tracking history events for a shipment/PRO.
+
+	Uses Dayton ByNumber under the hood (no separate History URL). Refreshes then
+	returns persisted LTL Shipment.tracking_events when a local shipment exists.
+
+	POST /api/method/ltl_quote.api.flowwolf.track_history
+	"""
+	headers, body = _read_request_context()
+	request = _merge_flowwolf_request(payload, **kwargs)
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = "DAYTON"
+	refresh = str(request.get("refresh", "1")).strip().lower() not in {"0", "false", "no"}
+
+	shipment_id = (
+		request.get("shipment")
+		or request.get("shipment_id")
+		or request.get("shipment_name")
+	)
+	quote_id = request.get("quote_request_id") or request.get("quote_request")
+	pro_number = (
+		request.get("pro_number")
+		or request.get("pro")
+		or request.get("number")
+		or request.get("tracking_number")
+	)
+
+	try:
+		shipment_name, pro = _resolve_shipment_for_tracking(shipment_id, quote_id, pro_number)
+		if not pro and not shipment_name:
+			frappe.throw("Provide pro_number, shipment, or quote_request_id.")
+
+		if shipment_name:
+			shipment = frappe.get_doc("LTL Shipment", shipment_name)
+			pro = pro or str(shipment.pro_number or "").strip()
+			if not pro:
+				frappe.throw(f"Shipment {shipment_name} has no PRO / tracking number yet.")
+			carrier_id = shipment.carrier or "DAYTON"
+			if refresh:
+				from ltl_quote.visibility.tracker import ShipmentTracker
+
+				ShipmentTracker(shipment).refresh()
+				shipment.reload()
+			events = _serialize_tracking_events(shipment)
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": shipment.name,
+				"quote_request_id": shipment.quote_request,
+				"pro_number": pro,
+				"carrier_code": shipment.carrier,
+				"shipment_status": shipment.status,
+				"current_status": shipment.current_status,
+				"current_location": shipment.current_location,
+				"last_tracking_update": shipment.last_tracking_update,
+				"events": events,
+			}
+		else:
+			from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+
+			adapter = DaytonCarrierAdapter()
+			events = adapter.get_tracking(pro)
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"shipment": None,
+				"pro_number": pro,
+				"carrier_code": "DAYTON",
+				"events": events,
+			}
+		status = "Quotes Received" if response_payload.get("events") else "No Quotes Received"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf track_history API Error")
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "api_url": FLOWWOLF_TRACK_HISTORY_ENDPOINT, **request}
+		log_api_transaction(headers, log_body, response_payload, status, carrier_id)
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def track_by_date(payload=None, **kwargs):
+	"""
+	Dayton Track-by-Date gateway.
+
+	POST /api/method/ltl_quote.api.flowwolf.track_by_date
+
+	Body:
+	    {
+	        "start": "2026-07-01T00:00:00Z",
+	        "end": "2026-07-20T23:59:59Z",
+	        "customer": "0055666"
+	    }
+	"""
+	headers, body = _read_request_context()
+	request = _merge_flowwolf_request(payload, **kwargs)
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = "DAYTON"
+
+	try:
+		start = request.get("start") or request.get("start_date")
+		end = request.get("end") or request.get("end_date")
+		customer = request.get("customer") or request.get("customer_code")
+		if not start or not end:
+			frappe.throw("Provide start and end (ISO timestamp or YYYY-MM-DD).")
+
+		from ltl_quote.carrier_network.adapters.dayton import fetch_dayton_tracking_by_date
+
+		raw = fetch_dayton_tracking_by_date(start, end, customer)
+		if isinstance(raw, dict) and raw.get("status") == "error":
+			frappe.throw(raw.get("text") or f"Dayton ByDate failed ({raw.get('code')})")
+
+		results = raw.get("results") if isinstance(raw, dict) else raw
+		if not isinstance(results, list):
+			results = []
+		enriched = _enrich_dayton_results_with_local_shipments(results)
+		response_payload = {
+			"status": "success",
+			"engine": FLOWWOLF_ENGINE,
+			"customer": (raw.get("customer") if isinstance(raw, dict) else None) or customer,
+			"start": (raw.get("start") if isinstance(raw, dict) else None) or start,
+			"end": (raw.get("end") if isinstance(raw, dict) else None) or end,
+			"traceId": raw.get("traceId") if isinstance(raw, dict) else None,
+			"count": len(enriched),
+			"results": enriched,
+		}
+		status = "Quotes Received" if enriched else "No Quotes Received"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf track_by_date API Error")
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "api_url": FLOWWOLF_TRACK_BY_DATE_ENDPOINT, **request}
+		log_api_transaction(headers, log_body, response_payload, status, carrier_id)
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def track_pending(payload=None, **kwargs):
+	"""
+	Dayton Track Pending Shipments gateway.
+
+	POST /api/method/ltl_quote.api.flowwolf.track_pending
+
+	Body (optional):
+	    { "customer": "0055666" }
+	"""
+	headers, body = _read_request_context()
+	request = _merge_flowwolf_request(payload, **kwargs)
+	status = "Queued"
+	response_payload: dict = {}
+	carrier_id = "DAYTON"
+
+	try:
+		customer = request.get("customer") or request.get("customer_code")
+		from ltl_quote.carrier_network.adapters.dayton import fetch_dayton_pending_shipments
+
+		raw = fetch_dayton_pending_shipments(customer)
+		if isinstance(raw, dict) and raw.get("status") == "error":
+			frappe.throw(raw.get("text") or f"Dayton Pending failed ({raw.get('code')})")
+
+		results = raw.get("results") if isinstance(raw, dict) else raw
+		if not isinstance(results, list):
+			results = []
+		enriched = _enrich_dayton_results_with_local_shipments(results)
+		response_payload = {
+			"status": "success",
+			"engine": FLOWWOLF_ENGINE,
+			"customer": (raw.get("customer") if isinstance(raw, dict) else None) or customer,
+			"traceId": raw.get("traceId") if isinstance(raw, dict) else None,
+			"count": len(enriched),
+			"results": enriched,
+		}
+		status = "Quotes Received" if enriched else "No Quotes Received"
+
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf track_pending API Error")
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "api_url": FLOWWOLF_TRACK_PENDING_ENDPOINT, **request}
+		log_api_transaction(headers, log_body, response_payload, status, carrier_id)
+
+	return response_payload
 
 
 PLACEHOLDER_CARRIER_QUOTE_IDS = frozenset(

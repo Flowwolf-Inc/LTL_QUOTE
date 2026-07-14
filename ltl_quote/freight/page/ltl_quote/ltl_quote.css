@@ -405,6 +405,15 @@ body.ltl-fullscreen .layout-side-section {
 	margin-bottom: 6px;
 	font-weight: 500;
 }
+.ltl-field label .ltl-required {
+	color: #e24c4c;
+	font-weight: 700;
+	margin-left: 2px;
+}
+.ltl-input.ltl-input-invalid {
+	border-color: #e24c4c;
+	box-shadow: 0 0 0 2px rgba(226, 76, 76, 0.15);
+}
 .ltl-input {
 	width: 100%;
 	border: 1px solid #dfe2e6;
@@ -439,6 +448,38 @@ body.ltl-fullscreen .layout-side-section {
 	gap: 12px;
 }
 
+/* ---- Collapsible section cards (Load Accessorials / Line Items) ---- */
+.ltl-collapse-card {
+	border: 1px solid var(--ltl-border);
+	border-radius: 10px;
+	padding: 14px 16px;
+	background: #fdfdfd;
+	margin-top: 18px;
+}
+.ltl-collapse-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	cursor: pointer;
+	user-select: none;
+}
+.ltl-collapse-head > span {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-weight: 700;
+	font-size: 14px;
+	color: var(--ltl-text);
+}
+.ltl-collapse-card.expanded > .ltl-collapse-head .ltl-chevron {
+	transform: rotate(180deg);
+}
+.ltl-collapse-body {
+	margin-top: 14px;
+	padding-top: 4px;
+}
+
 /* ---- Accessorials ---- */
 .ltl-acc-grid {
 	display: grid;
@@ -448,19 +489,26 @@ body.ltl-fullscreen .layout-side-section {
 
 /* ---- Line Items (Shipment Details) ---- */
 .ltl-line-items {
-	margin-top: 22px;
+	margin-top: 18px;
 }
 .ltl-line-items-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 16px;
-	margin-bottom: 14px;
+	margin-bottom: 0;
+}
+.ltl-line-items.expanded .ltl-line-items-head {
+	margin-bottom: 0;
 }
 .ltl-line-items-head-left {
 	display: flex;
 	align-items: center;
 	gap: 12px;
+	min-width: 0;
+}
+.ltl-line-items-head-left > .ltl-chevron {
+	flex-shrink: 0;
 }
 .ltl-line-items-icon {
 	width: 36px;

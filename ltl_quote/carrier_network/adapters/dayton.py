@@ -1982,34 +1982,86 @@ def sync_all_active_shipments():
 			)
 
 
+def _resolve_dayton_customer_code(customer_code: str | None = None) -> str:
+	"""Prefer explicit customer, else DAYTON LTL Carrier.account_number, else default."""
+	code = str(customer_code or "").strip()
+	if code:
+		return code
+	if frappe.db.exists("LTL Carrier", "DAYTON"):
+		account = frappe.db.get_value("LTL Carrier", "DAYTON", "account_number")
+		if account:
+			return str(account).strip()
+	return DEFAULT_ACCOUNT_NUMBER
+
+
+def _normalize_dayton_tracking_range(start_date: str, end_date: str) -> tuple[str, str]:
+	"""Accept ISO timestamps or dates; expand date-only values to UTC day bounds."""
+	start = str(start_date or "").strip()
+	end = str(end_date or "").strip()
+	if not start or not end:
+		frappe.throw("Both start and end are required for track-by-date.")
+
+	def _expand(value: str, *, end_of_day: bool) -> str:
+		if "T" in value or " " in value:
+			return value.replace(" ", "T")
+		# Date-only: 2026-07-01
+		suffix = "T23:59:59Z" if end_of_day else "T00:00:00Z"
+		return f"{value}{suffix}"
+
+	return _expand(start, end_of_day=False), _expand(end, end_of_day=True)
+
+
 @frappe.whitelist()
-def fetch_dayton_tracking_by_date(start_date: str, end_date: str, customer_code: str) -> dict:
-	"""Proxies Dayton's ByDate endpoint through Frappe Localhost."""
+def fetch_dayton_tracking_by_date(start_date: str, end_date: str, customer_code: str | None = None) -> dict:
+	"""Proxies Dayton GET /api/Tracking/ByDate (Postman: start, end, customer)."""
 	adapter = DaytonCarrierAdapter()
+	start, end = _normalize_dayton_tracking_range(start_date, end_date)
+	customer = _resolve_dayton_customer_code(customer_code or adapter.account_number)
 	endpoint = f"{adapter.base_url}/api/Tracking/ByDate"
 	params = {
-		"startstring": start_date,
-		"endstring": end_date,
-		"customerstring": customer_code
+		"start": start,
+		"end": end,
+		"customer": customer,
 	}
 	try:
-		response = requests.get(endpoint, headers=adapter.get_headers(), params=params, timeout=10)
-		return response.json() if response.status_code == 200 else {"status": "error", "code": response.status_code, "text": response.text}
+		response = requests.get(
+			endpoint,
+			headers=adapter.get_headers(),
+			params=params,
+			timeout=REQUEST_TIMEOUT,
+		)
+		if response.status_code == 200:
+			data = response.json()
+			if isinstance(data, dict):
+				data.setdefault("customer", customer)
+				data.setdefault("start", start)
+				data.setdefault("end", end)
+			return data
+		return {"status": "error", "code": response.status_code, "text": response.text}
 	except Exception as e:
 		frappe.throw(f"Frappe Proxy Error: {str(e)}")
 
 
 @frappe.whitelist()
-def fetch_dayton_pending_shipments(customer_code: str) -> dict:
-	"""Proxies Dayton's Pending shipments endpoint through Frappe Localhost."""
+def fetch_dayton_pending_shipments(customer_code: str | None = None) -> dict:
+	"""Proxies Dayton GET /api/Tracking/Pending?customer=..."""
 	adapter = DaytonCarrierAdapter()
+	customer = _resolve_dayton_customer_code(customer_code or adapter.account_number)
 	endpoint = f"{adapter.base_url}/api/Tracking/Pending"
-	params = {
-		"customer": customer_code
-	}
+	params = {"customer": customer}
 	try:
-		response = requests.get(endpoint, headers=adapter.get_headers(), params=params, timeout=10)
-		return response.json() if response.status_code == 200 else {"status": "error", "code": response.status_code, "text": response.text}
+		response = requests.get(
+			endpoint,
+			headers=adapter.get_headers(),
+			params=params,
+			timeout=REQUEST_TIMEOUT,
+		)
+		if response.status_code == 200:
+			data = response.json()
+			if isinstance(data, dict):
+				data.setdefault("customer", customer)
+			return data
+		return {"status": "error", "code": response.status_code, "text": response.text}
 	except Exception as e:
 		frappe.throw(f"Frappe Proxy Error: {str(e)}")
 

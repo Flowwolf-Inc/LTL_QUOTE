@@ -230,6 +230,8 @@ ltl_quote.Dashboard = class Dashboard {
 		this.booking_context = null;
 		this.quote_request_status = null;
 		this.expanded = false;
+		this.load_acc_expanded = false;
+		this.line_items_expanded = false;
 		this.line_items = [];
 		this.editing_line_item = null;
 		this.editing_line_item_is_new = false;
@@ -425,6 +427,9 @@ ltl_quote.Dashboard = class Dashboard {
 		const hours_label = is_origin ? "Pickup Hours" : "Delivery Hours";
 		const pfx = `exp_${side}_`;
 		const acc = is_origin ? this.acc_options.pickup : this.acc_options.delivery;
+		const star = ' <span class="req">*</span>';
+		const date_req = is_origin ? star : "";
+		const hours_req = is_origin ? star : "";
 		return `
 			<div class="ltl-od-card">
 				<div class="ltl-od-title">${title}</div>
@@ -434,25 +439,25 @@ ltl_quote.Dashboard = class Dashboard {
 				</div>
 				<div class="ltl-tab-pane" data-tab-pane="${side}-details">
 					<div class="ltl-grid ltl-grid-2">
-						<div class="ltl-field"><label>${loc_label} <span class="req">*</span></label>
-							<input type="text" class="ltl-input" data-field="${pfx}location" /></div>
-						<div class="ltl-field"><label>Street Address <span class="req">*</span></label>
-							<input type="text" class="ltl-input" data-field="${pfx}address" /></div>
-						<div class="ltl-field"><label>${city_label} <span class="req">*</span></label>
-							<input type="text" class="ltl-input" data-field="${pfx}city" /></div>
-						<div class="ltl-field"><label>State <span class="req">*</span></label>
-							<input type="text" class="ltl-input" data-field="${pfx}state" /></div>
-						<div class="ltl-field"><label>Zip <span class="req">*</span></label>
+						<div class="ltl-field"><label>Zip</label>
 							<input type="text" class="ltl-input" data-field="exp_${side}_zip" placeholder="e.g. ${is_origin ? "60601" : "75201"}" /></div>
-						<div class="ltl-field"><label>Country <span class="req">*</span></label>
+						<div class="ltl-field"><label>${loc_label}${star}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}location" /></div>
+						<div class="ltl-field"><label>Street Address</label>
+							<input type="text" class="ltl-input" data-field="${pfx}address" /></div>
+						<div class="ltl-field"><label>${city_label}${star}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}city" /></div>
+						<div class="ltl-field"><label>State${star}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}state" /></div>
+						<div class="ltl-field"><label>Country${star}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}country" placeholder="USA" /></div>
-						<div class="ltl-field"><label>${date_label} <span class="req">*</span></label>
+						<div class="ltl-field"><label>${date_label}${date_req}</label>
 							<input type="date" class="ltl-input" data-field="${pfx}date" /></div>
-						<div class="ltl-field"><label>${hours_label} <span class="req">*</span></label>
+						<div class="ltl-field"><label>${hours_label}${hours_req}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}hours" placeholder="0800-1700" /></div>
 					</div>
 					<div class="ltl-grid ltl-grid-2">
-						<div class="ltl-field"><label>Contact</label>
+						<div class="ltl-field"><label>Contact${star}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}contact" /></div>
 						<div class="ltl-field"><label>Email</label>
 							<input type="email" class="ltl-input" data-field="${pfx}email" placeholder="name@example.com" /></div>
@@ -484,17 +489,24 @@ ltl_quote.Dashboard = class Dashboard {
 						<select class="ltl-input" data-field="exp_freight_class">${this.freight_options()}</select>
 					</div>
 				</div>
-				<div class="ltl-subhead" style="margin-top:18px;">Load Based Accessorials</div>
-				<div class="ltl-acc-grid">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
+				<div class="ltl-collapse-card ltl-load-acc-card" style="margin-top:18px;">
+					<div class="ltl-collapse-head" data-action="toggle-load-acc">
+						<span><i class="fa fa-chevron-down ltl-chevron"></i> Load Based Accessorials</span>
+					</div>
+					<div class="ltl-collapse-body" style="display:none;">
+						<div class="ltl-acc-grid">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
+					</div>
+				</div>
 				${this.render_line_items_bar()}
 			</div>`;
 	}
 
 	render_line_items_bar() {
 		return `
-			<div class="ltl-line-items">
-				<div class="ltl-line-items-head">
+			<div class="ltl-collapse-card ltl-line-items">
+				<div class="ltl-collapse-head ltl-line-items-head" data-action="toggle-line-items">
 					<div class="ltl-line-items-head-left">
+						<i class="fa fa-chevron-down ltl-chevron"></i>
 						<span class="ltl-line-items-icon"><i class="fa fa-list-ul"></i></span>
 						<div>
 							<div class="ltl-line-items-title">Line Items</div>
@@ -505,32 +517,34 @@ ltl_quote.Dashboard = class Dashboard {
 						<i class="fa fa-plus"></i> Add Line Item
 					</button>
 				</div>
-				<div class="ltl-line-items-card">
-					<div class="ltl-line-items-card-head">
-						<span class="ltl-line-items-card-icon"><i class="fa fa-file-text-o"></i></span>
-						<div>
-							<div class="ltl-line-items-card-title">Line Items</div>
-							<div class="ltl-line-items-count">0 items</div>
+				<div class="ltl-collapse-body" style="display:none;">
+					<div class="ltl-line-items-card">
+						<div class="ltl-line-items-card-head">
+							<span class="ltl-line-items-card-icon"><i class="fa fa-file-text-o"></i></span>
+							<div>
+								<div class="ltl-line-items-card-title">Line Items</div>
+								<div class="ltl-line-items-count">0 items</div>
+							</div>
 						</div>
-					</div>
-					<div class="ltl-line-items-table-wrap">
-						<table class="ltl-table ltl-line-items-table">
-							<thead>
-								<tr>
-									<th class="ltl-li-check"><input type="checkbox" class="ltl-li-select-all" /></th>
-									<th class="ltl-li-no">No.</th>
-									<th>Item Description <span class="req">*</span></th>
-									<th>Item Number</th>
-									<th>NMFC Class <span class="req">*</span></th>
-									<th>NMFC Number</th>
-									<th class="ltl-li-actions"></th>
-								</tr>
-							</thead>
-							<tbody class="ltl-line-items-body"></tbody>
-						</table>
-					</div>
-					<div class="ltl-line-items-footer">
-						<span class="ltl-line-items-showing">Showing 0 of 0 items</span>
+						<div class="ltl-line-items-table-wrap">
+							<table class="ltl-table ltl-line-items-table">
+								<thead>
+									<tr>
+										<th class="ltl-li-check"><input type="checkbox" class="ltl-li-select-all" /></th>
+										<th class="ltl-li-no">No.</th>
+										<th>Item Description <span class="req">*</span></th>
+										<th>Item Number</th>
+										<th>NMFC Class <span class="req">*</span></th>
+										<th>NMFC Number</th>
+										<th class="ltl-li-actions"></th>
+									</tr>
+								</thead>
+								<tbody class="ltl-line-items-body"></tbody>
+							</table>
+						</div>
+						<div class="ltl-line-items-footer">
+							<span class="ltl-line-items-showing">Showing 0 of 0 items</span>
+						</div>
 					</div>
 				</div>
 			</div>`;
@@ -582,11 +596,13 @@ ltl_quote.Dashboard = class Dashboard {
 		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
 		const val = esc((this.editing_line_item && this.editing_line_item[key]) || "");
 		const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : "";
+		const req = opts.required ? ' <span class="ltl-required" aria-hidden="true">*</span>' : "";
+		const req_attr = opts.required ? ' required aria-required="true"' : "";
 		if (opts.type === "textarea") {
 			return `
 				<div class="ltl-field ${opts.className || ""}">
-					<label>${label}</label>
-					<textarea class="ltl-input" data-li-edit="${key}" rows="${opts.rows || 4}"${ph}>${val}</textarea>
+					<label>${label}${req}</label>
+					<textarea class="ltl-input" data-li-edit="${key}" rows="${opts.rows || 4}"${ph}${req_attr}>${val}</textarea>
 				</div>`;
 		}
 		if (opts.type === "select") {
@@ -595,16 +611,16 @@ ltl_quote.Dashboard = class Dashboard {
 				.join("");
 			return `
 				<div class="ltl-field ${opts.className || ""}">
-					<label>${label}</label>
-					<select class="ltl-input" data-li-edit="${key}">
+					<label>${label}${req}</label>
+					<select class="ltl-input" data-li-edit="${key}"${req_attr}>
 						<option value="">Select</option>${options}
 					</select>
 				</div>`;
 		}
 		return `
 			<div class="ltl-field ${opts.className || ""}">
-				<label>${label}</label>
-				<input type="${opts.type || "text"}" class="ltl-input" data-li-edit="${key}" value="${val}"${ph} />
+				<label>${label}${req}</label>
+				<input type="${opts.type || "text"}" class="ltl-input" data-li-edit="${key}" value="${val}"${ph}${req_attr} />
 			</div>`;
 	}
 
@@ -633,11 +649,11 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 						<div class="ltl-li-edit-col">
 							${this.li_input("Rate", "rate", { type: "number", placeholder: "0.00" })}
-							${this.li_input("Description", "description", { type: "textarea", rows: 5 })}
+							${this.li_input("Description", "description", { type: "textarea", rows: 5, required: true })}
 						</div>
 						<div class="ltl-li-edit-col">
 							${this.li_input("Units", "units")}
-							${this.li_input("Quantity", "quantity", { type: "number" })}
+							${this.li_input("Quantity", "quantity", { type: "number", required: true })}
 							${this.li_input("Packaging Units", "packaging_units")}
 							${this.li_input("Packaging Unit Count", "packaging_unit_count", { type: "number" })}
 						</div>
@@ -649,9 +665,9 @@ ltl_quote.Dashboard = class Dashboard {
 					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
 						<div class="ltl-li-edit-col">
 							${this.li_input("Dimension Units", "dimension_units", { placeholder: "IN" })}
-							${this.li_input("Length", "length", { type: "number" })}
-							${this.li_input("Width", "width", { type: "number" })}
-							${this.li_input("Height", "height", { type: "number" })}
+							${this.li_input("Length", "length", { type: "number", required: true })}
+							${this.li_input("Width", "width", { type: "number", required: true })}
+							${this.li_input("Height", "height", { type: "number", required: true })}
 						</div>
 						<div class="ltl-li-edit-col">
 							${this.li_input("Volume Units", "volume_units")}
@@ -661,7 +677,7 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 						<div class="ltl-li-edit-col">
 							${this.li_input("Weight Units", "weight_units", { placeholder: "LBS" })}
-							${this.li_input("Weight", "weight", { type: "number" })}
+							${this.li_input("Weight", "weight", { type: "number", required: true })}
 						</div>
 					</div>
 				</section>
@@ -683,8 +699,8 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 						<div class="ltl-li-edit-col">
 							${this.li_input("Linear Feet", "linear_feet", { type: "number" })}
-							${this.li_input("NMFC Class", "nmfc_class", nmfc_opts)}
-							${this.li_input("NMFC Number", "nmfc_number")}
+							${this.li_input("NMFC Class", "nmfc_class", { ...nmfc_opts, required: true })}
+							${this.li_input("NMFC Number", "nmfc_number", { required: true })}
 						</div>
 					</div>
 				</section>
@@ -738,6 +754,7 @@ ltl_quote.Dashboard = class Dashboard {
 			this.body.find(".ltl-ship-expanded").show();
 		}
 		this.refresh_line_items_table();
+		this.ensure_line_items_expanded();
 		const el = this.body.find(".ltl-line-items")[0];
 		if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
 	}
@@ -753,15 +770,33 @@ ltl_quote.Dashboard = class Dashboard {
 
 	save_line_item_editor() {
 		const data = this.collect_line_item_form();
-		if (!data.description && !data.item_name) {
-			frappe.show_alert({ message: __("Please enter Item Description or Item Name"), indicator: "orange" }, 5);
+		const required = [
+			{ key: "description", label: __("Description") },
+			{ key: "quantity", label: __("Quantity") },
+			{ key: "weight", label: __("Weight") },
+			{ key: "nmfc_class", label: __("NMFC Class") },
+			{ key: "nmfc_number", label: __("NMFC Number") },
+			{ key: "length", label: __("Length") },
+			{ key: "width", label: __("Width") },
+			{ key: "height", label: __("Height") },
+		];
+		const missing = required.filter((f) => !String(data[f.key] || "").trim());
+		if (missing.length) {
+			frappe.show_alert(
+				{
+					message: __("Please fill required fields: {0}", [missing.map((f) => f.label).join(", ")]),
+					indicator: "orange",
+				},
+				6
+			);
+			const first = missing[0].key;
+			const el = this.body.find(`[data-li-edit="${first}"]`);
+			if (el.length) {
+				el.addClass("ltl-input-invalid").focus();
+				setTimeout(() => el.removeClass("ltl-input-invalid"), 2500);
+			}
 			return;
 		}
-		if (!data.nmfc_class) {
-			frappe.show_alert({ message: __("Please select NMFC Class"), indicator: "orange" }, 5);
-			return;
-		}
-		if (!data.description && data.item_name) data.description = data.item_name;
 
 		if (this.editing_line_item_is_new) {
 			this.line_items.push(data);
@@ -790,18 +825,29 @@ ltl_quote.Dashboard = class Dashboard {
 
 	require_line_items() {
 		const items = this.collect_line_items();
-		const valid = items.filter((row) => (row.description || row.item_name) && (row.nmfc_class || row.freight_class));
+		const valid = items.filter(
+			(row) =>
+				(row.description || row.item_name) &&
+				(row.nmfc_class || row.freight_class) &&
+				row.nmfc_number &&
+				row.quantity &&
+				row.weight &&
+				row.length &&
+				row.width &&
+				row.height
+		);
 		if (!valid.length) {
 			frappe.show_alert(
 				{
 					message: __(
-						"Add at least one Line Item (Description + NMFC Class) under Shipment Details, then click Save Item Details."
+						"Add at least one complete Line Item (Description, Quantity, Weight, NMFC Class, NMFC Number, Length, Width, Height), then click Save Item Details."
 					),
 					indicator: "orange",
 				},
 				8
 			);
 			if (!this.expanded) this.toggle_shipment();
+			this.ensure_line_items_expanded();
 			const el = this.body.find(".ltl-line-items")[0];
 			if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
 			return null;
@@ -915,6 +961,11 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.on("input", zip_selector, debounced_recent);
 
 		this.body.on("click", "[data-action='toggle-ship']", () => this.toggle_shipment());
+		this.body.on("click", "[data-action='toggle-load-acc']", () => this.toggle_load_accessorials());
+		this.body.on("click", "[data-action='toggle-line-items']", (e) => {
+			if ($(e.target).closest("[data-action='add-line-item']").length) return;
+			this.toggle_line_items_section();
+		});
 
 		this.body.on("click", ".ltl-tab", (e) => {
 			const target = $(e.currentTarget).attr("data-tab-target");
@@ -925,7 +976,10 @@ ltl_quote.Dashboard = class Dashboard {
 			card.find(`[data-tab-pane='${target}']`).show();
 		});
 
-		this.body.on("click", "[data-action='add-line-item']", () => {
+		this.body.on("click", "[data-action='add-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.ensure_line_items_expanded();
 			this.open_line_item_editor(new_line_item(), true);
 		});
 
@@ -963,6 +1017,26 @@ ltl_quote.Dashboard = class Dashboard {
 		card.find(".ltl-ship-collapsed").toggle(!this.expanded);
 		card.find(".ltl-ship-expanded").toggle(this.expanded);
 		this.load_recent_requests();
+	}
+
+	toggle_load_accessorials() {
+		this.load_acc_expanded = !this.load_acc_expanded;
+		const card = this.body.find(".ltl-load-acc-card");
+		card.toggleClass("expanded", this.load_acc_expanded);
+		card.children(".ltl-collapse-body").toggle(this.load_acc_expanded);
+	}
+
+	toggle_line_items_section(force_open) {
+		if (force_open === true) this.line_items_expanded = true;
+		else if (force_open === false) this.line_items_expanded = false;
+		else this.line_items_expanded = !this.line_items_expanded;
+		const card = this.body.find(".ltl-line-items");
+		card.toggleClass("expanded", this.line_items_expanded);
+		card.children(".ltl-collapse-body").toggle(this.line_items_expanded);
+	}
+
+	ensure_line_items_expanded() {
+		if (!this.line_items_expanded) this.toggle_line_items_section(true);
 	}
 
 	// Keep the shared core fields (zip / weight / class) in sync across the two views.
@@ -1026,6 +1100,9 @@ ltl_quote.Dashboard = class Dashboard {
 				origin_country: val("exp_origin_country") || "USA",
 				destination_country: val("exp_destination_country") || "USA",
 				pickup_date: val("exp_origin_date"),
+				pickup_hours: val("exp_origin_hours"),
+				delivery_date: val("exp_destination_date"),
+				delivery_hours: val("exp_destination_hours"),
 			});
 		}
 
@@ -1070,11 +1147,28 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!this.require_line_items()) return;
 
 		const payload = this.collect_payload();
+		const val = (field) => (this.body.find(`[data-field='${field}']`).val() || "").trim();
 		const missing = [];
 		if (!payload.origin_zip) missing.push("Origin ZIP");
 		if (!payload.destination_zip) missing.push("Destination ZIP");
 		if (!payload.weight) missing.push("Total Weight");
 		if (!payload.freight_class) missing.push("Freight Class");
+
+		if (this.expanded) {
+			if (!val("exp_origin_location")) missing.push("Pickup Location");
+			if (!val("exp_origin_city")) missing.push("Pickup City");
+			if (!val("exp_origin_state")) missing.push("Origin State");
+			if (!val("exp_origin_country")) missing.push("Origin Country");
+			if (!val("exp_origin_date")) missing.push("Pickup Date");
+			if (!val("exp_origin_hours")) missing.push("Pickup Hours");
+			if (!val("exp_origin_contact")) missing.push("Origin Contact");
+			if (!val("exp_destination_location")) missing.push("Delivery Location");
+			if (!val("exp_destination_city")) missing.push("Delivery City");
+			if (!val("exp_destination_state")) missing.push("Destination State");
+			if (!val("exp_destination_country")) missing.push("Destination Country");
+			if (!val("exp_destination_contact")) missing.push("Destination Contact");
+		}
+
 		if (missing.length) {
 			frappe.show_alert({ message: __("Please fill: {0}", [missing.join(", ")]), indicator: "orange" }, 6);
 			return;
@@ -2269,6 +2363,8 @@ ltl_quote.Dashboard = class Dashboard {
 		this.quote_request_id = null;
 		this.booking_context = null;
 		this.quote_request_status = null;
+		if (this.load_acc_expanded) this.toggle_load_accessorials();
+		if (this.line_items_expanded) this.toggle_line_items_section(false);
 		this.render_rates();
 		this.load_recent_requests();
 	}
