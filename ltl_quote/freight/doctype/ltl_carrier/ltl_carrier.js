@@ -28,7 +28,7 @@ function sync_accessorials(frm) {
 			frappe.show_alert(
 				{
 					message: r.message.message || __("Accessorial mappings updated"),
-					indicator: r.message.added ? "green" : "blue",
+					indicator: r.message.added || r.message.updated ? "green" : "blue",
 				},
 				7
 			);

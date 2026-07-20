@@ -27,6 +27,14 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 			dash.open_shipment_detail(name);
 			return;
 		}
+		if (name && view === "pickup") {
+			dash.open_pickup_detail(name);
+			return;
+		}
+		if (name && view === "tracking") {
+			dash.open_tracking_detail(name);
+			return;
+		}
 		if (name && (view === "quote" || view === "quotes")) {
 			dash.open_quote_detail(name);
 			return;
@@ -73,6 +81,7 @@ const DELIVERY_ACCESSORIALS = [
 ];
 const LOAD_ACCESSORIALS = [
 	{ label: "Limited Access", code: "LIMITED_ACCESS" },
+	{ label: "Hazmat Handling", code: "HAZMAT" },
 	{ label: "Delivery Appointment", code: "APPOINTMENT" },
 ];
 
@@ -235,11 +244,15 @@ ltl_quote.Dashboard = class Dashboard {
 		this.line_items = [];
 		this.editing_line_item = null;
 		this.editing_line_item_is_new = false;
+		this.packaging_type_options = [];
+		this.shipping_class_options = FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		this.state_province_options = [];
 		this.acc_options = {
 			pickup: PICKUP_ACCESSORIALS,
 			delivery: DELIVERY_ACCESSORIALS,
 			load: LOAD_ACCESSORIALS,
 		};
+		this.dayton_acc_extras = { pickup: [], delivery: [] };
 		this.init();
 	}
 
@@ -254,6 +267,102 @@ ltl_quote.Dashboard = class Dashboard {
 			},
 			error: () => this.build(),
 		});
+		this.load_packaging_type_options();
+		this.load_shipping_class_options();
+		this.load_state_province_options();
+		this.load_dayton_accessorial_extras();
+	}
+
+	load_dayton_accessorial_extras() {
+		["pickup", "delivery"].forEach((side) => {
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_dayton_accessorial_extras",
+				args: { side },
+				callback: (r) => {
+					this.dayton_acc_extras[side] = r.message || [];
+					this.refresh_dayton_acc_extras(side);
+				},
+			});
+		});
+	}
+
+	refresh_dayton_acc_extras(side) {
+		if (!this.body) return;
+		const od_side = side === "pickup" ? "origin" : "destination";
+		const host = this.body.find(`[data-dayton-extras='${od_side}']`);
+		if (!host.length) return;
+		host.html(this.render_dayton_extra_boxes(side, od_side));
+	}
+
+	load_packaging_type_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_packaging_type_options",
+			callback: (r) => {
+				this.packaging_type_options = r.message || [];
+			},
+		});
+	}
+
+	load_shipping_class_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_shipping_class_options",
+			callback: (r) => {
+				const rows = r.message || [];
+				if (rows.length) {
+					this.shipping_class_options = rows;
+					this.refresh_freight_class_selects();
+				}
+			},
+		});
+	}
+
+	refresh_freight_class_selects() {
+		const html = this.freight_options();
+		this.body.find("[data-field='freight_class'],[data-field='exp_freight_class']").each((_, el) => {
+			const $el = $(el);
+			const current = $el.val();
+			$el.html(html);
+			if (current) $el.val(current);
+		});
+	}
+
+	load_state_province_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_state_province_options",
+			callback: (r) => {
+				const rows = r.message || [];
+				if (rows.length) {
+					this.state_province_options = rows;
+					this.refresh_state_province_selects();
+				}
+			},
+		});
+	}
+
+	refresh_state_province_selects() {
+		if (!this.body) return;
+		const html = this.state_province_options_html();
+		this.body.find("[data-field='exp_origin_state'],[data-field='exp_destination_state']").each((_, el) => {
+			const $el = $(el);
+			const current = $el.val();
+			$el.html(html);
+			if (current) $el.val(current);
+		});
+	}
+
+	state_province_options_html(selected = "") {
+		const rows = this.state_province_options || [];
+		const options = rows
+			.map((row) => {
+				const value = typeof row === "object" ? row.value || row.code : row;
+				const label = typeof row === "object" ? row.label || row.value || row.code : row;
+				const sel = String(selected) === String(value) ? "selected" : "";
+				return `<option value="${frappe.utils.escape_html(String(value))}" ${sel}>${frappe.utils.escape_html(
+					String(label)
+				)}</option>`;
+			})
+			.join("");
+		return `<option value="">Select state</option>${options}`;
 	}
 
 	build() {
@@ -319,6 +428,12 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-view ltl-view-line-item" style="display:none;">
 							<div class="ltl-line-item-edit-body"></div>
 						</div>
+						<div class="ltl-view ltl-view-pickup" style="display:none;">
+							<div class="ltl-pickup-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
+						<div class="ltl-view ltl-view-tracking" style="display:none;">
+							<div class="ltl-tracking-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -376,7 +491,18 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	freight_options() {
-		const options = FREIGHT_CLASSES.map((c) => `<option value="${c}">${c}</option>`).join("");
+		const classes = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const options = classes
+			.map((c) => {
+				const value = typeof c === "object" ? c.value : c;
+				const label = typeof c === "object" ? c.label || c.value : c;
+				return `<option value="${frappe.utils.escape_html(String(value))}">${frappe.utils.escape_html(
+					String(label)
+				)}</option>`;
+			})
+			.join("");
 		return `<option value="" selected>Select class</option>${options}`;
 	}
 
@@ -392,25 +518,51 @@ ltl_quote.Dashboard = class Dashboard {
 			.join("");
 	}
 
+	render_dayton_extra_boxes(side, group) {
+		const list = (this.dayton_acc_extras && this.dayton_acc_extras[side]) || [];
+		if (!list.length) {
+			return `<div class="ltl-acc-extras-empty">${__(
+				"No additional Dayton services synced yet. Sync Dayton Accessorials from Desk."
+			)}</div>`;
+		}
+		const boxes = list
+			.map(
+				(a, i) => `
+			<label class="ltl-check ltl-check-extra" title="${frappe.utils.escape_html(a.code || "")}">
+				<input type="checkbox" data-acc="${frappe.utils.escape_html(a.code)}"
+					data-group="${group}" data-dayton-extra="1" data-idx="x${i}" />
+				<span>${frappe.utils.escape_html(a.label || a.description || a.code)}</span>
+				<code class="ltl-acc-code">${frappe.utils.escape_html(a.code)}</code>
+			</label>`
+			)
+			.join("");
+		return `
+			<div class="ltl-acc-extras-head">${__("Additional services")}</div>
+			<input type="search" class="ltl-input ltl-acc-extras-filter" data-acc-filter="${group}"
+				placeholder="${__("Filter services…")}" />
+			<div class="ltl-acc-extras-grid">${boxes}</div>`;
+	}
+
 	// Compact 4-field view shown while Shipment Details is collapsed.
 	render_collapsed_fields() {
+		const req = ' <span class="req">*</span>';
 		return `
 			<div class="ltl-ship-collapsed">
 				<div class="ltl-grid ltl-grid-4">
 					<div class="ltl-field">
-						<label>Origin ZIP</label>
+						<label>Origin ZIP${req}</label>
 						<input type="text" class="ltl-input" data-field="origin_zip" placeholder="e.g. 60601" />
 					</div>
 					<div class="ltl-field">
-						<label>Destination ZIP</label>
+						<label>Destination ZIP${req}</label>
 						<input type="text" class="ltl-input" data-field="destination_zip" placeholder="e.g. 75201" />
 					</div>
 					<div class="ltl-field">
-						<label>Total Weight (lbs)</label>
+						<label>Total Weight (lbs)${req}</label>
 						<input type="number" class="ltl-input" data-field="weight" placeholder="2500" />
 					</div>
 					<div class="ltl-field">
-						<label>Freight Class</label>
+						<label>Freight Class${req}</label>
 						<select class="ltl-input" data-field="freight_class">${this.freight_options()}</select>
 					</div>
 				</div>
@@ -427,9 +579,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const hours_label = is_origin ? "Pickup Hours" : "Delivery Hours";
 		const pfx = `exp_${side}_`;
 		const acc = is_origin ? this.acc_options.pickup : this.acc_options.delivery;
-		const star = ' <span class="req">*</span>';
-		const date_req = is_origin ? star : "";
-		const hours_req = is_origin ? star : "";
+		const req = ' <span class="req">*</span>';
 		return `
 			<div class="ltl-od-card">
 				<div class="ltl-od-title">${title}</div>
@@ -439,25 +589,25 @@ ltl_quote.Dashboard = class Dashboard {
 				</div>
 				<div class="ltl-tab-pane" data-tab-pane="${side}-details">
 					<div class="ltl-grid ltl-grid-2">
-						<div class="ltl-field"><label>Zip</label>
+						<div class="ltl-field"><label>Zip${req}</label>
 							<input type="text" class="ltl-input" data-field="exp_${side}_zip" placeholder="e.g. ${is_origin ? "60601" : "75201"}" /></div>
-						<div class="ltl-field"><label>${loc_label}${star}</label>
+						<div class="ltl-field"><label>${loc_label}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}location" /></div>
 						<div class="ltl-field"><label>Street Address</label>
 							<input type="text" class="ltl-input" data-field="${pfx}address" /></div>
-						<div class="ltl-field"><label>${city_label}${star}</label>
+						<div class="ltl-field"><label>${city_label}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}city" /></div>
-						<div class="ltl-field"><label>State${star}</label>
-							<input type="text" class="ltl-input" data-field="${pfx}state" /></div>
-						<div class="ltl-field"><label>Country${star}</label>
+						<div class="ltl-field"><label>State</label>
+							<select class="ltl-input" data-field="${pfx}state">${this.state_province_options_html()}</select></div>
+						<div class="ltl-field"><label>Country</label>
 							<input type="text" class="ltl-input" data-field="${pfx}country" placeholder="USA" /></div>
-						<div class="ltl-field"><label>${date_label}${date_req}</label>
+						<div class="ltl-field"><label>${date_label}</label>
 							<input type="date" class="ltl-input" data-field="${pfx}date" /></div>
-						<div class="ltl-field"><label>${hours_label}${hours_req}</label>
+						<div class="ltl-field"><label>${hours_label}</label>
 							<input type="text" class="ltl-input" data-field="${pfx}hours" placeholder="0800-1700" /></div>
 					</div>
 					<div class="ltl-grid ltl-grid-2">
-						<div class="ltl-field"><label>Contact${star}</label>
+						<div class="ltl-field"><label>Contact</label>
 							<input type="text" class="ltl-input" data-field="${pfx}contact" /></div>
 						<div class="ltl-field"><label>Email</label>
 							<input type="email" class="ltl-input" data-field="${pfx}email" placeholder="name@example.com" /></div>
@@ -466,6 +616,9 @@ ltl_quote.Dashboard = class Dashboard {
 				<div class="ltl-tab-pane ltl-od-acc-pane" data-tab-pane="${side}-acc" style="display:none;">
 					<div class="ltl-od-acc-panel">
 						<div class="ltl-acc-grid ltl-acc-grid-od">${this.accessorial_boxes(acc, side)}</div>
+						<div class="ltl-acc-extras" data-dayton-extras="${side}">
+							${this.render_dayton_extra_boxes(is_origin ? "pickup" : "delivery", side)}
+						</div>
 					</div>
 				</div>
 			</div>`;
@@ -607,7 +760,11 @@ ltl_quote.Dashboard = class Dashboard {
 		}
 		if (opts.type === "select") {
 			const options = (opts.options || [])
-				.map((c) => `<option value="${esc(c)}" ${val === String(c) ? "selected" : ""}>${esc(c)}</option>`)
+				.map((c) => {
+					const value = typeof c === "object" ? c.value : c;
+					const label = typeof c === "object" ? c.label || c.value : c;
+					return `<option value="${esc(value)}" ${val === String(value) ? "selected" : ""}>${esc(label)}</option>`;
+				})
 				.join("");
 			return `
 				<div class="ltl-field ${opts.className || ""}">
@@ -626,7 +783,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_line_item_editor(item) {
 		this.editing_line_item = item;
-		const nmfc_opts = { type: "select", options: FREIGHT_CLASSES };
+		const class_opts = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const nmfc_opts = { type: "select", options: class_opts };
+		const packaging_opts = {
+			type: "select",
+			options: this.packaging_type_options || [],
+		};
 		return `
 			<div class="ltl-line-item-edit">
 				<div class="ltl-line-item-edit-hero">
@@ -654,7 +818,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-li-edit-col">
 							${this.li_input("Units", "units")}
 							${this.li_input("Quantity", "quantity", { type: "number", required: true })}
-							${this.li_input("Packaging Units", "packaging_units")}
+							${this.li_input("Packaging Units", "packaging_units", packaging_opts)}
 							${this.li_input("Packaging Unit Count", "packaging_unit_count", { type: "number" })}
 						</div>
 					</div>
@@ -737,6 +901,15 @@ ltl_quote.Dashboard = class Dashboard {
 	open_line_item_editor(item, is_new) {
 		this.editing_line_item = Object.assign({}, item);
 		this.editing_line_item_is_new = !!is_new;
+		if (!(this.packaging_type_options || []).length) {
+			frappe.call({
+				method: "ltl_quote.api.shipping.get_packaging_type_options",
+				callback: (r) => {
+					this.packaging_type_options = r.message || [];
+					this.body.find(".ltl-line-item-edit-body").html(this.render_line_item_editor(this.editing_line_item));
+				},
+			});
+		}
 		this.body.find(".ltl-line-item-edit-body").html(this.render_line_item_editor(this.editing_line_item));
 		this.show_view("line-item");
 	}
@@ -904,6 +1077,247 @@ ltl_quote.Dashboard = class Dashboard {
 			if (url) window.open(url, "_blank");
 		});
 
+		this.body.on("click", ".ltl-detail-refresh-bol:not(:disabled)", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $btn = $(e.currentTarget);
+			$btn.prop("disabled", true);
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.refresh_shipment_bol",
+				args: { name: shipment },
+				freeze: true,
+				freeze_message: __("Downloading BOL from Dayton…"),
+				callback: (r) => {
+					const result = r.message || {};
+					if (result.success) {
+						frappe.show_alert({ message: __("BOL downloaded"), indicator: "green" });
+						this.open_shipment_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("BOL Not Available"),
+						indicator: result.status === "info" ? "orange" : "red",
+						message: result.message || result.error || __("Could not retrieve BOL from Dayton."),
+					});
+					$btn.prop("disabled", false);
+				},
+				error: () => {
+					$btn.prop("disabled", false);
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-view-pickup", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.open_pickup_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-pickup-back", (e) => {
+			e.stopPropagation();
+			this.close_pickup_view();
+		});
+
+		this.body.on("click", ".ltl-pickup-refresh", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.load_pickup_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-pickup-create", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const comments = this.body.find(".ltl-pickup-create-comments").val() || "";
+			const schedule = () => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.schedule_shipment_pickup",
+					args: { name: shipment },
+					freeze: true,
+					freeze_message: __("Scheduling pickup with Dayton…"),
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({ message: __("Pickup scheduled"), indicator: "green" });
+							this.load_pickup_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("Pickup Failed"),
+							indicator: "red",
+							message: result.message || __("Could not schedule pickup."),
+						});
+					},
+				});
+			};
+			if (comments) {
+				frappe.db.set_value("LTL Shipment", shipment, "pickup_comments", comments).then(schedule);
+			} else {
+				schedule();
+			}
+		});
+
+		this.body.on("click", ".ltl-pickup-update", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
+			const ready = $root.find(".ltl-pickup-update-ready").val();
+			const close = $root.find(".ltl-pickup-update-close").val();
+			const contact_name = $root.find(".ltl-pickup-update-contact-name").val();
+			const contact_phone = $root.find(".ltl-pickup-update-contact-phone").val();
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.update_shipment_pickup",
+				args: {
+					name: shipment,
+					data: {
+						ready: ready || undefined,
+						close: close || undefined,
+						contact: { name: contact_name, phone: contact_phone },
+					},
+				},
+				freeze: true,
+				callback: (r) => {
+					const result = r.message || {};
+					if (result.status === "success") {
+						frappe.show_alert({ message: __("Pickup updated"), indicator: "green" });
+						this.load_pickup_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("Pickup Update Failed"),
+						indicator: "red",
+						message: result.message || __("Could not update pickup."),
+					});
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-pickup-update-psid", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
+			const psid = $root.find(".ltl-pickup-psid").val();
+			if (!psid) {
+				frappe.msgprint(__("PSID is required."));
+				return;
+			}
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.update_shipment_pickup_by_psid",
+				args: {
+					name: shipment,
+					psid,
+					data: {
+						details: {
+							destinationZip: $root.find(".ltl-pickup-psid-zip").val(),
+							handlingUnits: $root.find(".ltl-pickup-psid-hu").val(),
+							weight: $root.find(".ltl-pickup-psid-weight").val(),
+							isHazardous: false,
+							comment: $root.find(".ltl-pickup-psid-comment").val() || "",
+							action: $root.find(".ltl-pickup-psid-action").val() || "Update",
+						},
+					},
+				},
+				freeze: true,
+				callback: (r) => {
+					const result = r.message || {};
+					if (result.status === "success") {
+						frappe.show_alert({ message: __("Pickup line updated"), indicator: "green" });
+						this.load_pickup_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("PSID Update Failed"),
+						indicator: "red",
+						message: result.message || __("Could not update pickup line."),
+					});
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-pickup-cancel", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			frappe.confirm(__("Cancel this Dayton pickup?"), () => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.cancel_shipment_pickup",
+					args: { name: shipment },
+					freeze: true,
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({ message: __("Pickup cancelled"), indicator: "green" });
+							this.load_pickup_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("Pickup Cancel Failed"),
+							indicator: "red",
+							message: result.message || __("Could not cancel pickup."),
+						});
+					},
+				});
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-track-shipment", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.open_tracking_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-tracking-back, .ltl-tracking-view-details", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment") || this.tracking_shipment_name;
+			if ($(e.currentTarget).hasClass("ltl-tracking-view-details") && shipment) {
+				this.open_shipment_detail(shipment);
+				return;
+			}
+			this.close_tracking_view();
+		});
+
+		this.body.on("click", ".ltl-tracking-open-quote", (e) => {
+			e.stopPropagation();
+			const quote = $(e.currentTarget).attr("data-quote");
+			if (quote) this.open_quote_detail(quote);
+		});
+
+		this.body.on("click", ".ltl-tracking-refresh", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment") || this.tracking_shipment_name;
+			if (!shipment) return;
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.refresh_shipment_tracking",
+				args: { name: shipment },
+				freeze: true,
+				freeze_message: __("Refreshing tracking from Dayton…"),
+				callback: (r) => {
+					const result = r.message || {};
+					const refresh = result.refresh_result || {};
+					if (refresh.status === "error") {
+						frappe.msgprint({
+							title: __("Tracking Refresh"),
+							indicator: "red",
+							message: refresh.message || __("Could not refresh tracking."),
+						});
+					} else if (refresh.status === "success") {
+						frappe.show_alert({ message: __("Tracking updated"), indicator: "green" });
+					}
+					if (result.doc) {
+						this.destroy_tracking_map();
+						this.tracking_doc = result;
+						this.body.find(".ltl-tracking-body").html(this.render_tracking_detail(result));
+						this.init_tracking_map(result.route || {});
+					} else {
+						this.load_tracking_detail(shipment, 0);
+					}
+				},
+			});
+		});
+
 		this.body.on(
 			"input",
 			".ltl-list-search",
@@ -974,6 +1388,15 @@ ltl_quote.Dashboard = class Dashboard {
 			$(e.currentTarget).addClass("active");
 			card.find(".ltl-tab-pane").hide();
 			card.find(`[data-tab-pane='${target}']`).show();
+		});
+
+		this.body.on("input", ".ltl-acc-extras-filter", (e) => {
+			const q = (($(e.currentTarget).val() || "") + "").trim().toLowerCase();
+			const host = $(e.currentTarget).closest(".ltl-acc-extras");
+			host.find(".ltl-check-extra").each(function () {
+				const text = ($(this).text() || "").toLowerCase();
+				$(this).toggle(!q || text.includes(q));
+			});
 		});
 
 		this.body.on("click", "[data-action='add-line-item']", (e) => {
@@ -1147,27 +1570,11 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!this.require_line_items()) return;
 
 		const payload = this.collect_payload();
-		const val = (field) => (this.body.find(`[data-field='${field}']`).val() || "").trim();
 		const missing = [];
 		if (!payload.origin_zip) missing.push("Origin ZIP");
 		if (!payload.destination_zip) missing.push("Destination ZIP");
 		if (!payload.weight) missing.push("Total Weight");
 		if (!payload.freight_class) missing.push("Freight Class");
-
-		if (this.expanded) {
-			if (!val("exp_origin_location")) missing.push("Pickup Location");
-			if (!val("exp_origin_city")) missing.push("Pickup City");
-			if (!val("exp_origin_state")) missing.push("Origin State");
-			if (!val("exp_origin_country")) missing.push("Origin Country");
-			if (!val("exp_origin_date")) missing.push("Pickup Date");
-			if (!val("exp_origin_hours")) missing.push("Pickup Hours");
-			if (!val("exp_origin_contact")) missing.push("Origin Contact");
-			if (!val("exp_destination_location")) missing.push("Delivery Location");
-			if (!val("exp_destination_city")) missing.push("Delivery City");
-			if (!val("exp_destination_state")) missing.push("Destination State");
-			if (!val("exp_destination_country")) missing.push("Destination Country");
-			if (!val("exp_destination_contact")) missing.push("Destination Contact");
-		}
 
 		if (missing.length) {
 			frappe.show_alert({ message: __("Please fill: {0}", [missing.join(", ")]), indicator: "orange" }, 6);
@@ -1229,6 +1636,7 @@ ltl_quote.Dashboard = class Dashboard {
 				const base = format_currency(q.linehaul_charge || 0, currency);
 				const acc = format_currency(q.accessorial_charge || 0, currency);
 				const transit = q.transit_days ? `${q.transit_days} Business Days` : "—";
+				const centerLine = this.format_service_center_line(q.service_eligibility);
 				const service = frappe.utils.escape_html(q.service_level || "Standard LTL");
 				const rating = q.reliability_score ? (q.reliability_score / 20).toFixed(1) : "—";
 				const tags = q.tags || (q.tag ? [q.tag] : []);
@@ -1242,7 +1650,10 @@ ltl_quote.Dashboard = class Dashboard {
 							<span>${frappe.utils.escape_html(q.carrier || q.carrier_code)}</span></div></td>
 						<td><div class="ltl-tag-wrap">${tag_cells}</div></td>
 						<td>${service}</td>
-						<td>${transit}</td>
+						<td>
+							<div>${transit}</div>
+							${centerLine ? `<div class="ltl-transit-centers">${centerLine}</div>` : ""}
+						</td>
 						<td class="ltl-total">${total}</td>
 						<td>${base}</td>
 						<td>${acc}</td>
@@ -1278,6 +1689,32 @@ ltl_quote.Dashboard = class Dashboard {
 		if (t.includes("fast")) return '<i class="fa fa-bolt"></i>';
 		if (t.includes("best")) return '<i class="fa fa-star"></i>';
 		return "";
+	}
+
+	format_service_center_line(eligibility) {
+		if (!eligibility) return "";
+		const esc = frappe.utils.escape_html;
+		const origin = eligibility.origin_service_center || {};
+		const destination = eligibility.destination_service_center || {};
+		const originId = origin.id || "";
+		const destId = destination.id || "";
+		if (originId && destId) {
+			return esc(`${originId} → ${destId}`);
+		}
+		const parts = [];
+		if (origin.name) parts.push(origin.name);
+		if (destination.name) parts.push(destination.name);
+		return parts.length ? esc(parts.join(" → ")) : "";
+	}
+
+	format_terminal_detail(center) {
+		if (!center) return "—";
+		const parts = [];
+		if (center.name) parts.push(center.name);
+		if (center.city && center.state) parts.push(`${center.city}, ${center.state}`);
+		else if (center.city) parts.push(center.city);
+		if (center.phone) parts.push(center.phone);
+		return parts.length ? parts.join(" · ") : "—";
 	}
 
 	normalize_carrier_code(code) {
@@ -1450,6 +1887,21 @@ ltl_quote.Dashboard = class Dashboard {
 				? `+ ${format_currency(accessorial, currency)}`
 				: format_currency(accessorial, currency);
 
+		const elig = quote.service_eligibility || null;
+		const origin_terminal = elig
+			? esc(this.format_terminal_detail(elig.origin_service_center))
+			: null;
+		const destination_terminal = elig
+			? esc(this.format_terminal_detail(elig.destination_service_center))
+			: null;
+		const terminal_rows =
+			origin_terminal || destination_terminal
+				? `${detail_row(__("Origin Terminal"), origin_terminal || "—")}${detail_row(
+						__("Destination Terminal"),
+						destination_terminal || "—"
+					)}`
+				: "";
+
 		return `
 			<div class="ltl-book-modal">
 				<div class="ltl-book-header">
@@ -1470,6 +1922,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-book-panel-head">${__("Operational Details")}</div>
 						<div class="ltl-book-panel-body">
 							${detail_row(__("Transit Window"), esc(transit_label))}
+							${terminal_rows}
 							${detail_row(__("Route Lane"), `${origin_zip} <i class="fa fa-long-arrow-right ltl-book-arrow"></i> ${destination_zip}`)}
 							${detail_row(__("Shipment Mass"), esc(weight))}
 							${detail_row(__("Freight Class"), freight_class)}
@@ -1620,10 +2073,14 @@ ltl_quote.Dashboard = class Dashboard {
 		const is_quote = key === "quote";
 		const is_detail = key === "detail";
 		const is_line_item = key === "line-item";
+		const is_pickup = key === "pickup";
+		const is_tracking = key === "tracking";
 		this.body.find(".ltl-view-quote").toggle(is_quote);
-		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail && !is_line_item);
+		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail && !is_line_item && !is_pickup && !is_tracking);
 		this.body.find(".ltl-view-detail").toggle(is_detail);
 		this.body.find(".ltl-view-line-item").toggle(is_line_item);
+		this.body.find(".ltl-view-pickup").toggle(is_pickup);
+		this.body.find(".ltl-view-tracking").toggle(is_tracking);
 		this.body.find(".ltl-scroll")[0].scrollTo(0, 0);
 
 		if (is_quote) {
@@ -1636,6 +2093,16 @@ ltl_quote.Dashboard = class Dashboard {
 
 		if (is_line_item) {
 			this.body.find(".ltl-breadcrumb .current").text("Line Item Details");
+			return;
+		}
+
+		if (is_pickup) {
+			this.body.find(".ltl-breadcrumb .current").text("Dayton Pickup");
+			return;
+		}
+
+		if (is_tracking) {
+			this.body.find(".ltl-breadcrumb .current").text("Tracking");
 			return;
 		}
 
@@ -1719,6 +2186,193 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 	}
 
+	open_pickup_detail(name) {
+		if (!name) return;
+		this.pickup_shipment_name = name;
+		this.show_view("pickup");
+		this.load_pickup_detail(name);
+	}
+
+	load_pickup_detail(name) {
+		const container = this.body.find(".ltl-pickup-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_pickup_page_data",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load pickup.</div>');
+					return;
+				}
+				this.pickup_doc = r.message;
+				container.html(this.render_pickup_detail(r.message));
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load pickup.</div>');
+			},
+		});
+	}
+
+	close_pickup_view() {
+		const shipment = this.pickup_shipment_name;
+		this.pickup_doc = null;
+		if (shipment) {
+			this.open_shipment_detail(shipment);
+			return;
+		}
+		this.show_view("shipments");
+	}
+
+	open_tracking_detail(name) {
+		if (!name) return;
+		this.tracking_shipment_name = name;
+		this.show_view("tracking");
+		this.load_tracking_detail(name);
+	}
+
+	load_tracking_detail(name, refresh = 1) {
+		const container = this.body.find(".ltl-tracking-body");
+		this.destroy_tracking_map();
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_tracking_page_data",
+			args: { name, refresh },
+			freeze: Boolean(refresh),
+			freeze_message: __("Refreshing tracking from Dayton…"),
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load tracking.</div>');
+					return;
+				}
+				this.tracking_doc = r.message;
+				container.html(this.render_tracking_detail(r.message));
+				this.init_tracking_map(r.message.route || {});
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load tracking.</div>');
+			},
+		});
+	}
+
+	close_tracking_view() {
+		const shipment = this.tracking_shipment_name;
+		this.destroy_tracking_map();
+		this.tracking_doc = null;
+		if (shipment) {
+			this.open_shipment_detail(shipment);
+			return;
+		}
+		this.show_view("shipments");
+	}
+
+	destroy_tracking_map() {
+		if (this._ltl_tracking_map) {
+			try {
+				this._ltl_tracking_map.remove();
+			} catch (e) {
+				/* ignore stale Leaflet cleanup */
+			}
+			this._ltl_tracking_map = null;
+		}
+	}
+
+	init_tracking_map(route) {
+		this.destroy_tracking_map();
+		const el = this.body.find("#ltl-tracking-map").get(0);
+		if (!el || typeof L === "undefined") {
+			return;
+		}
+
+		const origin = route.origin || {};
+		const destination = route.destination || {};
+		const current = route.current_stop || {};
+		const points = [];
+
+		const push_point = (place, role) => {
+			const lat = place && place.lat != null ? Number(place.lat) : NaN;
+			const lng = place && place.lng != null ? Number(place.lng) : NaN;
+			if (Number.isNaN(lat) || Number.isNaN(lng)) return;
+			points.push({ lat, lng, role, label: place.label || "" });
+		};
+
+		push_point(origin, "origin");
+		const mid_distinct =
+			current.lat != null &&
+			current.lng != null &&
+			(Number(current.lat) !== Number(origin.lat) || Number(current.lng) !== Number(origin.lng)) &&
+			(Number(current.lat) !== Number(destination.lat) || Number(current.lng) !== Number(destination.lng));
+		if (mid_distinct) {
+			push_point(current, "current");
+		}
+		push_point(destination, "destination");
+
+		if (!points.length) {
+			el.innerHTML = `<div class="ltl-tracking-map-empty">${__(
+				"Map unavailable — ZIP coordinates could not be resolved."
+			)}</div>`;
+			return;
+		}
+
+		if (frappe.utils.map_defaults && frappe.utils.map_defaults.image_path) {
+			L.Icon.Default.imagePath = frappe.utils.map_defaults.image_path;
+		}
+
+		const map = L.map(el, { scrollWheelZoom: false });
+		this._ltl_tracking_map = map;
+		const tiles =
+			(frappe.utils.map_defaults && frappe.utils.map_defaults.tiles) ||
+			"https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+		const tile_opts =
+			(frappe.utils.map_defaults && frappe.utils.map_defaults.options) || {
+				attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
+			};
+		L.tileLayer(tiles, tile_opts).addTo(map);
+
+		const color_for = (role) => {
+			if (role === "destination") return "#dc2626";
+			return "#e87722";
+		};
+
+		const latlngs = [];
+		points.forEach((p) => {
+			const ll = [p.lat, p.lng];
+			latlngs.push(ll);
+			const marker = L.circleMarker(ll, {
+				radius: p.role === "current" ? 9 : 8,
+				color: color_for(p.role),
+				fillColor: color_for(p.role),
+				fillOpacity: p.role === "origin" ? 0.35 : 0.9,
+				weight: 3,
+			}).addTo(map);
+			if (p.label) {
+				marker.bindPopup(frappe.utils.escape_html(p.label));
+			}
+		});
+
+		if (latlngs.length >= 2) {
+			L.polyline(latlngs, {
+				color: "#e87722",
+				weight: 3,
+				opacity: 0.75,
+				dashArray: "8 6",
+			}).addTo(map);
+		}
+
+		if (latlngs.length === 1) {
+			map.setView(latlngs[0], 8);
+		} else {
+			map.fitBounds(L.latLngBounds(latlngs), { padding: [36, 36] });
+		}
+
+		setTimeout(() => {
+			try {
+				map.invalidateSize();
+			} catch (e) {
+				/* map may already be destroyed */
+			}
+		}, 50);
+	}
+
 	close_detail_view() {
 		const back = this.detail_return_view || (this.detail_type === "shipment" ? "shipments" : "quotes");
 		this.detail_doc = null;
@@ -1733,6 +2387,32 @@ ltl_quote.Dashboard = class Dashboard {
 		this.close_detail_view();
 	}
 
+	render_accessorial_detail_rows(accessorials) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const group_label = (g) => {
+			const value = String(g || "").trim().toLowerCase();
+			if (value === "pickup" || value === "origin") return "Origin";
+			if (value === "delivery" || value === "destination") return "Destination";
+			if (value === "load") return "Load";
+			return value ? value : "—";
+		};
+		if (!(accessorials || []).length) {
+			return `<tr><td colspan="5" class="ltl-empty-cell">${__("No accessorials selected")}</td></tr>`;
+		}
+		return accessorials
+			.map(
+				(row, idx) => `
+			<tr>
+				<td>${idx + 1}</td>
+				<td><span class="ltl-acc-group-pill">${esc(group_label(row.service_group || row.group))}</span></td>
+				<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
+				<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+				<td>${esc(row.quantity || 1)}</td>
+			</tr>`
+			)
+			.join("");
+	}
+
 	render_quote_detail(payload) {
 		const doc = payload.doc || {};
 		const accessorials = payload.accessorials || [];
@@ -1743,10 +2423,18 @@ ltl_quote.Dashboard = class Dashboard {
 		const ro = readonly ? "readonly" : "";
 		const dis = readonly ? "disabled" : "";
 
-		const freight_opts = FREIGHT_CLASSES.map(
-			(c) => `<option value="${c}" ${String(doc.freight_class) === c ? "selected" : ""}>${c}</option>`
-		).join("");
-
+		const class_opts = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const freight_opts = class_opts
+			.map((c) => {
+				const value = typeof c === "object" ? c.value : c;
+				const label = typeof c === "object" ? c.label || c.value : c;
+				return `<option value="${esc(value)}" ${String(doc.freight_class) === String(value) ? "selected" : ""}>${esc(
+					label
+				)}</option>`;
+			})
+			.join("");
 		const shipment_tabs = shipments.length
 			? shipments
 					.map(
@@ -1757,19 +2445,7 @@ ltl_quote.Dashboard = class Dashboard {
 					.join("")
 			: `<span class="ltl-detail-conn-empty">No linked shipments</span>`;
 
-		const acc_rows = accessorials.length
-			? accessorials
-					.map(
-						(row, idx) => `
-				<tr>
-					<td>${idx + 1}</td>
-					<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
-					<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
-					<td>${esc(row.quantity || 1)}</td>
-				</tr>`
-					)
-					.join("")
-			: `<tr><td colspan="4" class="ltl-empty-cell">No accessorials selected</td></tr>`;
+		const acc_rows = this.render_accessorial_detail_rows(accessorials);
 
 		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
 
@@ -1883,7 +2559,7 @@ ltl_quote.Dashboard = class Dashboard {
 					<div class="ltl-detail-card-head"><i class="fa fa-th-large"></i> 5. ACCESSORIALS</div>
 					<table class="ltl-table ltl-detail-acc-table">
 						<thead>
-							<tr><th>No.</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr>
+							<tr><th>No.</th><th>Group</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr>
 						</thead>
 						<tbody>${acc_rows}</tbody>
 					</table>
@@ -1923,6 +2599,490 @@ ltl_quote.Dashboard = class Dashboard {
 				this.open_quote_detail(name);
 			},
 		});
+	}
+
+	render_dayton_bol_status(doc, dayton_documents) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const carrier = String(doc.carrier || "").toUpperCase();
+		const pro = String(doc.pro_number || "").trim();
+		if (carrier !== "DAYTON" || !pro) {
+			return { badge: "", refresh_btn: "" };
+		}
+
+		const docs = dayton_documents || {};
+		let badge_class = "ltl-bol-status-unknown";
+		let badge_label = __("BOL status unknown");
+		if (docs.checked && docs.bol_available) {
+			badge_class = "ltl-bol-status-ready";
+			badge_label = __("BOL indexed on Dayton");
+		} else if (docs.checked && !docs.bol_available) {
+			badge_class = "ltl-bol-status-scanning";
+			badge_label = __("BOL scanning at Dayton");
+		}
+
+		const indexed_types = (docs.documents || [])
+			.map((row) => String(row.type || "").trim())
+			.filter(Boolean);
+		const indexed_hint = indexed_types.length
+			? ` title="${esc(indexed_types.join(", "))}"`
+			: docs.message
+				? ` title="${esc(docs.message)}"`
+				: "";
+
+		const refresh_enabled = Boolean(docs.bol_available);
+		const refresh_btn = `<button type="button"
+				class="ltl-btn ltl-detail-refresh-bol${refresh_enabled ? "" : " ltl-detail-refresh-bol-muted"}"
+				data-shipment="${esc(doc.name)}"
+				${refresh_enabled ? "" : "disabled"}
+				title="${esc(
+					refresh_enabled
+						? __("Download BOL from Dayton")
+						: docs.message || __("BOL is not indexed on Dayton yet")
+				)}">
+				<i class="fa fa-refresh"></i> ${__("Refresh BOL")}
+			</button>`;
+
+		return {
+			badge: `<span class="ltl-bol-status-badge ${badge_class}"${indexed_hint}>${badge_label}</span>`,
+			refresh_btn,
+		};
+	}
+
+	render_dayton_pickup_status(doc, pickup) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const carrier = String(doc.carrier || "").toUpperCase();
+		const pro = String(doc.pro_number || "").trim();
+		if (carrier !== "DAYTON") {
+			return { badge: "", actions: "" };
+		}
+
+		const info = pickup || {};
+		const pickup_number = String(doc.pickup_number || info.pickup_number || "").trim();
+		const status = String(doc.pickup_status || info.status || "").trim();
+		const can_view =
+			Boolean(pro) &&
+			["Booked", "Dispatched", "In Transit", "Out for Delivery"].includes(String(doc.status || ""));
+
+		let badge_class = "ltl-pickup-status-pending";
+		let badge_label = __("Pickup not scheduled");
+		if (pickup_number) {
+			badge_class = status === "Cancelled" ? "ltl-pickup-status-cancelled" : "ltl-pickup-status-assigned";
+			if (status === "PickedUp") {
+				badge_class = "ltl-pickup-status-complete";
+				badge_label = __("Pickup complete");
+			} else if (status === "Cancelled") {
+				badge_label = __("Pickup cancelled");
+			} else if (status) {
+				badge_label = __("Pickup {0}", [status]);
+			} else {
+				badge_label = __("Pickup {0}", [pickup_number]);
+			}
+		}
+
+		const view_btn = can_view
+			? `<button type="button" class="ltl-btn ltl-detail-view-pickup" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-calendar"></i> ${__("View Pickup")}
+				</button>`
+			: "";
+
+		return {
+			badge: can_view || pickup_number
+				? `<span class="ltl-pickup-status-badge ${badge_class}" title="${esc(pickup_number || status || "")}">${badge_label}</span>`
+				: "",
+			actions: view_btn,
+		};
+	}
+
+	render_pickup_detail(payload) {
+		const doc = payload.doc || {};
+		const pickup = payload.pickup || {};
+		const raw = payload.raw || {};
+		const quote = payload.quote || {};
+		const items = payload.items || [];
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
+		const shipment = esc(doc.name);
+		const pickup_number = String(pickup.pickup_number || doc.pickup_number || "").trim();
+		const status = String(pickup.status || doc.pickup_status || "").trim();
+		const psid = pickup.psid || doc.pickup_psid || "";
+		const is_cancelled = status === "Cancelled";
+		const has_pickup = Boolean(pickup_number);
+		const shipper = raw.shipper || {};
+		const shipper_addr = shipper.address || {};
+		const contact = raw.contact || {};
+		const requester = raw.requester || {};
+
+		const item_rows = items.length
+			? items
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td class="ltl-mono">${esc(row.psid || row.id || "—")}</td>
+					<td class="ltl-mono">${esc(row.pro || "—")}</td>
+					<td>${esc(row.destinationZip || "—")}</td>
+					<td>${esc(row.handlingUnits != null ? row.handlingUnits : "—")}</td>
+					<td>${esc(row.weight != null ? row.weight : "—")}</td>
+					<td>${row.isHazardous ? __("Yes") : __("No")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">${__("No pickup line items")}</td></tr>`;
+
+		const ready_val = pickup.ready || doc.pickup_ready || "";
+		const close_val = pickup.close || doc.pickup_close || "";
+		const to_local_input = (v) => {
+			if (!v) return "";
+			const d = frappe.datetime.str_to_obj(v);
+			if (!d || Number.isNaN(d.getTime())) return "";
+			const pad = (n) => String(n).padStart(2, "0");
+			return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+		};
+
+		return `
+			<div class="ltl-detail ltl-pickup-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-calendar"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Dayton Pickup")}</div>
+							<div class="ltl-detail-hero-sub">${__("Manage pickup scheduling and Dayton API actions")}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
+						${has_pickup ? `<div class="ltl-detail-hero-badge">${__("Pickup")}: ${esc(pickup_number)}</div>` : ""}
+					</div>
+				</div>
+
+				<div class="ltl-pickup-grid">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Pickup Overview")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Number")}</label><input class="ltl-input" value="${esc(pickup_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Status")}</label><input class="ltl-input" value="${esc(status || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("PSID")}</label><input class="ltl-input" value="${esc(psid || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("PRO")}</label><input class="ltl-input" value="${esc(doc.pro_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Ready")}</label><input class="ltl-input" value="${esc(fmt_dt(ready_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("Close")}</label><input class="ltl-input" value="${esc(fmt_dt(close_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("BOL")}</label><input class="ltl-input" value="${esc(doc.bol_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Comments")}</label><input class="ltl-input" value="${esc(pickup.comments || doc.pickup_comments || "—")}" readonly /></div>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper & Contacts")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Shipper")}</label><input class="ltl-input" value="${esc(shipper.name || doc.bol_shipper_name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Origin ZIP")}</label><input class="ltl-input" value="${esc(shipper_addr.zip || quote.origin_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Destination ZIP")}</label><input class="ltl-input" value="${esc(quote.destination_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact")}</label><input class="ltl-input" value="${esc(contact.name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact Phone")}</label><input class="ltl-input" value="${esc(contact.phone || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Requester")}</label><input class="ltl-input" value="${esc(requester.name || "—")}" readonly /></div>
+						</div>
+					</section>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-list"></i> ${__("Pickup Line Items")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th><th>${__("PSID")}</th><th>${__("PRO")}</th><th>${__("Dest ZIP")}</th>
+							<th>${__("H/U")}</th><th>${__("Weight")}</th><th>${__("Hazmat")}</th>
+						</tr></thead>
+						<tbody>${item_rows}</tbody>
+					</table>
+				</section>
+
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Dayton Pickup API Actions")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">PUT</span> /api/Pickup — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a new pickup for this shipment after eBOL booking.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional — use TESTING for a dry run")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : ""}
+
+					${has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method get">GET</span> /api/Pickup — ${__("Refresh")}</div>
+						<p class="ltl-pickup-action-desc">${__("Fetch the latest pickup status from Dayton.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-refresh" data-shipment="${shipment}">
+							<i class="fa fa-refresh"></i> ${__("Refresh from Dayton")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method post">POST</span> /api/Pickup — ${__("Update Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Update ready/close window and contact details.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Ready")}</label>
+								<input type="datetime-local" class="ltl-input ltl-pickup-update-ready" value="${esc(to_local_input(ready_val))}" /></div>
+							<div class="ltl-field"><label>${__("Close")}</label>
+								<input type="datetime-local" class="ltl-input ltl-pickup-update-close" value="${esc(to_local_input(close_val))}" /></div>
+							<div class="ltl-field"><label>${__("Contact Name")}</label>
+								<input class="ltl-input ltl-pickup-update-contact-name" value="${esc(contact.name || "")}" /></div>
+							<div class="ltl-field"><label>${__("Contact Phone")}</label>
+								<input class="ltl-input ltl-pickup-update-contact-phone" value="${esc(contact.phone || "")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-pickup-update" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-save"></i> ${__("Update Pickup")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method post">POST</span> /api/Pickup/ByPSID — ${__("Update Line Item")}</div>
+						<p class="ltl-pickup-action-desc">${__("Update or delete a specific pickup shipment line by PSID.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-3">
+							<div class="ltl-field"><label>${__("PSID")}</label>
+								<input class="ltl-input ltl-pickup-psid" value="${esc(psid || "")}" /></div>
+							<div class="ltl-field"><label>${__("Destination ZIP")}</label>
+								<input class="ltl-input ltl-pickup-psid-zip" value="${esc(quote.destination_zip || "")}" /></div>
+							<div class="ltl-field"><label>${__("Handling Units")}</label>
+								<input type="number" class="ltl-input ltl-pickup-psid-hu" value="${esc(quote.pieces || 1)}" /></div>
+							<div class="ltl-field"><label>${__("Weight (lbs)")}</label>
+								<input type="number" class="ltl-input ltl-pickup-psid-weight" value="${esc(quote.total_weight || "")}" /></div>
+							<div class="ltl-field"><label>${__("Action")}</label>
+								<select class="ltl-input ltl-pickup-psid-action">
+									<option value="Update">Update</option>
+									<option value="Delete">Delete</option>
+								</select></div>
+							<div class="ltl-field"><label>${__("Line Comment")}</label>
+								<input class="ltl-input ltl-pickup-psid-comment" placeholder="${__("Optional")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-pickup-update-psid" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-pencil"></i> ${__("Update by PSID")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">DELETE</span> /api/Pickup/Cancel — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup with Dayton.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>` : ""}
+				</section>
+			</div>`;
+	}
+
+	render_tracking_detail(payload) {
+		const doc = payload.doc || {};
+		const quote = payload.quote || {};
+		const tracking = payload.tracking || {};
+		const route = payload.route || {};
+		const summary = payload.summary || {};
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
+		const shipment = esc(doc.name);
+		const events = tracking.events || [];
+		const milestones = tracking.milestones || [];
+
+		const milestone_html = milestones
+			.map((m, idx) => {
+				const cls = [
+					"ltl-tracking-milestone",
+					m.completed ? "is-done" : "",
+					m.current ? "is-current" : "",
+				]
+					.filter(Boolean)
+					.join(" ");
+				return `
+					<div class="${cls}">
+						${idx ? `<div class="ltl-tracking-milestone-line"></div>` : ""}
+						<div class="ltl-tracking-milestone-node"><i class="fa ${esc(m.icon || "fa-circle")}"></i></div>
+						<div class="ltl-tracking-milestone-label">${esc(m.label)}</div>
+					</div>`;
+			})
+			.join("");
+
+		const event_rows = events.length
+			? events
+					.map((row) => {
+						const exception_cls = row.is_exception ? " ltl-tracking-event-exception" : "";
+						const seed_cls = row.is_seed ? " ltl-tracking-event-seed" : "";
+						const detail = row.is_exception
+							? __("Exception")
+							: row.is_seed
+								? __("Lifecycle")
+								: __("Update");
+						return `
+				<tr class="${exception_cls}${seed_cls}">
+					<td>${esc(fmt_dt(row.event_datetime))}</td>
+					<td>
+						<span class="ltl-tracking-event-code">${esc(row.status_code || "—")}</span>
+						<div>${esc(row.status_description || "—")}</div>
+					</td>
+					<td>${esc(row.location || "—")}</td>
+					<td>${esc(detail)}</td>
+				</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="4" class="ltl-empty-cell">${__(
+					"No lifecycle or carrier events yet."
+			  )}</td></tr>`;
+
+		const origin = route.origin || {};
+		const destination = route.destination || {};
+		const current_stop = route.current_stop || {};
+		const next_stop = route.next_stop || {};
+		const show_mid =
+			current_stop.label &&
+			current_stop.label !== origin.label &&
+			current_stop.label !== "—" &&
+			current_stop.label !== destination.label;
+		const awaiting = Boolean(tracking.awaiting_carrier_scan);
+		const waiting_banner = awaiting
+			? `<div class="ltl-tracking-waiting-banner" role="status">
+					<i class="fa fa-clock-o"></i>
+					<span>${__(
+						"Waiting for Dayton to scan this PRO. Events appear after pickup is completed and scanned."
+					)}</span>
+				</div>`
+			: "";
+
+		const pieces = quote.pieces != null ? quote.pieces : "—";
+		const weight = quote.total_weight != null ? quote.total_weight : "—";
+		const freight_class = quote.freight_class || "—";
+
+		return `
+			<div class="ltl-detail ltl-tracking-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-tracking-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div class="ltl-detail-hero-text">
+							<div class="ltl-detail-hero-title">${__("LTL Shipment Tracking")}</div>
+							<div class="ltl-detail-hero-sub">${__("Track shipment from origin to destination")}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						${
+							summary.quote_request
+								? `<button type="button" class="ltl-btn ltl-detail-hero-badge ltl-tracking-open-quote" data-quote="${esc(summary.quote_request)}">
+									${__("Quote Request")}: ${esc(summary.quote_request)}
+								</button>`
+								: ""
+						}
+						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
+					</div>
+				</div>
+
+				<section class="ltl-tracking-summary">
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-info-circle"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Status")}</div>
+							<span class="ltl-tracking-status-pill">${esc(summary.status || tracking.current_status || "—")}</span>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-barcode"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("PRO / Tracking Number")}</div>
+							<div class="ltl-tracking-summary-value ltl-mono">${esc(summary.pro || "—")}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-building"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Carrier")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.carrier_name || "—")}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-map-marker"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Pickup")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.pickup_label || "—")}</div>
+							<div class="ltl-tracking-summary-sub">${esc(fmt_dt(summary.pickup_when))}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-flag"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Delivery")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.delivery_label || "—")}</div>
+							<div class="ltl-tracking-summary-sub">${esc(fmt_dt(summary.delivery_when))}${summary.delivery_when && !doc.actual_delivery_date ? ` (${__("Est.")})` : ""}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-actions">
+						<button type="button" class="ltl-btn ltl-tracking-view-details" data-shipment="${shipment}">
+							${__("View Details")}
+						</button>
+					</div>
+				</section>
+
+				<div class="ltl-tracking-progress-grid">
+					<section class="ltl-detail-card ltl-tracking-progress-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-road"></i> ${__("Shipment Progress")}</div>
+						<div class="ltl-tracking-timeline">${milestone_html}</div>
+					</section>
+					<section class="ltl-detail-card ltl-tracking-status-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-location-arrow"></i> ${__("Current Status")}</div>
+						<div class="ltl-tracking-status-rows">
+							<div><span>${__("Current Status")}</span><strong class="ltl-tracking-status-pill">${esc(tracking.current_status || "—")}</strong></div>
+							<div><span>${__("Last Updated")}</span><strong>${esc(fmt_dt(tracking.last_tracking_update))}</strong></div>
+							<div><span>${__("Location")}</span><strong>${esc(tracking.current_location || "—")}</strong></div>
+							<div><span>${__("Next Stop")}</span><strong>${esc((next_stop && next_stop.label) || "—")}</strong></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-tracking-refresh" data-shipment="${shipment}">
+							<i class="fa fa-refresh"></i> ${__("Refresh Tracking")}
+						</button>
+					</section>
+				</div>
+
+				<div class="ltl-tracking-lower-grid">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-list-ul"></i> ${__("Shipment Events")}</div>
+						${waiting_banner}
+						<table class="ltl-table ltl-tracking-events">
+							<thead><tr>
+								<th>${__("Date & Time")}</th>
+								<th>${__("Event")}</th>
+								<th>${__("Location")}</th>
+								<th>${__("Details")}</th>
+							</tr></thead>
+							<tbody>${event_rows}</tbody>
+						</table>
+					</section>
+
+					<section class="ltl-detail-card ltl-tracking-route-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map"></i> ${__("Shipment Route")}</div>
+						<div id="ltl-tracking-map" class="ltl-tracking-map"></div>
+						<div class="ltl-tracking-map-legend">
+							<span class="ltl-tracking-map-legend-item is-origin"><i></i>${esc(origin.label || __("Origin"))}</span>
+							${
+								show_mid
+									? `<span class="ltl-tracking-map-legend-item is-current"><i></i>${esc(
+											current_stop.label
+									  )} (${__("Current")})</span>`
+									: ""
+							}
+							<span class="ltl-tracking-map-legend-item is-destination"><i></i>${esc(
+								destination.label || __("Destination")
+							)}${tracking.eta ? ` · ${esc(fmt_dt(tracking.eta))}` : ""}</span>
+						</div>
+					</section>
+				</div>
+
+				<section class="ltl-tracking-facts">
+					<div class="ltl-tracking-fact"><i class="fa fa-map-marker"></i><div><span>${__("Origin")}</span><strong>${esc(origin.label || "—")}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-flag"></i><div><span>${__("Destination")}</span><strong>${esc(destination.label || "—")}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-balance-scale"></i><div><span>${__("Total Weight")}</span><strong>${esc(weight)} lbs</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-cubes"></i><div><span>${__("Pieces / Pallets")}</span><strong>${esc(pieces)}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-tag"></i><div><span>${__("Freight Class")}</span><strong>${esc(freight_class)}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-truck"></i><div><span>${__("Service")}</span><strong>${__("Standard LTL")}</strong></div></div>
+				</section>
+			</div>`;
 	}
 
 	render_shipment_detail(payload) {
@@ -1974,21 +3134,18 @@ ltl_quote.Dashboard = class Dashboard {
 					.join("")
 			: `<tr><td colspan="7" class="ltl-empty-cell">No Data</td></tr>`;
 
-		const acc_rows = accessorials.length
-			? accessorials
-					.map(
-						(row, idx) => `
-				<tr>
-					<td>${idx + 1}</td>
-					<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
-					<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
-					<td>${esc(row.quantity || 1)}</td>
-				</tr>`
-					)
-					.join("")
-			: `<tr><td colspan="4" class="ltl-empty-cell">No accessorials</td></tr>`;
+		const acc_rows = this.render_accessorial_detail_rows(accessorials);
 
 		const bol_url = resolve_bol_url(doc);
+		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
+		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup);
+		const can_track =
+			String(doc.carrier || "").toUpperCase() === "DAYTON" && Boolean(String(doc.pro_number || "").trim());
+		const track_btn = can_track
+			? `<button type="button" class="ltl-btn ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-map-marker"></i> ${__("Track Shipment")}
+				</button>`
+			: "";
 		const view_bol_btn = bol_url
 			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
 					<i class="fa fa-file-pdf-o"></i> View BOL
@@ -2002,13 +3159,20 @@ ltl_quote.Dashboard = class Dashboard {
 				<div class="ltl-detail-hero">
 					<div class="ltl-detail-hero-left">
 						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
-						<div>
+						<div class="ltl-detail-hero-text">
 							<div class="ltl-detail-hero-title">LTL Shipment</div>
 							<div class="ltl-detail-hero-sub">Track booked shipments, BOL details, and delivery status</div>
+							<div class="ltl-detail-hero-status-row">
+								${dayton_pickup_ui.badge}
+								${dayton_bol_ui.badge}
+							</div>
 						</div>
 					</div>
 					<div class="ltl-detail-hero-right">
 						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
+						${dayton_pickup_ui.actions}
+						${track_btn}
+						${dayton_bol_ui.refresh_btn}
 						${view_bol_btn}
 					</div>
 				</div>
@@ -2082,6 +3246,20 @@ ltl_quote.Dashboard = class Dashboard {
 							<input type="date" class="ltl-input" data-detail="actual_delivery_date" value="${esc(doc.actual_delivery_date || "")}" ${ro} /></div>
 						<div class="ltl-field"><label>Carrier Confirmation #</label>
 							<input class="ltl-input" data-detail="carrier_confirmation" value="${val(doc.carrier_confirmation)}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Number</label>
+							<input class="ltl-input" value="${val(doc.pickup_number)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup Status</label>
+							<input class="ltl-input" value="${val(doc.pickup_status)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup PSID</label>
+							<input class="ltl-input" value="${val(doc.pickup_psid)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup Ready</label>
+							<input class="ltl-input" data-detail="pickup_ready" value="${val(doc.pickup_ready || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Close</label>
+							<input class="ltl-input" data-detail="pickup_close" value="${val(doc.pickup_close || "")}" ${ro} /></div>
+						<div class="ltl-field ltl-ship-lifecycle-full">
+							<label>Pickup Comments</label>
+							<textarea class="ltl-input" data-detail="pickup_comments" rows="2" ${ro}>${val(doc.pickup_comments)}</textarea>
+						</div>
 						<div class="ltl-field ltl-ship-lifecycle-dispatch">
 							<label>Dispatch Status</label>
 							<select class="ltl-input ltl-detail-status" data-detail="dispatch_status" ${dis}>${dispatch_opts}</select>
@@ -2190,7 +3368,7 @@ ltl_quote.Dashboard = class Dashboard {
 				<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> Accessories / Accessorials</div>
 					<table class="ltl-table ltl-detail-acc-table">
-						<thead><tr><th>No.</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr></thead>
+						<thead><tr><th>No.</th><th>Group</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr></thead>
 						<tbody>${acc_rows}</tbody>
 					</table>
 				</section>

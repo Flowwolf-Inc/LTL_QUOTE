@@ -282,17 +282,33 @@ class ShipmentExecutor:
 
 	@staticmethod
 	def dispatch_shipment(shipment) -> dict:
+		from ltl_quote.carrier_network.pickup import map_pickup_status_to_dispatch_status
+
 		carrier = frappe.get_doc("LTL Carrier", shipment.carrier)
 		adapter = get_adapter(carrier)
 		result = adapter.dispatch_shipment(
 			{
+				"shipment_name": shipment.name,
 				"pro_number": shipment.pro_number,
 				"bol_number": shipment.bol_number,
 				"pickup_date": shipment.pickup_date,
 			}
 		)
-		shipment.dispatch_status = "Acknowledged" if result.get("status") == "acknowledged" else "Sent to Carrier"
-		shipment.status = "Dispatched"
+		shipment.reload()
+		if result.get("status") == "acknowledged":
+			shipment.dispatch_status = map_pickup_status_to_dispatch_status(
+				result.get("pickup_status"),
+				result.get("status"),
+			)
+			if shipment.status == "Booked":
+				shipment.status = "Dispatched"
+		elif result.get("ok") is False or result.get("success") is False:
+			shipment.dispatch_status = "Failed"
+		else:
+			shipment.dispatch_status = map_pickup_status_to_dispatch_status(
+				result.get("pickup_status"),
+				result.get("status"),
+			)
 		shipment.save(ignore_permissions=True)
 		frappe.db.commit()
 		return result

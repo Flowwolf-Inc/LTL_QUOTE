@@ -22,6 +22,14 @@
   "pro_number",
   "carrier_confirmation",
   "dispatch_status",
+  "pickup_section",
+  "pickup_number",
+  "pickup_psid",
+  "pickup_status",
+  "column_break_pickup",
+  "pickup_ready",
+  "pickup_close",
+  "pickup_comments",
   "charges_section",
   "currency",
   "total_charge",
@@ -180,6 +188,48 @@
    "fieldtype": "Select",
    "label": "Dispatch Status",
    "options": "Pending\nSent to Carrier\nAcknowledged\nFailed"
+  },
+  {
+   "fieldname": "pickup_section",
+   "fieldtype": "Section Break",
+   "label": "Dayton Pickup"
+  },
+  {
+   "fieldname": "pickup_number",
+   "fieldtype": "Data",
+   "label": "Pickup Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pickup_psid",
+   "fieldtype": "Int",
+   "label": "Pickup Shipment ID (PSID)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pickup_status",
+   "fieldtype": "Data",
+   "label": "Pickup Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pickup",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "pickup_ready",
+   "fieldtype": "Datetime",
+   "label": "Pickup Ready"
+  },
+  {
+   "fieldname": "pickup_close",
+   "fieldtype": "Datetime",
+   "label": "Pickup Close"
+  },
+  {
+   "fieldname": "pickup_comments",
+   "fieldtype": "Small Text",
+   "label": "Pickup Comments"
   },
   {
    "fieldname": "charges_section",

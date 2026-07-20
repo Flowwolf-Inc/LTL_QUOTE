@@ -10,6 +10,7 @@ from typing import Any
 class AccessorialItem:
 	code: str
 	quantity: int = 1
+	service_group: str = ""
 
 
 @dataclass

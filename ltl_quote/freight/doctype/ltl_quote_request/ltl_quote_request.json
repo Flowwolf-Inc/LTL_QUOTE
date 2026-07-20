@@ -221,9 +221,9 @@
   },
   {
    "fieldname": "freight_class",
-   "fieldtype": "Select",
+   "fieldtype": "Link",
    "label": "Freight Class",
-   "options": "50\n55\n60\n65\n70\n77.5\n85\n92.5\n100\n110\n125\n150\n175\n200\n250\n300\n400\n500",
+   "options": "Dayton Shipping Class",
    "reqd": 1
   },
   {

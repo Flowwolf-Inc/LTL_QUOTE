@@ -80,7 +80,25 @@ frappe.ui.form.on("LTL Shipment", {
 				});
 			}, __("Visibility"));
 
-			if (frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+			if (frm.doc.carrier === "DAYTON" && frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+				frm.add_custom_button(__("Schedule Pickup"), () => {
+					frappe.call({
+						method: "dispatch_to_carrier",
+						doc: frm.doc,
+						freeze: true,
+						freeze_message: __("Scheduling pickup with Dayton..."),
+						callback(r) {
+							if (r.message?.status === "acknowledged" || r.message?.pickup_number) {
+								frappe.show_alert({
+									message: __("Pickup scheduled successfully."),
+									indicator: "green",
+								});
+							}
+							frm.reload_doc();
+						},
+					});
+				});
+			} else if (frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
 				frm.add_custom_button(__("Dispatch to Carrier"), () => {
 					frappe.call({
 						method: "dispatch_to_carrier",
@@ -91,6 +109,52 @@ frappe.ui.form.on("LTL Shipment", {
 						},
 					});
 				});
+			}
+
+			if (frm.doc.carrier === "DAYTON" && frm.doc.pickup_number) {
+				frm.add_custom_button(__("View Pickup"), () => {
+					frappe.call({
+						method: "ltl_quote.api.shipping.get_dayton_pickup",
+						args: { shipment: frm.doc.name },
+						freeze: true,
+						callback(r) {
+							const pickup = r.message?.pickup || {};
+							frappe.msgprint({
+								title: __("Dayton Pickup"),
+								indicator: r.message?.status === "success" ? "green" : "orange",
+								message: [
+									`${__("Pickup Number")}: ${pickup.pickup_number || "—"}`,
+									`${__("Status")}: ${pickup.status || "—"}`,
+									`${__("PSID")}: ${pickup.psid || "—"}`,
+									`${__("Ready")}: ${pickup.ready || "—"}`,
+									`${__("Close")}: ${pickup.close || "—"}`,
+								].join("<br>"),
+							});
+							frm.reload_doc();
+						},
+					});
+				}, __("Dayton Actions"));
+
+				if (frm.doc.pickup_status !== "Cancelled") {
+					frm.add_custom_button(__("Cancel Pickup"), () => {
+						frappe.confirm(__("Cancel this Dayton pickup?"), () => {
+							frappe.call({
+								method: "cancel_pickup",
+								doc: frm.doc,
+								freeze: true,
+								callback(r) {
+									if (r.message?.status === "success") {
+										frappe.show_alert({
+											message: __("Pickup cancelled."),
+											indicator: "green",
+										});
+									}
+									frm.reload_doc();
+								},
+							});
+						});
+					}, __("Dayton Actions"));
+				}
 			}
 
 			if (frm.doc.carrier === "DAYTON" && frm.doc.dayton_bol_id) {

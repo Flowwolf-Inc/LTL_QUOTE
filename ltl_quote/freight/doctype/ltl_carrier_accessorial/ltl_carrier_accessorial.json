@@ -7,6 +7,7 @@
  "field_order": [
   "accessorial",
   "accessorial_code",
+  "service_group",
   "column_break_1",
   "carrier_accessorial_code",
   "carrier_accessorial_name",
@@ -30,6 +31,14 @@
    "in_list_view": 1,
    "label": "Internal Code",
    "read_only": 1
+  },
+  {
+   "description": "Pickup vs Delivery when the same internal code maps to different carrier codes.",
+   "fieldname": "service_group",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Service Group",
+   "options": "\npickup\ndelivery\nload"
   },
   {
    "fieldname": "column_break_1",

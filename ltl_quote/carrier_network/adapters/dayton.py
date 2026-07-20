@@ -20,6 +20,7 @@ from ltl_quote.utils.location import resolve_us_location
 DEFAULT_BASE_URL = "https://api.daytonfreight.com"
 DEFAULT_ACCOUNT_NUMBER = "0055666"
 REQUEST_TIMEOUT = 15
+DAYTON_SERVICE_ELIGIBILITY_PATH = "/api/Shipping/ServiceEligibility"
 
 TEST_BOL_PDF_BASE64 = (
 	"JVBERi0xLjEKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2Jq"
@@ -136,6 +137,16 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 			data = response.json()
 			parsed = self._parse_rate_response(data)
+			eligibility = self.get_service_eligibility(
+				request.origin_zip,
+				request.destination_zip,
+				dayton_payload["shipmentDate"],
+			)
+			raw_response = dict(parsed.get("raw_response") or data)
+			if eligibility:
+				raw_response["serviceEligibilityLookup"] = eligibility
+				if eligibility.get("service_days"):
+					parsed["transit_days"] = int(eligibility["service_days"])
 
 			return CarrierRateQuote(
 				carrier_code=self.carrier_code,
@@ -149,7 +160,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				carrier_quote_id=f"DAY-{parsed['quote_id']}" if parsed["quote_id"] else "",
 				service_level=parsed["movement_type"],
 				reliability_score=float(getattr(self.carrier, "reliability_score", None) or 90),
-				raw_response=parsed["raw_response"],
+				raw_response=raw_response,
 			)
 
 		except (ValueError, TypeError, KeyError) as e:
@@ -796,87 +807,38 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		return self.generate_bill_of_lading(quote_data)
 
 	def request_pickup(self, quote_data: dict) -> dict:
-		"""Maps quote booking context -> Dayton PUT /api/Pickup (optional dispatch step)."""
+		"""Backward-compatible alias — prefer ``create_pickup`` on a shipment doc."""
+		if isinstance(quote_data, str):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", quote_data))
+		if quote_data.get("shipment_name"):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", quote_data["shipment_name"]))
+		shipment_name = quote_data.get("shipment") or quote_data.get("name")
+		if shipment_name and frappe.db.exists("LTL Shipment", shipment_name):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", shipment_name))
+		frappe.throw("Pickup scheduling requires a booked LTL Shipment.")
+
+	def create_pickup(self, shipment) -> dict:
+		"""Schedule a Dayton pickup via PUT /api/Pickup after eBOL booking."""
+		from ltl_quote.carrier_network.pickup import (
+			apply_pickup_response_to_shipment,
+			build_pickup_payload_from_shipment,
+			normalize_pickup_response,
+		)
+
+		if isinstance(shipment, str):
+			shipment = frappe.get_doc("LTL Shipment", shipment)
+
+		if shipment.pickup_number:
+			frappe.throw(f"Pickup {shipment.pickup_number} is already scheduled for this shipment.")
+
+		payload = build_pickup_payload_from_shipment(shipment, self)
 		endpoint = f"{self.base_url}/api/Pickup"
-		quote_request = self._load_quote_request(quote_data)
-		pickup_date = quote_data.get("pickup_date") or today()
-		pickup_accessorials = dayton_rate_accessorials(
-			build_accessorial_items(getattr(quote_request, "accessorials", None)), self.carrier_doc
-		)
-
-		shipper = resolve_shipper_context(quote_data, quote_request)
-
-		origin_zip = str(quote_data.get("origin_zip") or quote_request.origin_zip)
-		origin_city, origin_state = resolve_us_location(
-			origin_zip,
-			quote_data.get("origin_city") or quote_request.origin_city,
-			quote_data.get("origin_state") or quote_request.origin_state,
-		)
-		if not origin_state:
-			frappe.throw(
-				"Origin state is required for Dayton pickup booking. Provide origin state or a valid US origin ZIP."
-			)
-
-		dayton_pickup_payload = {
-			"customerReferenceNumber": str(quote_data.get("quote_request") or quote_data.get("carrier_quote_id")),
-			"sendConfirmationTo": [frappe.session.user],
-			"sendReceiptTo": [],
-			"details": [
-				{
-					"destinationZip": str(quote_data.get("destination_zip") or quote_request.destination_zip),
-					"handlingUnits": self._clean_int(quote_data.get("pieces") or quote_request.pieces, 1),
-					"weight": self._clean_int(quote_data.get("total_weight") or quote_request.total_weight),
-					"isHazardous": bool(quote_data.get("is_hazardous", False)),
-				}
-			],
-			"shipper": {
-				"name": str(
-					shipper.get("shipper_name")
-					or quote_data.get("shipper_company_name")
-					or "Main Warehouse Dispatch"
-				),
-				"address": {
-					"address1": str(
-						shipper.get("shipper_address")
-						or quote_data.get("shipper_address")
-						or "123 Logistics Way"
-					),
-					"city": str(origin_city or quote_data.get("origin_city") or quote_request.origin_city or "Dayton"),
-					"state": str(origin_state or quote_data.get("origin_state") or quote_request.origin_state or "OH"),
-					"zip": origin_zip,
-				},
-			},
-			"ready": f"{pickup_date}T09:00:00",
-			"close": f"{pickup_date}T17:00:00",
-			"contact": {
-				"name": str(
-					quote_data.get("contact_name") or shipper.get("contact_name") or "Shipping Desk"
-				),
-				"phone": str(
-					quote_data.get("contact_phone") or shipper.get("contact_phone") or "0000000000"
-				),
-				"extension": None,
-				"fax": None,
-				"email": None,
-			},
-			"requester": {
-				"name": str(frappe.session.user),
-				"phone": "0000000000",
-				"extension": None,
-				"fax": None,
-				"email": None,
-			},
-			"accessorials": pickup_accessorials,
-			"comments": "Booked via LTL Quote platform",
-			"pickupInstructions": None,
-			"isTest": False,
-		}
 
 		try:
 			response = requests.put(
 				endpoint,
 				headers=self.get_headers(),
-				json=dayton_pickup_payload,
+				json=payload,
 				timeout=REQUEST_TIMEOUT,
 			)
 		except requests.exceptions.RequestException as e:
@@ -887,21 +849,147 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			frappe.log_error(response.text, "LTL Quote - Dayton Pickup Failure")
 			frappe.throw(f"Dayton pickup request failed: {response.text}")
 
-		res_data = response.json()
-		shipments = res_data.get("shipments") or [{}]
-		transit_days = int(quote_data.get("transit_days") or 2)
+		normalized = normalize_pickup_response(response.json() or {})
+		normalized["status"] = "acknowledged"
+		apply_pickup_response_to_shipment(shipment, normalized, save=True)
+		return normalized
 
-		return {
-			"status": "booked",
-			"pro_number": shipments[0].get("pro"),
-			"bol_number": res_data.get("pickupNumber"),
-			"carrier_confirmation": res_data.get("pickupNumber"),
-			"estimated_delivery": add_days(now_datetime(), transit_days),
-		}
+	def get_pickup(self, pickup_number: str) -> dict:
+		"""Fetch a Dayton pickup via GET /api/Pickup?number=."""
+		from ltl_quote.carrier_network.pickup import normalize_pickup_response
+
+		number = str(pickup_number or "").strip()
+		if not number:
+			frappe.throw("A pickup number is required.")
+
+		endpoint = f"{self.base_url}/api/Pickup"
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				params={"number": number},
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Pickup GET Error")
+			return {"ok": False, "message": str(e), "raw": {}}
+
+		if response.status_code == 404:
+			return {"ok": False, "message": "Pickup not found.", "raw": {"code": 404}}
+		if response.status_code != 200:
+			frappe.log_error(response.text, "LTL Quote - Dayton Pickup GET Failure")
+			return {"ok": False, "message": response.text, "raw": {"code": response.status_code, "text": response.text}}
+
+		data = normalize_pickup_response(response.json() or {})
+		data["ok"] = True
+		return data
+
+	def update_pickup(self, pickup_number: str, payload: dict) -> dict:
+		"""Update a Dayton pickup via POST /api/Pickup."""
+		from ltl_quote.carrier_network.pickup import normalize_pickup_response
+
+		number = str(pickup_number or "").strip()
+		if not number:
+			frappe.throw("A pickup number is required.")
+
+		body = dict(payload or {})
+		body["pickupNumber"] = number
+		endpoint = f"{self.base_url}/api/Pickup"
+
+		try:
+			response = requests.post(
+				endpoint,
+				headers=self.get_headers(),
+				json=body,
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Pickup Update Error")
+			frappe.throw(f"Dayton pickup update failed: {e}")
+
+		if response.status_code != 200:
+			frappe.log_error(response.text, "LTL Quote - Dayton Pickup Update Failure")
+			frappe.throw(f"Dayton pickup update failed: {response.text}")
+
+		data = normalize_pickup_response(response.json() or {})
+		data["ok"] = True
+		return data
+
+	def update_pickup_by_psid(self, psid: int, payload: dict) -> dict:
+		"""Update a pickup line via POST /api/Pickup/ByPSID."""
+		from ltl_quote.carrier_network.pickup import normalize_pickup_response
+
+		if not psid:
+			frappe.throw("A pickup shipment ID (PSID) is required.")
+
+		body = dict(payload or {})
+		body["psid"] = cint(psid)
+		endpoint = f"{self.base_url}/api/Pickup/ByPSID"
+
+		try:
+			response = requests.post(
+				endpoint,
+				headers=self.get_headers(),
+				json=body,
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Pickup ByPSID Error")
+			frappe.throw(f"Dayton pickup update failed: {e}")
+
+		if response.status_code != 200:
+			frappe.log_error(response.text, "LTL Quote - Dayton Pickup ByPSID Failure")
+			frappe.throw(f"Dayton pickup update failed: {response.text}")
+
+		data = normalize_pickup_response(response.json() or {})
+		data["ok"] = True
+		return data
+
+	def cancel_pickup(self, number: str) -> dict:
+		"""Cancel a Dayton pickup via DELETE /api/Pickup/Cancel?number=."""
+		target = str(number or "").strip()
+		if not target:
+			return {"success": False, "message": "No pickup number or PSID available to cancel."}
+
+		endpoint = f"{self.base_url}/api/Pickup/Cancel?number={target}"
+		try:
+			response = requests.delete(endpoint, headers=self.get_headers(), timeout=REQUEST_TIMEOUT)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Pickup Cancel Error")
+			return {"success": False, "message": str(e)}
+
+		if response.status_code == 200:
+			return {"success": True, "message": "Pickup cancelled successfully."}
+
+		frappe.log_error(response.text, "LTL Quote - Dayton Pickup Cancel Failure")
+		return {"success": False, "message": response.text, "code": response.status_code}
+
+	def dispatch_shipment(self, shipment_data: dict) -> dict:
+		"""Schedule or re-sync a Dayton pickup for a booked shipment."""
+		from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment
+
+		shipment_name = shipment_data.get("shipment_name")
+		if not shipment_name:
+			frappe.throw("shipment_name is required to dispatch a Dayton pickup.")
+
+		shipment = frappe.get_doc("LTL Shipment", shipment_name)
+		if shipment.pickup_number:
+			result = self.get_pickup(shipment.pickup_number)
+			if result.get("ok"):
+				apply_pickup_response_to_shipment(shipment, result, save=True)
+				return {"status": "acknowledged", **result}
+			return {"status": "error", "message": result.get("message") or "Could not sync pickup.", **result}
+
+		result = self.create_pickup(shipment)
+		return {"status": "acknowledged", **result}
 
 	def get_tracking(self, pro_number: str) -> list[dict]:
 		"""Poll Dayton tracking endpoints for live milestone event logs."""
 		events = self._fetch_tracking_by_number(pro_number)
+		if events:
+			return events
+
+		events = self._fetch_tracking_history(pro_number)
 		if events:
 			return events
 
@@ -913,8 +1001,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			frappe.log_error(str(e), "LTL Quote - Dayton Tracking Connection Error")
 			return []
 
+		# Legacy path is a last-resort fallback — never hard-fail the tracking page.
 		if response.status_code in (401, 403):
-			frappe.throw("Authentication failed with Dayton Lines API.")
+			return []
 
 		if response.status_code != 200:
 			frappe.log_error(
@@ -929,6 +1018,36 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		for event in raw_events:
 			events.append(self._parse_dayton_tracking_event(event))
 		return events
+
+	def _fetch_tracking_history(self, pro_number: str) -> list[dict]:
+		"""Query Dayton GET /api/Tracking/History for PRO event history."""
+		endpoint = f"{self.base_url}/api/Tracking/History"
+		params = {"number": pro_number}
+
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				params=params,
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Tracking History Connection Error")
+			return []
+
+		# History is optional; empty/unauthorized responses are normal for some accounts.
+		if response.status_code in (401, 403):
+			return []
+
+		if response.status_code != 200:
+			return []
+
+		data = response.json()
+		results = data.get("results") if isinstance(data, dict) else data
+		if not isinstance(results, list):
+			return []
+
+		return [self._parse_dayton_tracking_event(event) for event in results if isinstance(event, dict)]
 
 	def _fetch_tracking_by_number(self, pro_number: str) -> list[dict]:
 		"""Query Dayton GET /api/Tracking/ByNumber for PRO-based milestone history."""
@@ -957,34 +1076,69 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		if not isinstance(results, list):
 			return []
 
-		return [self._parse_dayton_tracking_event(event) for event in results]
+		events: list[dict] = []
+		for row in results:
+			if not isinstance(row, dict):
+				continue
+			# Some responses nest a history list under each tracking result.
+			nested = row.get("events") or row.get("history") or row.get("statuses")
+			if isinstance(nested, list) and nested:
+				for item in nested:
+					events.append(self._parse_dayton_tracking_event(item if isinstance(item, dict) else row))
+				continue
+			events.append(self._parse_dayton_tracking_event(row))
+		return events
 
 	@staticmethod
 	def _parse_dayton_tracking_event(event: dict) -> dict:
-		city = str(event.get("city") or "").strip()
-		state = str(event.get("state") or "").strip()
-		location = event.get("location")
+		from ltl_quote.carrier_network.tracking import activity_label, is_exception_code, normalize_activity_code
+
+		if not isinstance(event, dict):
+			event = {}
+
+		status_block = event.get("status") if isinstance(event.get("status"), dict) else {}
+		city = str(event.get("city") or status_block.get("city") or "").strip()
+		state = str(event.get("state") or status_block.get("state") or "").strip()
+		location = event.get("location") or status_block.get("location")
 		if not location and (city or state):
 			location = ", ".join(part for part in (city, state) if part)
 
+		raw_code = (
+			status_block.get("activityCode")
+			or event.get("activityCode")
+			or event.get("statusCode")
+			or event.get("status_code")
+			or ""
+		)
+		status_code = normalize_activity_code(raw_code) or "IN_TRANSIT"
+
+		description = (
+			status_block.get("activity")
+			or status_block.get("description")
+			or event.get("description")
+			or event.get("status_description")
+			or event.get("remarks")
+			or event.get("comment")
+			or (event.get("status") if isinstance(event.get("status"), str) else None)
+			or activity_label(status_code)
+		)
+
+		event_datetime = (
+			status_block.get("time")
+			or event.get("eventTime")
+			or event.get("dateTime")
+			or event.get("date")
+			or event.get("pickupDate")
+			or event.get("deliveryDate")
+			or event.get("event_datetime")
+		)
+
 		return {
-			"event_datetime": (
-				event.get("eventTime")
-				or event.get("dateTime")
-				or event.get("date")
-				or event.get("event_datetime")
-			),
-			"status_code": event.get("statusCode") or event.get("status_code") or "IN_TRANSIT",
-			"status_description": (
-				event.get("status")
-				or event.get("description")
-				or event.get("status_description")
-				or event.get("remarks")
-				or event.get("comment")
-				or "Cargo Movement Updated"
-			),
+			"event_datetime": event_datetime,
+			"status_code": status_code,
+			"status_description": description,
 			"location": location or "Terminal Center",
-			"is_exception": 1 if event.get("isException") else 0,
+			"is_exception": 1 if event.get("isException") or is_exception_code(status_code) else 0,
 		}
 
 	def get_proof_of_delivery(self, pro_number: str) -> dict:
@@ -1097,23 +1251,15 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 	def cancel_shipment(self, shipment_doc) -> bool:
 		"""Cancel a booked pickup via Dayton DELETE /api/Pickup/Cancel."""
-		target_number = shipment_doc.bol_number or shipment_doc.carrier_confirmation
-		if not target_number:
-			return False
+		from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number
 
-		endpoint = f"{self.base_url}/api/Pickup/Cancel?number={target_number}"
-
-		try:
-			response = requests.delete(endpoint, headers=self.get_headers(), timeout=REQUEST_TIMEOUT)
-		except requests.exceptions.RequestException as e:
-			frappe.log_error(str(e), "LTL Quote - Dayton Cancellation Connection Error")
-			return False
-
-		if response.status_code == 200:
-			return True
-
-		frappe.log_error(response.text, "LTL Quote - Dayton Cancellation Failure")
-		return False
+		target_number = resolve_pickup_cancel_number(shipment_doc)
+		result = self.cancel_pickup(target_number)
+		if result.get("success"):
+			shipment_doc.pickup_status = "Cancelled"
+			shipment_doc.dispatch_status = "Failed"
+			shipment_doc.save(ignore_permissions=True)
+		return bool(result.get("success"))
 
 	@staticmethod
 	def _dayton_contact_phone(*values: str | None, default: str = "8005551212") -> str:
@@ -1141,6 +1287,222 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		if raw_id.upper().startswith("DAY-"):
 			raw_id = raw_id[4:]
 		return raw_id
+
+	def get_service_eligibility(
+		self,
+		origin_zip: str,
+		destination_zip: str,
+		shipment_date: str | None = None,
+	) -> dict:
+		"""GET /api/Shipping/ServiceEligibility for lane transit + service centers.
+
+		Soft-fails (returns {}) on network/HTTP errors so rating is not blocked.
+		"""
+		origin = str(origin_zip or "").strip()
+		destination = str(destination_zip or "").strip()
+		if not origin or not destination:
+			return {}
+
+		endpoint = f"{self.base_url}{DAYTON_SERVICE_ELIGIBILITY_PATH}"
+		params = {
+			"origin": origin,
+			"destination": destination,
+			"date": self._format_eligibility_date(shipment_date),
+		}
+
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				params=params,
+				auth=self.get_auth(),
+				timeout=REQUEST_TIMEOUT,
+			)
+			if response.status_code != 200:
+				frappe.log_error(
+					f"Status {response.status_code}: {response.text}",
+					"Dayton Service Eligibility Failure",
+				)
+				return {}
+			data = response.json() if response.content else {}
+			return self._normalize_service_eligibility_response(data)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "Dayton Service Eligibility Connection Error")
+			return {}
+		except (ValueError, TypeError) as e:
+			frappe.log_error(str(e), "Dayton Service Eligibility Parse Error")
+			return {}
+
+	def get_service_centers(self) -> list[dict]:
+		"""GET /api/ServiceCenters — full terminal catalog with lat/lng.
+
+		Soft-fails (returns []) on network/HTTP/auth errors so sync/UI are not blocked.
+		"""
+		endpoint = f"{self.base_url}/api/ServiceCenters"
+		try:
+			response = requests.get(
+				endpoint,
+				headers=self.get_headers(),
+				auth=self.get_auth(),
+				timeout=REQUEST_TIMEOUT,
+			)
+		except requests.exceptions.RequestException as e:
+			frappe.log_error(str(e), "LTL Quote - Dayton Service Centers Connection Error")
+			return []
+
+		if response.status_code in (401, 403):
+			frappe.log_error(
+				f"Status {response.status_code}: {response.text}",
+				"Dayton Service Centers Auth Failure",
+			)
+			return []
+
+		if response.status_code != 200:
+			frappe.log_error(
+				f"Status {response.status_code}: {response.text}",
+				"Dayton Service Centers Failure",
+			)
+			return []
+
+		try:
+			data = response.json() if response.content else {}
+		except (ValueError, TypeError):
+			frappe.log_error(response.text, "Dayton Service Centers Parse Error")
+			return []
+
+		raw_list = data.get("serviceCenters") if isinstance(data, dict) else data
+		if not isinstance(raw_list, list):
+			return []
+
+		centers: list[dict] = []
+		for row in raw_list:
+			normalized = self._normalize_service_center_catalog_row(row)
+			if normalized.get("id"):
+				centers.append(normalized)
+		return centers
+
+	@staticmethod
+	def _normalize_service_center_catalog_row(row: dict | None) -> dict:
+		"""Normalize a ServiceCenters API row for DocType sync and lookups."""
+		if not row or not isinstance(row, dict):
+			return {}
+
+		center_id = str(row.get("id") or "").strip().upper()
+		lat = row.get("latitude") if row.get("latitude") is not None else row.get("lat")
+		lng = row.get("longitude") if row.get("longitude") is not None else row.get("lng")
+		try:
+			lat_f = float(lat) if lat not in (None, "") else None
+		except (TypeError, ValueError):
+			lat_f = None
+		try:
+			lng_f = float(lng) if lng not in (None, "") else None
+		except (TypeError, ValueError):
+			lng_f = None
+
+		number = row.get("number")
+		try:
+			number_i = int(number) if number not in (None, "") else None
+		except (TypeError, ValueError):
+			number_i = None
+
+		out = {
+			"id": center_id,
+			"number": number_i,
+			"name": str(row.get("name") or "").strip(),
+			"address1": str(row.get("address1") or "").strip(),
+			"address2": str(row.get("address2") or "").strip(),
+			"city": str(row.get("city") or "").strip(),
+			"state": str(row.get("state") or "").strip().upper(),
+			"zip": str(row.get("zip") or "").strip(),
+			"phone": str(row.get("phone") or "").strip(),
+			"toll_free": str(row.get("tollFree") or row.get("toll_free") or "").strip(),
+			"fax": str(row.get("fax") or "").strip(),
+		}
+		if lat_f is not None:
+			out["lat"] = lat_f
+		if lng_f is not None:
+			out["lng"] = lng_f
+		return out
+
+	@staticmethod
+	def _format_eligibility_date(shipment_date: str | None = None) -> str:
+		"""Format shipment date for ServiceEligibility query (ISO with Z suffix)."""
+		if shipment_date:
+			dt = get_datetime(shipment_date)
+			return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+		return now_datetime().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+	@staticmethod
+	def _normalize_service_center(center: dict | None) -> dict:
+		if not center or not isinstance(center, dict):
+			return {}
+		normalized = {
+			"id": str(center.get("id") or "").strip(),
+			"name": str(center.get("name") or "").strip(),
+			"city": str(center.get("city") or "").strip(),
+			"state": str(center.get("state") or "").strip(),
+			"zip": str(center.get("zip") or "").strip(),
+			"phone": str(center.get("phone") or center.get("tollFree") or "").strip(),
+			"address1": str(center.get("address1") or "").strip(),
+		}
+		try:
+			from ltl_quote.carrier_network.service_centers import lookup_service_center
+
+			matched = lookup_service_center(
+				id=normalized.get("id"),
+				city=normalized.get("city"),
+				state=normalized.get("state"),
+				zip_code=normalized.get("zip"),
+			)
+			if matched.get("lat") is not None and matched.get("lng") is not None:
+				normalized["lat"] = matched["lat"]
+				normalized["lng"] = matched["lng"]
+			if not normalized.get("name") and matched.get("name"):
+				normalized["name"] = matched["name"]
+			if not normalized.get("address1") and matched.get("address1"):
+				normalized["address1"] = matched["address1"]
+			if not normalized.get("phone") and matched.get("phone"):
+				normalized["phone"] = matched["phone"]
+		except Exception:
+			# Catalog may not be migrated/synced yet — eligibility still returns text fields.
+			pass
+		return normalized
+
+	@staticmethod
+	def _normalize_service_eligibility_response(data: dict | None) -> dict:
+		"""Normalize Dayton ServiceEligibility JSON for UI and FlowWolf consumers."""
+		if not data or not isinstance(data, dict):
+			return {}
+
+		nested = data.get("serviceEligibility") or {}
+		service_days = nested.get("serviceDays") or data.get("serviceDays")
+		try:
+			service_days = int(service_days) if service_days is not None else None
+		except (TypeError, ValueError):
+			service_days = None
+
+		return {
+			"service_days": service_days,
+			"origin_city": str(data.get("originCity") or data.get("origin_city") or "").strip(),
+			"origin_state": str(data.get("originState") or data.get("origin_state") or "").strip(),
+			"origin_zip": str(data.get("originZip") or data.get("origin_zip") or "").strip(),
+			"destination_city": str(
+				data.get("destinationCity") or data.get("destination_city") or ""
+			).strip(),
+			"destination_state": str(
+				data.get("destinationState") or data.get("destination_state") or ""
+			).strip(),
+			"destination_zip": str(
+				data.get("destinationZip") or data.get("destination_zip") or ""
+			).strip(),
+			"origin_service_center": DaytonCarrierAdapter._normalize_service_center(
+				data.get("originServiceCenter")
+			),
+			"destination_service_center": DaytonCarrierAdapter._normalize_service_center(
+				data.get("destinationServiceCenter")
+			),
+			"raw": data,
+		}
 
 	@staticmethod
 	def _parse_rate_response(data: dict) -> dict:
@@ -1318,6 +1680,36 @@ def _resolve_dayton_items(quote_data: dict | None = None, quote_request=None) ->
 	return [_item_as_dict(item) for item in (raw_items or []) if item]
 
 
+def _resolve_dayton_packaging_type(value) -> str:
+	"""Resolve a packaging code for Dayton eBOL lineItems.packagingType.
+
+	Prefers synced Dayton Packaging Type ids (e.g. PL, BX). Falls back to the
+	legacy word allowlist, then SKID / first synced type.
+	"""
+	raw = str(value or "").strip()
+	legacy = {"SKID", "PALLET", "CARTON", "CRATE", "DRUM", "TOTE", "BUNDLE", "ROLL", "OTHER"}
+
+	if raw:
+		# Exact DocType match (Link stores name == id).
+		if frappe.db.exists("Dayton Packaging Type", raw):
+			return raw
+		upper = raw.upper()
+		# Match by id case-insensitively.
+		matched = frappe.db.get_value("Dayton Packaging Type", {"id": upper}, "name")
+		if matched:
+			return matched
+		# Match description loosely (e.g. free-text "Pallets").
+		matched = frappe.db.get_value("Dayton Packaging Type", {"description": raw}, "name")
+		if matched:
+			return matched
+		if upper in legacy:
+			return upper
+
+	# Default: first synced packaging type, else SKID.
+	first = frappe.db.get_value("Dayton Packaging Type", {}, "name", order_by="id asc")
+	return first or "SKID"
+
+
 def _build_dayton_handling_units(
 	*,
 	items: list[dict],
@@ -1361,7 +1753,7 @@ def _build_dayton_handling_units(
 					"description": str(fallback_description or "General Freight Cargo"),
 					"hazardous": bool(fallback_hazardous),
 					"nmfc": str(fallback_nmfc or ""),
-					"packagingType": "SKID",
+					"packagingType": _resolve_dayton_packaging_type(None),
 					"pieces": fallback_pieces,
 					"weight": fallback_weight_lbs,
 					"weightUnit": "LBS",
@@ -1413,7 +1805,9 @@ def _build_dayton_handling_units(
 			or item.get("hazmat") in (True, 1, "1", "true", "True", "yes", "Y")
 			or fallback_hazardous
 		)
-		packaging = str(item.get("packaging_units") or item.get("packagingType") or "SKID").upper() or "SKID"
+		packaging = _resolve_dayton_packaging_type(
+			item.get("packaging_units") or item.get("packaging_type") or item.get("packagingType")
+		)
 		dim_unit = str(item.get("dimension_unit") or item.get("dimension_units") or fallback_dimension_unit).upper()
 		if dim_unit not in ("IN", "CM"):
 			dim_unit = fallback_dimension_unit
@@ -1436,7 +1830,7 @@ def _build_dayton_handling_units(
 					"description": description,
 					"hazardous": hazardous,
 					"nmfc": nmfc,
-					"packagingType": packaging if packaging in ("SKID", "PALLET", "CARTON", "CRATE", "DRUM", "TOTE", "BUNDLE", "ROLL", "OTHER") else "SKID",
+					"packagingType": packaging,
 					"pieces": pieces,
 					"weight": weight_lbs,
 					"weightUnit": "LBS",
@@ -1935,7 +2329,7 @@ def fetch_dayton_tracking_updates(shipment_name):
 		if not result.get("events"):
 			return {
 				"status": "info",
-				"message": "Shipment registered, but transit tracking events are not populated yet.",
+				"message": "Waiting for Dayton to scan this PRO. Events appear after pickup is completed and scanned.",
 			}
 
 		return {
@@ -2073,6 +2467,52 @@ def _find_indexed_dayton_document(search_result: dict, doc_type: str) -> dict | 
 		if str(document.get("type") or "").strip().upper() == target:
 			return document
 	return None
+
+
+def get_dayton_indexed_documents(pro_number: str) -> dict:
+	"""Summarize Dayton GET /api/Images/Search for API and UI consumers."""
+	pro = str(pro_number or "").strip()
+	if not pro:
+		return {
+			"checked": False,
+			"pro": "",
+			"documents": [],
+			"bol_available": False,
+			"pod_available": False,
+			"message": "No PRO number assigned yet.",
+		}
+
+	adapter = DaytonCarrierAdapter()
+	search = adapter.search_images(pro)
+	if not search.get("ok"):
+		return {
+			"checked": False,
+			"pro": pro,
+			"documents": [],
+			"bol_available": False,
+			"pod_available": False,
+			"message": "Could not verify documents with Dayton right now.",
+		}
+
+	documents = search.get("documents") or []
+	raw = search.get("raw") or {}
+	bol_doc = _find_indexed_dayton_document(search, "BILL OF LADING")
+	pod_doc = _find_indexed_dayton_document(search, "PROOF OF DELIVERY")
+	return {
+		"checked": True,
+		"pro": raw.get("pro") or pro,
+		"trace_id": raw.get("traceId"),
+		"documents": documents,
+		"bol_available": bol_doc is not None,
+		"bol_hash": (bol_doc or {}).get("hash"),
+		"pod_available": pod_doc is not None,
+		"pod_hash": (pod_doc or {}).get("hash"),
+		"message": (
+			None
+			if bol_doc
+			else "Documents are currently being scanned by Dayton's processing team."
+		),
+	}
 
 
 @frappe.whitelist()

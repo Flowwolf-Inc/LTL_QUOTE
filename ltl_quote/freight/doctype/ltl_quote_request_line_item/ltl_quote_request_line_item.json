@@ -78,8 +78,9 @@
   },
   {
    "fieldname": "packaging_units",
-   "fieldtype": "Data",
-   "label": "Packaging Units"
+   "fieldtype": "Link",
+   "label": "Packaging Units",
+   "options": "Dayton Packaging Type"
   },
   {
    "fieldname": "packaging_unit_count",
@@ -93,9 +94,10 @@
   },
   {
    "fieldname": "freight_class",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "NMFC Class"
+   "label": "NMFC Class",
+   "options": "Dayton Shipping Class"
   },
   {
    "fieldname": "nmfc",

@@ -47,7 +47,15 @@ doctype_js = {
 	"LTL Quote Request": "freight/doctype/ltl_quote_request/ltl_quote_request.js",
 	"LTL Shipment": "freight/doctype/ltl_shipment/ltl_shipment.js",
 }
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+doctype_list_js = {
+	"Dayton Packaging Type": "freight/doctype/dayton_packaging_type/dayton_packaging_type_list.js",
+	"Dayton Shipping Class": "freight/doctype/dayton_shipping_class/dayton_shipping_class_list.js",
+	"Dayton Accessorial": "freight/doctype/dayton_accessorial/dayton_accessorial_list.js",
+	"Dayton Response Accessorial": "freight/doctype/dayton_response_accessorial/dayton_response_accessorial_list.js",
+	"Dayton State Province": "freight/doctype/dayton_state_province/dayton_state_province_list.js",
+	"Dayton LTL Accessorial": "freight/doctype/dayton_ltl_accessorial/dayton_ltl_accessorial_list.js",
+	"Dayton Service Center": "freight/doctype/dayton_service_center/dayton_service_center_list.js",
+}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 

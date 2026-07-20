@@ -191,30 +191,84 @@ def _resolve_accessorials(accessorials: list) -> list[dict]:
 	rows = []
 	for item in accessorials:
 		if isinstance(item, dict):
-			code = _resolve_accessorial_code(item.get("code") or item.get("accessorial_code") or item.get("accessorial"))
+			raw_code = item.get("code") or item.get("accessorial_code") or item.get("accessorial")
+			code = _resolve_accessorial_code(raw_code)
 			quantity = max(int(item.get("quantity") or item.get("qty") or 1), 1)
 			service_group = str(item.get("service_group") or item.get("group") or "").strip().lower()
 			label = str(item.get("label") or item.get("accessorial_name") or "").strip()
 		else:
+			raw_code = item
 			code = _resolve_accessorial_code(item)
 			quantity = 1
 			service_group = ""
 			label = ""
 		if not code:
+			# Allow synced Dayton catalog codes that are not yet in LTL Accessorial.
+			code = _resolve_dayton_catalog_code(raw_code)
+		if not code:
 			continue
 		name = frappe.db.get_value("LTL Accessorial", {"accessorial_code": code})
-		if name:
-			row = {"accessorial": name, "accessorial_code": code, "quantity": quantity}
-			if service_group in {"pickup", "delivery", "load", "origin", "destination"}:
-				if service_group == "origin":
-					service_group = "pickup"
-				elif service_group == "destination":
-					service_group = "delivery"
-				row["service_group"] = service_group
-			if label:
-				row["accessorial_name"] = label
-			rows.append(row)
+		if not name:
+			name = _ensure_ltl_accessorial(code, label)
+		if not name:
+			continue
+		row = {"accessorial": name, "accessorial_code": code, "quantity": quantity}
+		if service_group in {"pickup", "delivery", "load", "origin", "destination"}:
+			if service_group == "origin":
+				service_group = "pickup"
+			elif service_group == "destination":
+				service_group = "delivery"
+			row["service_group"] = service_group
+		if label:
+			row["accessorial_name"] = label
+		rows.append(row)
 	return rows
+
+
+def _resolve_dayton_catalog_code(value) -> str | None:
+	"""Return an uppercase Dayton Accessorial code when present in the synced catalog."""
+	if not value:
+		return None
+	code = str(value).strip().upper()
+	if not code:
+		return None
+	if frappe.db.exists("Dayton Accessorial", {"code": code}):
+		return code
+	if frappe.db.exists("Dayton Response Accessorial", code):
+		return code
+	return None
+
+
+def _ensure_ltl_accessorial(code: str, label: str = "") -> str | None:
+	"""Create a lightweight LTL Accessorial master row for a Dayton catalog code."""
+	code = str(code or "").strip().upper()
+	if not code:
+		return None
+	existing = frappe.db.get_value("LTL Accessorial", {"accessorial_code": code}, "name")
+	if existing:
+		return existing
+	description = label or code
+	if frappe.db.exists("Dayton Accessorial", {"code": code}):
+		description = (
+			frappe.db.get_value("Dayton Accessorial", {"code": code}, "description") or description
+		)
+	elif frappe.db.exists("Dayton Response Accessorial", code):
+		description = (
+			frappe.db.get_value("Dayton Response Accessorial", code, "description") or description
+		)
+	doc = frappe.get_doc(
+		{
+			"doctype": "LTL Accessorial",
+			"accessorial_code": code,
+			"accessorial_name": description,
+			"charge_type": "Flat",
+			"default_amount": 0,
+			"currency": "USD",
+			"description": f"Synced from Dayton catalog ({code})",
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
 
 
 def _resolve_accessorial_code(value: str) -> str | None:

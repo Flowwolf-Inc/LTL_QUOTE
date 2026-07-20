@@ -114,6 +114,370 @@ def get_rates(payload=None, **kwargs):
 
 
 @frappe.whitelist(allow_guest=False)
+def get_service_eligibility(payload=None, origin=None, destination=None, date=None, **kwargs):
+	"""FlowWolf gateway for Dayton GET /api/Shipping/ServiceEligibility."""
+	headers, body = _read_request_context()
+	status = "Queued"
+	response_payload: dict = {}
+	origin_zip = destination_zip = shipment_date = None
+
+	try:
+		if isinstance(payload, str):
+			payload = frappe.parse_json(payload)
+		payload = payload or body or {}
+		origin_zip = (
+			origin
+			or payload.get("origin")
+			or payload.get("origin_zip")
+			or kwargs.get("origin")
+		)
+		destination_zip = (
+			destination
+			or payload.get("destination")
+			or payload.get("destination_zip")
+			or kwargs.get("destination")
+		)
+		shipment_date = date or payload.get("date") or payload.get("shipment_date") or kwargs.get("date")
+
+		if not origin_zip or not destination_zip:
+			frappe.throw("origin and destination ZIP codes are required.")
+
+		from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+
+		adapter = DaytonCarrierAdapter()
+		result = adapter.get_service_eligibility(origin_zip, destination_zip, shipment_date)
+		if not result:
+			status = "API Error"
+			response_payload = {
+				"status": "error",
+				"engine": FLOWWOLF_ENGINE,
+				"message": "Service eligibility lookup failed or returned no data.",
+			}
+		else:
+			status = "Success"
+			response_payload = {
+				"status": "success",
+				"engine": FLOWWOLF_ENGINE,
+				"data": result,
+				**result,
+			}
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf get_service_eligibility Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {
+			**(body or {}),
+			"origin": origin_zip,
+			"destination": destination_zip,
+			"date": shipment_date,
+		}
+		log_api_transaction(headers, log_body, response_payload, status, "DAYTON")
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def search_dayton_images(payload=None, pro=None, **kwargs):
+	"""FlowWolf gateway for Dayton GET /api/Images/Search."""
+	headers, body = _read_request_context()
+	status = "Queued"
+	response_payload: dict = {}
+	pro_number = None
+
+	try:
+		if isinstance(payload, str):
+			payload = frappe.parse_json(payload)
+		payload = payload or body or {}
+		pro_number = pro or payload.get("pro") or payload.get("pro_number") or kwargs.get("pro")
+		if not pro_number:
+			frappe.throw("pro is required.")
+
+		from ltl_quote.api.shipping import search_dayton_images as _search_dayton_images
+
+		result = _search_dayton_images(pro=pro_number)
+		status = "Success" if result.get("status") == "success" else "API Error"
+		response_payload = {"engine": FLOWWOLF_ENGINE, **result}
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf search_dayton_images Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "pro": pro_number}
+		log_api_transaction(headers, log_body, response_payload, status, "DAYTON")
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def dayton_document_available(payload=None, pro=None, doc_type="BILL OF LADING", **kwargs):
+	"""FlowWolf gateway for Dayton document index verification."""
+	headers, body = _read_request_context()
+	status = "Queued"
+	response_payload: dict = {}
+	pro_number = None
+
+	try:
+		if isinstance(payload, str):
+			payload = frappe.parse_json(payload)
+		payload = payload or body or {}
+		pro_number = pro or payload.get("pro") or payload.get("pro_number") or kwargs.get("pro")
+		doc_type = (
+			doc_type
+			or payload.get("doc_type")
+			or payload.get("document_type")
+			or kwargs.get("doc_type")
+			or "BILL OF LADING"
+		)
+		if not pro_number:
+			frappe.throw("pro is required.")
+
+		from ltl_quote.api.shipping import dayton_document_available as _dayton_document_available
+
+		result = _dayton_document_available(pro=pro_number, doc_type=doc_type)
+		status = "Success"
+		response_payload = {"status": "success", "engine": FLOWWOLF_ENGINE, **result}
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf dayton_document_available Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "pro": pro_number, "doc_type": doc_type}
+		log_api_transaction(headers, log_body, response_payload, status, "DAYTON")
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def refresh_dayton_shipment_bol(payload=None, shipment=None, shipment_name=None, **kwargs):
+	"""FlowWolf gateway to fetch a Dayton BOL when Images/Search reports it indexed."""
+	headers, body = _read_request_context()
+	status = "Queued"
+	response_payload: dict = {}
+	shipment_id = None
+
+	try:
+		if isinstance(payload, str):
+			payload = frappe.parse_json(payload)
+		payload = payload or body or {}
+		shipment_id = (
+			shipment
+			or shipment_name
+			or payload.get("shipment")
+			or payload.get("shipment_name")
+			or payload.get("shipment_id")
+			or kwargs.get("shipment")
+		)
+		if not shipment_id:
+			frappe.throw("shipment is required.")
+
+		from ltl_quote.api.shipping import refresh_dayton_shipment_bol as _refresh_dayton_shipment_bol
+
+		result = _refresh_dayton_shipment_bol(shipment=shipment_id)
+		status = "Success" if result.get("status") == "success" else "API Error"
+		response_payload = {"engine": FLOWWOLF_ENGINE, **result}
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf refresh_dayton_shipment_bol Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), "shipment": shipment_id}
+		log_api_transaction(headers, log_body, response_payload, status, "DAYTON")
+
+	return response_payload
+
+
+def _attach_dayton_indexed_documents(payload: dict, carrier_code: str | None, pro_number: str | None) -> None:
+	"""Add Images/Search summary to shipment detail payloads for Dayton carriers."""
+	if str(carrier_code or "").upper() != "DAYTON":
+		return
+	pro = str(pro_number or "").strip()
+	if not pro:
+		return
+
+	from ltl_quote.carrier_network.adapters.dayton import get_dayton_indexed_documents
+
+	indexed = get_dayton_indexed_documents(pro)
+	payload["indexed_documents"] = indexed
+	payload["bol_indexed"] = bool(indexed.get("bol_available"))
+
+
+def _attach_dayton_pickup(payload: dict, shipment_name: str | None, carrier_code: str | None) -> None:
+	"""Add pickup summary to shipment detail payloads for Dayton carriers."""
+	if str(carrier_code or "").upper() != "DAYTON" or not shipment_name:
+		return
+
+	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+	from ltl_quote.carrier_network.pickup import PICKUP_TERMINAL_STATUSES, shipment_pickup_summary
+
+	doc = frappe.get_doc("LTL Shipment", shipment_name)
+	live = bool(doc.pickup_number) and str(doc.pickup_status or "") not in PICKUP_TERMINAL_STATUSES
+	adapter = DaytonCarrierAdapter() if live else None
+	payload["pickup"] = shipment_pickup_summary(doc, live=live, adapter=adapter)
+
+
+def _flowwolf_pickup_proxy(headers, body, request_kwargs, handler, log_fields=()):
+	status = "Queued"
+	response_payload: dict = {}
+	log_values = {}
+
+	try:
+		payload = request_kwargs.get("payload")
+		if isinstance(payload, str):
+			payload = frappe.parse_json(payload)
+		request = {**(body or {}), **(payload or {}), **request_kwargs}
+		for field in log_fields:
+			log_values[field] = request.get(field)
+		response_payload = handler(request)
+		status = "Success" if response_payload.get("status") == "success" else "API Error"
+		response_payload = {"engine": FLOWWOLF_ENGINE, **response_payload}
+	except frappe.ValidationError as e:
+		frappe.local.response["http_status_code"] = 400
+		status = "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	except Exception as e:
+		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf Dayton Pickup Error")
+		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+	finally:
+		log_body = {**(body or {}), **log_values}
+		log_api_transaction(headers, log_body, response_payload, status, "DAYTON")
+
+	return response_payload
+
+
+@frappe.whitelist(allow_guest=False)
+def create_dayton_pickup(payload=None, shipment=None, shipment_name=None, **kwargs):
+	"""FlowWolf gateway for Dayton PUT /api/Pickup."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import create_dayton_pickup as _create_dayton_pickup
+
+		return _create_dayton_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, **kwargs},
+		handler,
+		("shipment", "shipment_name"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def get_dayton_pickup(payload=None, shipment=None, shipment_name=None, number=None, **kwargs):
+	"""FlowWolf gateway for Dayton GET /api/Pickup."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import get_dayton_pickup as _get_dayton_pickup
+
+		return _get_dayton_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			number=request.get("number") or number,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, "number": number, **kwargs},
+		handler,
+		("shipment", "number"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def update_dayton_pickup(payload=None, shipment=None, shipment_name=None, **kwargs):
+	"""FlowWolf gateway for Dayton POST /api/Pickup."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import update_dayton_pickup as _update_dayton_pickup
+
+		return _update_dayton_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			payload=request.get("payload") or payload,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, **kwargs},
+		handler,
+		("shipment",),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def update_dayton_pickup_by_psid(payload=None, shipment=None, shipment_name=None, psid=None, **kwargs):
+	"""FlowWolf gateway for Dayton POST /api/Pickup/ByPSID."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import update_dayton_pickup_by_psid as _update_dayton_pickup_by_psid
+
+		return _update_dayton_pickup_by_psid(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			payload=request.get("payload") or payload,
+			psid=request.get("psid") or psid,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, "psid": psid, **kwargs},
+		handler,
+		("shipment", "psid"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def cancel_dayton_pickup(payload=None, shipment=None, shipment_name=None, number=None, **kwargs):
+	"""FlowWolf gateway for Dayton DELETE /api/Pickup/Cancel."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import cancel_dayton_pickup as _cancel_dayton_pickup
+
+		return _cancel_dayton_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			number=request.get("number") or number,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, "number": number, **kwargs},
+		handler,
+		("shipment", "number"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
 def book_carrier_quote(
 	quote_request_id: str,
 	carrier_code: str | None = None,
@@ -508,6 +872,7 @@ def get_shipment_details(shipment=None, quote_request_id=None, payload=None, **k
 				"total_charge": flt(quote_doc.final_charge),
 				"shipment_status": quote_doc.status or "",
 			}
+			_attach_dayton_indexed_documents(response_payload, carrier_id, quote_doc.pro_number)
 			status = "Quotes Received"
 		elif not shipment_doc:
 			frappe.throw("No shipment found matching the provided identifiers.")
@@ -532,6 +897,12 @@ def get_shipment_details(shipment=None, quote_request_id=None, payload=None, **k
 				"total_charge": flt(shipment_doc.total_charge),
 				"shipment_status": shipment_doc.status or "",
 			}
+			_attach_dayton_indexed_documents(
+				response_payload,
+				shipment_doc.carrier,
+				shipment_doc.pro_number,
+			)
+			_attach_dayton_pickup(response_payload, shipment_doc.name, shipment_doc.carrier)
 			status = "Booked" if (shipment_doc.status or "").lower() in {"booked", "dispatched", "in transit", "delivered"} else "Quotes Received"
 
 	except frappe.ValidationError as e:

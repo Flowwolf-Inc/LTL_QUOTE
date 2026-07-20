@@ -89,12 +89,12 @@ def normalize_us_zip(zip_code: str | None) -> str:
 
 
 def lookup_zip_location(zip_code: str | None) -> dict[str, str]:
-	"""Resolve city and state abbreviation from a US ZIP code."""
+	"""Resolve city, state, and coordinates from a US ZIP code."""
 	normalized_zip = normalize_us_zip(zip_code)
 	if not normalized_zip:
 		return {}
 
-	cache_key = f"ltl_zip_location:{normalized_zip}"
+	cache_key = f"ltl_zip_location_v2:{normalized_zip}"
 	cached = frappe.cache.get_value(cache_key)
 	if isinstance(cached, dict):
 		return cached
@@ -108,14 +108,58 @@ def lookup_zip_location(zip_code: str | None) -> dict[str, str]:
 			return {}
 
 		place = (response.json().get("places") or [{}])[0]
+		lat = place.get("latitude")
+		lng = place.get("longitude")
 		result = {
 			"city": str(place.get("place name") or "").strip(),
 			"state": normalize_us_state(place.get("state abbreviation") or place.get("state")),
+			"latitude": str(lat).strip() if lat not in (None, "") else "",
+			"longitude": str(lng).strip() if lng not in (None, "") else "",
 		}
 		frappe.cache.set_value(cache_key, result, expires_in_sec=ZIP_LOOKUP_CACHE_TTL)
 		return result
 	except requests.exceptions.RequestException:
 		return {}
+
+
+def geocode_us_zip(zip_code: str | None) -> dict:
+	"""Return city/state/lat/lng for a US ZIP (empty dict when unresolved)."""
+	lookup = lookup_zip_location(zip_code)
+	if not lookup:
+		return {}
+	lat = lookup.get("latitude")
+	lng = lookup.get("longitude")
+	try:
+		lat_f = float(lat) if lat not in (None, "") else None
+		lng_f = float(lng) if lng not in (None, "") else None
+	except (TypeError, ValueError):
+		lat_f = None
+		lng_f = None
+	out = {
+		"city": lookup.get("city") or "",
+		"state": lookup.get("state") or "",
+		"zip": normalize_us_zip(zip_code),
+	}
+	if lat_f is not None and lng_f is not None:
+		out["lat"] = lat_f
+		out["lng"] = lng_f
+	return out
+
+
+def attach_zip_coordinates(place: dict | None) -> dict:
+	"""Copy a place dict and add lat/lng from its zip when missing."""
+	place = dict(place or {})
+	if place.get("lat") is not None and place.get("lng") is not None:
+		return place
+	geo = geocode_us_zip(place.get("zip"))
+	if geo.get("lat") is not None and geo.get("lng") is not None:
+		place["lat"] = geo["lat"]
+		place["lng"] = geo["lng"]
+	if not place.get("city") and geo.get("city"):
+		place["city"] = geo["city"]
+	if not place.get("state") and geo.get("state"):
+		place["state"] = geo["state"]
+	return place
 
 
 def resolve_us_location(
