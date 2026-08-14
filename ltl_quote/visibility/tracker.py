@@ -60,6 +60,14 @@ class ShipmentTracker:
 		return {"events": len(events), "has_exception": has_exception}
 
 	def _update_shipment_status(self, status_code: str | None):
+		from ltl_quote.carrier_network.tracking import shipment_status_from_activity
+
+		mapped = shipment_status_from_activity(status_code)
+		if mapped:
+			self.shipment.status = mapped
+			return
+
+		# Legacy normalized codes from older parsers / mock adapters.
 		mapping = {
 			"PICKED_UP": "In Transit",
 			"IN_TRANSIT": "In Transit",

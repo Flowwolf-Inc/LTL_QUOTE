@@ -9,13 +9,19 @@ frappe.ui.form.on("LTL Quote Request", {
 
 		frm.add_custom_button(__("Fetch Rates"), () => fetch_rates(frm)).addClass("btn-primary");
 
-		if (!["Booked", "Accepted"].includes(frm.doc.status) && frm.doc.carrier_quotes?.length) {
-			frm.add_custom_button(__("Book Selected Quote"), () => book_quote(frm)).addClass(
-				"btn-primary"
-			);
-		}
+		render_book_button(frm);
 	},
 });
+
+function render_book_button(frm) {
+	frm.remove_custom_button(__("Book Selected Quote"));
+
+	if (!["Booked", "Accepted"].includes(frm.doc.status) && frm.doc.carrier_quotes?.length) {
+		frm.add_custom_button(__("Book Selected Quote"), () => book_quote(frm)).addClass(
+			"btn-primary"
+		);
+	}
+}
 
 function fetch_rates(frm) {
 	frappe.call({
@@ -24,15 +30,70 @@ function fetch_rates(frm) {
 		freeze: true,
 		freeze_message: __("Aggregating carrier rates..."),
 		callback(r) {
-			if (!r.exc) {
-				frm.reload_doc();
-				frappe.show_alert({
-					message: __("Received {0} carrier quotes", [r.message?.quotes_received || 0]),
-					indicator: "green",
-				});
+			if (r.exc || !r.message) {
+				return;
 			}
+
+			apply_fetched_quotes(frm, r.message);
+			render_book_button(frm);
+
+			const received = r.message.quotes_received || 0;
+			frappe.show_alert(
+				{
+					message: received
+						? __("Quotes received — {0} carrier quotes", [received])
+						: __("No carrier quotes were returned"),
+					indicator: received ? "green" : "orange",
+				},
+				7
+			);
 		},
 	});
+}
+
+function apply_fetched_quotes(frm, message) {
+	frm.clear_table("carrier_quotes");
+	(message.quotes || []).forEach((quote) => frm.add_child("carrier_quotes", quote));
+
+	const scalar_updates = {
+		status: message.status,
+		aggregated_on: message.aggregated_on,
+		error_log: message.error_log || "",
+		recommended_cheapest: message.recommendations?.cheapest || "",
+		recommended_fastest: message.recommendations?.fastest || "",
+		recommended_best_value: message.recommendations?.best_value || "",
+	};
+	Object.entries(scalar_updates).forEach(([field, value]) => {
+		if (value !== undefined) {
+			frm.doc[field] = value;
+		}
+	});
+
+	if (message.modified) {
+		frm.doc.modified = message.modified;
+	}
+
+	mark_form_saved(frm);
+
+	[
+		"carrier_quotes",
+		"status",
+		"aggregated_on",
+		"error_log",
+		"recommended_cheapest",
+		"recommended_fastest",
+		"recommended_best_value",
+	].forEach((field) => frm.refresh_field(field));
+}
+
+function mark_form_saved(frm) {
+	// The server has already persisted these changes, so drop the in-memory
+	// "unsaved" state without triggering a full document reload of the page.
+	frm.doc.__unsaved = 0;
+	if (frm.beforeUnloadListener) {
+		removeEventListener("beforeunload", frm.beforeUnloadListener, { capture: true });
+	}
+	frm.refresh_header();
 }
 
 function book_quote(frm) {
@@ -76,6 +137,10 @@ function book_quote(frm) {
 					book_arcbest_quote(frm, selected_option);
 					return;
 				}
+				if (is_tforce_carrier(selected_option.carrier)) {
+					book_tforce_quote(frm, selected_option);
+					return;
+				}
 				book_dayton_quote(frm, selected_option);
 			}
 		);
@@ -100,6 +165,66 @@ function book_quote(frm) {
 function is_arcbest_carrier(carrier_code) {
 	const code = (carrier_code || "").toUpperCase();
 	return ["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code);
+}
+
+function is_tforce_carrier(carrier_code) {
+	const code = (carrier_code || "").toUpperCase();
+	return ["TFORCE", "TFF"].includes(code) || code.includes("TFORCE");
+}
+
+function book_tforce_quote(frm, selected_option) {
+	frappe.call({
+		method: "ltl_quote.api.quote.accept_carrier_quote",
+		args: {
+			quote_request_id: frm.doc.name,
+			carrier_code: selected_option.carrier,
+			total_charge: selected_option.total_charge,
+			carrier_quote_id: selected_option.carrier_quote_id,
+		},
+		freeze: true,
+		freeze_message: __("Connecting to TForce Freight... Creating Bill of Lading..."),
+		callback(r) {
+			if (r.exc || !r.message) {
+				return;
+			}
+
+			if (r.message.status === "success" || r.message.status === "already_booked") {
+				frappe.show_alert({
+					message: __("TForce quote booked successfully."),
+					indicator: "green",
+				});
+
+				const shipment = r.message.data?.shipment || r.message.shipment;
+				const bol_url = r.message.bol_document_url;
+				if (bol_url) {
+					frappe.msgprint({
+						title: __("TForce BOL Ready"),
+						indicator: "green",
+						message: __(
+							"BOL #{0} | PRO #{1}<br><br><a href='{2}' target='_blank'>Download BOL PDF</a>",
+							[r.message.bol_number, r.message.pro_number, bol_url]
+						),
+					});
+				}
+
+				if (shipment) {
+					frappe.set_route("Form", "LTL Shipment", shipment);
+					return;
+				}
+
+				frm.reload_doc();
+				return;
+			}
+
+			if (r.message.status === "failed") {
+				frappe.msgprint({
+					title: __("TForce API Rejection"),
+					indicator: "red",
+					message: r.message.message || r.message.error || __("TForce rejected the booking request."),
+				});
+			}
+		},
+	});
 }
 
 function book_arcbest_quote(frm, selected_option) {

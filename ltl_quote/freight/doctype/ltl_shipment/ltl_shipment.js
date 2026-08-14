@@ -1,6 +1,19 @@
 // Copyright (c) 2026, LTL Quote and contributors
 // For license information, please see license.txt
 
+function resolve_bol_url(doc) {
+	if (!doc) return "";
+	const url = String(doc.bol_document_url || "").trim();
+	if (url) {
+		if (url.startsWith("http://") || url.startsWith("https://")) return url;
+		return window.location.origin + (url.startsWith("/") ? url : `/${url}`);
+	}
+	const attach = String(doc.bol_document || "").trim();
+	if (!attach) return "";
+	if (attach.startsWith("http://") || attach.startsWith("https://")) return attach;
+	return window.location.origin + (attach.startsWith("/") ? attach : `/${attach}`);
+}
+
 frappe.core = frappe.core || {};
 frappe.core.utils = frappe.core.utils || {};
 
@@ -40,6 +53,14 @@ frappe.core.utils.update_dayton_carrier_bol = function (frm) {
 frappe.ui.form.on("LTL Shipment", {
 	refresh(frm) {
 		if (!frm.is_new()) {
+			frm.remove_custom_button(__("View BOL"));
+			const bol_url = resolve_bol_url(frm.doc);
+			if (bol_url) {
+				frm.add_custom_button(__("View BOL"), () => {
+					window.open(bol_url, "_blank", "noopener,noreferrer");
+				}).addClass("btn-primary");
+			}
+
 			frm.remove_custom_button(__("Dispatch to Carrier"));
 			frm.remove_custom_button(__("Update Electronic BOL"));
 			frm.remove_custom_button(__("Track Location"));
@@ -59,7 +80,25 @@ frappe.ui.form.on("LTL Shipment", {
 				});
 			}, __("Visibility"));
 
-			if (frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+			if (frm.doc.carrier === "DAYTON" && frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+				frm.add_custom_button(__("Schedule Pickup"), () => {
+					frappe.call({
+						method: "dispatch_to_carrier",
+						doc: frm.doc,
+						freeze: true,
+						freeze_message: __("Scheduling pickup with Dayton..."),
+						callback(r) {
+							if (r.message?.status === "acknowledged" || r.message?.pickup_number) {
+								frappe.show_alert({
+									message: __("Pickup scheduled successfully."),
+									indicator: "green",
+								});
+							}
+							frm.reload_doc();
+						},
+					});
+				});
+			} else if (frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
 				frm.add_custom_button(__("Dispatch to Carrier"), () => {
 					frappe.call({
 						method: "dispatch_to_carrier",
@@ -70,6 +109,52 @@ frappe.ui.form.on("LTL Shipment", {
 						},
 					});
 				});
+			}
+
+			if (frm.doc.carrier === "DAYTON" && frm.doc.pickup_number) {
+				frm.add_custom_button(__("View Pickup"), () => {
+					frappe.call({
+						method: "ltl_quote.api.shipping.get_dayton_pickup",
+						args: { shipment: frm.doc.name },
+						freeze: true,
+						callback(r) {
+							const pickup = r.message?.pickup || {};
+							frappe.msgprint({
+								title: __("Dayton Pickup"),
+								indicator: r.message?.status === "success" ? "green" : "orange",
+								message: [
+									`${__("Pickup Number")}: ${pickup.pickup_number || "—"}`,
+									`${__("Status")}: ${pickup.status || "—"}`,
+									`${__("PSID")}: ${pickup.psid || "—"}`,
+									`${__("Ready")}: ${pickup.ready || "—"}`,
+									`${__("Close")}: ${pickup.close || "—"}`,
+								].join("<br>"),
+							});
+							frm.reload_doc();
+						},
+					});
+				}, __("Dayton Actions"));
+
+				if (frm.doc.pickup_status !== "Cancelled") {
+					frm.add_custom_button(__("Cancel Pickup"), () => {
+						frappe.confirm(__("Cancel this Dayton pickup?"), () => {
+							frappe.call({
+								method: "cancel_pickup",
+								doc: frm.doc,
+								freeze: true,
+								callback(r) {
+									if (r.message?.status === "success") {
+										frappe.show_alert({
+											message: __("Pickup cancelled."),
+											indicator: "green",
+										});
+									}
+									frm.reload_doc();
+								},
+							});
+						});
+					}, __("Dayton Actions"));
+				}
 			}
 
 			if (frm.doc.carrier === "DAYTON" && frm.doc.dayton_bol_id) {

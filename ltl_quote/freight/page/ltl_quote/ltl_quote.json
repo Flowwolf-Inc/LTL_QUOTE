@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-07-03 18:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "icon-truck",
+ "idx": 0,
+ "modified": "2026-07-03 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "ltl-quote",
+ "owner": "Administrator",
+ "page_name": "ltl-quote",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "title": "LTL Quote"
+}

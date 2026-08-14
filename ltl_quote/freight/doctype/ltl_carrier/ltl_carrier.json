@@ -22,7 +22,9 @@
   "api_key",
   "api_secret",
   "account_number",
-  "notes"
+  "notes",
+  "accessorial_mapping_section",
+  "accessorial_mappings"
  ],
  "fields": [
   {
@@ -78,7 +80,7 @@
    "fieldname": "connector_type",
    "fieldtype": "Select",
    "label": "Connector Type",
-   "options": "Mock\nDayton\nArcBest API\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
+   "options": "Mock\nDayton\nArcBest API\nTForce\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
    "default": "Mock"
   },
   {
@@ -120,6 +122,17 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "accessorial_mapping_section",
+   "fieldtype": "Section Break",
+   "label": "Accessorial Mapping"
+  },
+  {
+   "fieldname": "accessorial_mappings",
+   "fieldtype": "Table",
+   "label": "Accessorial Mappings",
+   "options": "LTL Carrier Accessorial"
   }
  ],
  "links": [],

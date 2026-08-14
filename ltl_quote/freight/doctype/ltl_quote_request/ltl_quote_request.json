@@ -21,9 +21,15 @@
   "addresses_section",
   "shipper_company_name",
   "shipper_address",
+  "contact_name",
+  "contact_phone",
+  "origin_contact_email",
   "column_break_addresses",
   "consignee_company_name",
   "consignee_address",
+  "destination_contact_name",
+  "destination_contact_phone",
+  "destination_contact_email",
   "freight_section",
   "total_weight",
   "weight_uom",
@@ -35,6 +41,8 @@
   "dimension_uom",
   "pieces",
   "stackable",
+  "line_items_section",
+  "line_items",
   "accessorials_section",
   "accessorials",
   "carrier_quotes_section",
@@ -149,6 +157,21 @@
    "label": "Shipper Address"
   },
   {
+   "fieldname": "contact_name",
+   "fieldtype": "Data",
+   "label": "Origin Contact Name"
+  },
+  {
+   "fieldname": "contact_phone",
+   "fieldtype": "Data",
+   "label": "Origin Contact Phone"
+  },
+  {
+   "fieldname": "origin_contact_email",
+   "fieldtype": "Data",
+   "label": "Origin Contact Email"
+  },
+  {
    "fieldname": "column_break_addresses",
    "fieldtype": "Column Break"
   },
@@ -161,6 +184,21 @@
    "fieldname": "consignee_address",
    "fieldtype": "Small Text",
    "label": "Consignee Address"
+  },
+  {
+   "fieldname": "destination_contact_name",
+   "fieldtype": "Data",
+   "label": "Destination Contact Name"
+  },
+  {
+   "fieldname": "destination_contact_phone",
+   "fieldtype": "Data",
+   "label": "Destination Contact Phone"
+  },
+  {
+   "fieldname": "destination_contact_email",
+   "fieldtype": "Data",
+   "label": "Destination Contact Email"
   },
   {
    "fieldname": "freight_section",
@@ -183,9 +221,9 @@
   },
   {
    "fieldname": "freight_class",
-   "fieldtype": "Select",
+   "fieldtype": "Link",
    "label": "Freight Class",
-   "options": "50\n55\n60\n65\n70\n77.5\n85\n92.5\n100\n110\n125\n150\n175\n200\n250\n300\n400\n500",
+   "options": "Dayton Shipping Class",
    "reqd": 1
   },
   {
@@ -224,6 +262,18 @@
    "fieldname": "stackable",
    "fieldtype": "Check",
    "label": "Stackable"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "line_items_section",
+   "fieldtype": "Section Break",
+   "label": "Line Items"
+  },
+  {
+   "fieldname": "line_items",
+   "fieldtype": "Table",
+   "label": "Line Items",
+   "options": "LTL Quote Request Line Item"
   },
   {
    "fieldname": "accessorials_section",

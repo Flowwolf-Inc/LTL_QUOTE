@@ -4,7 +4,7 @@ authors = [
     { name = "LTL Quote", email = "admin@ltlquote.com"}
 ]
 description = "Digital freight network and intelligent LTL rating engine"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [

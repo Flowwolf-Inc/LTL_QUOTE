@@ -93,6 +93,7 @@ def rank_quotes(quotes: list, settings=None) -> list[dict]:
 
 def _normalize_quote(quote) -> dict:
 	if isinstance(quote, CarrierRateQuote):
+		service_eligibility = (quote.raw_response or {}).get("serviceEligibilityLookup")
 		return {
 			"carrier": quote.carrier_name,
 			"carrier_code": quote.carrier_code,
@@ -106,6 +107,7 @@ def _normalize_quote(quote) -> dict:
 			"service_level": quote.service_level,
 			"carrier_quote_id": quote.carrier_quote_id,
 			"estimated_delivery_date": None,
+			"service_eligibility": service_eligibility,
 			"error": quote.error,
 		}
 
@@ -122,6 +124,7 @@ def _normalize_quote(quote) -> dict:
 		"service_level": quote.get("service_level"),
 		"carrier_quote_id": quote.get("carrier_quote_id"),
 		"estimated_delivery_date": quote.get("estimated_delivery_date"),
+		"service_eligibility": quote.get("service_eligibility"),
 		"error": quote.get("error"),
 	}
 

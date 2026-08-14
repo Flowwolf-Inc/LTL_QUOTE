@@ -32,7 +32,11 @@ class LTLQuoteRequest(Document):
 		from ltl_quote.rate_engine.aggregator import RateAggregator
 
 		aggregator = RateAggregator(self)
-		return aggregator.aggregate()
+		result = aggregator.aggregate()
+		# raw_quotes holds CarrierRateQuote dataclasses (not JSON serializable) and
+		# is only consumed by internal callers, so drop it from the client response.
+		result.pop("raw_quotes", None)
+		return result
 
 	@frappe.whitelist()
 	def book_selected_quote(self, row_idx=None):

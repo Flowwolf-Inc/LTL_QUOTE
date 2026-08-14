@@ -10,6 +10,7 @@ from typing import Any
 class AccessorialItem:
 	code: str
 	quantity: int = 1
+	service_group: str = ""
 
 
 @dataclass
@@ -27,6 +28,7 @@ class ShipmentRequest:
 	origin_state: str = ""
 	destination_city: str = ""
 	destination_state: str = ""
+	items: list[dict] = field(default_factory=list)
 
 	@property
 	def accessorial_codes(self) -> list[str]:

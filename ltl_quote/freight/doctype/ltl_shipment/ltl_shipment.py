@@ -31,6 +31,14 @@ class LTLShipment(Document):
 		return adapter.get_proof_of_delivery(self.pro_number)
 
 	@frappe.whitelist()
+	def cancel_pickup(self):
+		from ltl_quote.api.shipping import cancel_dayton_pickup
+
+		if str(self.carrier or "").upper() != "DAYTON":
+			frappe.throw("Pickup cancellation is only supported for Dayton shipments.")
+		return cancel_dayton_pickup(shipment=self.name)
+
+	@frappe.whitelist()
 	def update_electronic_bol(self):
 		from ltl_quote.carrier_network.adapters.dayton import update_electronic_bol
 

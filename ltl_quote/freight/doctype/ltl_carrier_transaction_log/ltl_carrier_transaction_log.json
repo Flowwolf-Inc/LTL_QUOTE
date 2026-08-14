@@ -44,7 +44,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Carrier Name",
-   "options": "Dayton Freight\nArcBest\nMulti-Carrier\nMock Carriers",
+   "options": "Dayton Freight\nArcBest\nTForce Freight\nMulti-Carrier\nMock Carriers",
    "reqd": 1
   },
   {
@@ -86,7 +86,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Queued\nQuotes Received\nNo Quotes Received\nAPI Error\nConnection Failed",
+   "options": "Queued\nQuotes Received\nNo Quotes Received\nBooked\nAlready Booked\nAPI Error\nConnection Failed",
    "reqd": 1
   },
   {
