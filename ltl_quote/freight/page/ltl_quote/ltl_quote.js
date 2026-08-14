@@ -154,7 +154,7 @@ const LIST_VIEWS = {
 		title: "LTL Quote List",
 		sub: "All rate requests across carriers.",
 		icon: "fa fa-list-alt",
-		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation"],
+		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation", "bol_number", "pro_number", "bol_document_url"],
 		order_by: "creation desc",
 		search: ["name", "origin_zip", "destination_zip", "origin_city", "destination_city"],
 		columns: [
@@ -163,6 +163,7 @@ const LIST_VIEWS = {
 			{ label: "Destination", type: "destination" },
 			{ label: "Weight (lbs)", type: "num", key: "total_weight" },
 			{ label: "Class", key: "freight_class" },
+			{ label: "BOL #", key: "bol_number" },
 			{ label: "Status", type: "status", key: "status" },
 			{ label: "Created On", type: "datetime", key: "creation" },
 		],
@@ -238,6 +239,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.quotes = [];
 		this.booking_context = null;
 		this.quote_request_status = null;
+		this.rate_errors = [];
 		this.expanded = false;
 		this.load_acc_expanded = false;
 		this.line_items_expanded = false;
@@ -864,7 +866,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-li-edit-col">
 							${this.li_input("Linear Feet", "linear_feet", { type: "number" })}
 							${this.li_input("NMFC Class", "nmfc_class", { ...nmfc_opts, required: true })}
-							${this.li_input("NMFC Number", "nmfc_number", { required: true })}
+							${this.li_input("NMFC Number", "nmfc_number")}
 						</div>
 					</div>
 				</section>
@@ -948,7 +950,6 @@ ltl_quote.Dashboard = class Dashboard {
 			{ key: "quantity", label: __("Quantity") },
 			{ key: "weight", label: __("Weight") },
 			{ key: "nmfc_class", label: __("NMFC Class") },
-			{ key: "nmfc_number", label: __("NMFC Number") },
 			{ key: "length", label: __("Length") },
 			{ key: "width", label: __("Width") },
 			{ key: "height", label: __("Height") },
@@ -1002,7 +1003,6 @@ ltl_quote.Dashboard = class Dashboard {
 			(row) =>
 				(row.description || row.item_name) &&
 				(row.nmfc_class || row.freight_class) &&
-				row.nmfc_number &&
 				row.quantity &&
 				row.weight &&
 				row.length &&
@@ -1013,7 +1013,7 @@ ltl_quote.Dashboard = class Dashboard {
 			frappe.show_alert(
 				{
 					message: __(
-						"Add at least one complete Line Item (Description, Quantity, Weight, NMFC Class, NMFC Number, Length, Width, Height), then click Save Item Details."
+						"Add at least one complete Line Item (Description, Quantity, Weight, NMFC Class, Length, Width, Height), then click Save Item Details."
 					),
 					indicator: "orange",
 				},
@@ -1071,7 +1071,7 @@ ltl_quote.Dashboard = class Dashboard {
 			frappe.set_route("Form", this.current_list.doctype, name);
 		});
 
-		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled)", (e) => {
+		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled), .ltl-view-bol-btn", (e) => {
 			e.stopPropagation();
 			const url = $(e.currentTarget).attr("data-bol-url");
 			if (url) window.open(url, "_blank");
@@ -1593,6 +1593,7 @@ ltl_quote.Dashboard = class Dashboard {
 				if (res.status !== "success" || !res.data || !(res.data.quotes || []).length) {
 					const err = (res.errors && res.errors.length && (res.errors[0].error || res.errors[0])) || res.error;
 					this.quotes = [];
+					this.rate_errors = res.errors || [];
 					this.quote_request_id = res.quote_request_id || null;
 					this.render_rates();
 					frappe.show_alert(
@@ -1603,6 +1604,7 @@ ltl_quote.Dashboard = class Dashboard {
 				}
 				this.quote_request_id = res.quote_request_id;
 				this.quotes = res.data.quotes;
+				this.rate_errors = res.errors || [];
 				this.booking_context = null;
 				this.load_booking_context(this.quote_request_id, () => {
 					this.render_rates();
@@ -1663,6 +1665,14 @@ ltl_quote.Dashboard = class Dashboard {
 			})
 			.join("");
 
+		const error_rows = (this.rate_errors || [])
+			.map((err) => {
+				const carrier = frappe.utils.escape_html(err.carrier || "Carrier");
+				const message = frappe.utils.escape_html(String(err.error || err).slice(0, 280));
+				return `<div class="ltl-rate-error"><strong>${carrier}</strong> did not return a rate: ${message}</div>`;
+			})
+			.join("");
+
 		container.html(`
 			<div class="ltl-rec-legend">
 				<span class="ltl-tag ltl-tag-cheapest">${this.tag_icon("Cheapest")} Cheapest</span>
@@ -1679,7 +1689,8 @@ ltl_quote.Dashboard = class Dashboard {
 					</tr>
 				</thead>
 				<tbody>${rows}</tbody>
-			</table>`);
+			</table>
+			${error_rows ? `<div class="ltl-rate-errors">${error_rows}</div>` : ""}`);
 		card.show();
 	}
 
@@ -1731,7 +1742,15 @@ ltl_quote.Dashboard = class Dashboard {
 			: "";
 
 		if (ctx?.shipment && booked_norm && code === booked_norm) {
-			return `<button class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__("View Shipment")}</button>`;
+			const bol_url = ctx.bol_url || "";
+			const bol_btn = bol_url
+				? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
+						bol_url
+					)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
+				: "";
+			return `<span class="ltl-rate-actions">${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__(
+				"View Shipment"
+			)}</button></span>`;
 		}
 		if (ctx?.shipment) {
 			return `<span class="ltl-status ltl-status-grey">${__("Booked")}</span>`;
@@ -1777,7 +1796,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.booking_context = {
 			shipment,
 			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
-			bol_url: res.bol_document_url || res.bol_url || "",
+			bol_url: res.bol_document_url || res.bol_url || (res.data && res.data.bol_document_url) || "",
 			bol_number: res.bol_number || "",
 		};
 		this.quote_request_status = "Booked";
@@ -1814,7 +1833,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const booked = this.booking_context?.booked_carrier_code;
 		if (this.booking_context?.shipment) {
 			if (booked && code === this.normalize_carrier_code(booked)) {
-				this.open_shipment_view(this.booking_context.shipment);
+				this.open_shipment_detail(this.booking_context.shipment);
 			}
 			return;
 		}
@@ -1974,7 +1993,11 @@ ltl_quote.Dashboard = class Dashboard {
 								: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]);
 						frappe.show_alert({ message: msg, indicator: "green" }, 8);
 						this.load_recent_requests();
-						this.open_shipment_view(this.booking_context.shipment);
+						if (this.booking_context.bol_url) {
+							this.open_quote_detail(this.quote_request_id);
+						} else {
+							this.open_shipment_detail(this.booking_context.shipment);
+						}
 						return;
 					}
 				}
@@ -2413,6 +2436,36 @@ ltl_quote.Dashboard = class Dashboard {
 			.join("");
 	}
 
+	render_bol_preview_card(opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const bol_url = String(opts.bol_url || "").trim();
+		const bol_number = opts.bol_number || "";
+		const pro_number = opts.pro_number || "";
+		if (!bol_url && !bol_number && !pro_number) {
+			return "";
+		}
+		const open_btn = bol_url
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${esc(
+					bol_url
+				)}"><i class="fa fa-external-link"></i> ${__("Open PDF")}</button>`
+			: "";
+		const iframe = bol_url
+			? `<iframe class="ltl-bol-iframe" src="${esc(bol_url)}" title="${__("Bill of Lading")}"></iframe>`
+			: `<div class="ltl-empty">${__("BOL PDF is not attached yet.")}</div>`;
+		return `
+			<section class="ltl-detail-card ltl-bol-preview-card">
+				<div class="ltl-detail-card-head">
+					<span><i class="fa fa-file-pdf-o"></i> ${__("Bill of Lading")}</span>
+					<div class="ltl-bol-preview-meta">
+						${bol_number ? `<span>${__("BOL")} #${esc(bol_number)}</span>` : ""}
+						${pro_number ? `<span>${__("PRO")} #${esc(pro_number)}</span>` : ""}
+						${open_btn}
+					</div>
+				</div>
+				${iframe}
+			</section>`;
+	}
+
 	render_quote_detail(payload) {
 		const doc = payload.doc || {};
 		const accessorials = payload.accessorials || [];
@@ -2422,6 +2475,24 @@ ltl_quote.Dashboard = class Dashboard {
 		const readonly = ["Booked", "Cancelled"].includes(doc.status);
 		const ro = readonly ? "readonly" : "";
 		const dis = readonly ? "disabled" : "";
+		const linked = shipments[0] || {};
+		const bol_url = payload.bol_url || resolve_bol_url(doc) || resolve_bol_url(linked);
+		const view_bol_btn = bol_url
+			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
+					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
+				</button>`
+			: doc.status === "Booked"
+				? `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__(
+						"No BOL attached"
+					)}">
+					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
+				</button>`
+				: "";
+		const bol_preview = this.render_bol_preview_card({
+			bol_url,
+			bol_number: doc.bol_number || linked.bol_number,
+			pro_number: doc.pro_number || linked.pro_number,
+		});
 
 		const class_opts = (this.shipping_class_options || []).length
 			? this.shipping_class_options
@@ -2459,7 +2530,10 @@ ltl_quote.Dashboard = class Dashboard {
 							<div class="ltl-detail-hero-sub">Create and manage LTL shipment quote requests</div>
 						</div>
 					</div>
-					<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
+						${view_bol_btn}
+					</div>
 				</div>
 
 				<section class="ltl-detail-card">
@@ -2484,8 +2558,18 @@ ltl_quote.Dashboard = class Dashboard {
 							<input class="ltl-input" value="${val(fmt_dt(doc.aggregated_on))}" readonly />
 							<small class="ltl-tz">${frappe.boot.time_zone?.user || frappe.boot.time_zone || ""}</small>
 						</div>
+						<div class="ltl-field">
+							<label>${__("BOL Number")}</label>
+							<input class="ltl-input" value="${val(doc.bol_number || linked.bol_number || "—")}" readonly />
+						</div>
+						<div class="ltl-field">
+							<label>${__("PRO / Tracking Number")}</label>
+							<input class="ltl-input" value="${val(doc.pro_number || linked.pro_number || "—")}" readonly />
+						</div>
 					</div>
 				</section>
+
+				${bol_preview}
 
 				<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> 2. LANE &amp; LOCATIONS</div>
@@ -3153,6 +3237,11 @@ ltl_quote.Dashboard = class Dashboard {
 			: `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__("No BOL attached")}">
 					<i class="fa fa-file-pdf-o"></i> View BOL
 				</button>`;
+		const bol_preview = this.render_bol_preview_card({
+			bol_url,
+			bol_number: doc.bol_number,
+			pro_number: doc.pro_number,
+		});
 
 		return `
 			<div class="ltl-detail ltl-shipment-detail">
@@ -3176,6 +3265,8 @@ ltl_quote.Dashboard = class Dashboard {
 						${view_bol_btn}
 					</div>
 				</div>
+
+				${bol_preview}
 
 				<div class="ltl-ship-detail-columns">
 					<div class="ltl-ship-detail-col">
@@ -3238,6 +3329,8 @@ ltl_quote.Dashboard = class Dashboard {
 							<input type="date" class="ltl-input" data-detail="pickup_date" value="${esc(doc.pickup_date || "")}" ${ro} /></div>
 						<div class="ltl-field"><label>Dayton BOL ID</label>
 							<input class="ltl-input" value="${val(doc.dayton_bol_id)}" readonly /></div>
+						<div class="ltl-field"><label>TForce BOL ID</label>
+							<input class="ltl-input" value="${val(doc.tforce_bol_id)}" readonly /></div>
 						<div class="ltl-field"><label>Estimated Delivery</label>
 							<input type="date" class="ltl-input" data-detail="estimated_delivery_date" value="${esc(doc.estimated_delivery_date || "")}" ${ro} /></div>
 						<div class="ltl-field"><label>PRO / Tracking Number</label>
@@ -3477,6 +3570,16 @@ ltl_quote.Dashboard = class Dashboard {
 				${bol_icon}
 			</td>`;
 		}
+		if (cfg.doctype === "LTL Quote Request") {
+			const bol_url = resolve_bol_url(row);
+			const bol_icon = bol_url
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}"><i class="fa fa-paperclip"></i></span>`
+				: "";
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				${bol_icon}
+			</td>`;
+		}
 		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span></td>`;
 	}
 
@@ -3541,6 +3644,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.quote_request_id = null;
 		this.booking_context = null;
 		this.quote_request_status = null;
+		this.rate_errors = [];
 		if (this.load_acc_expanded) this.toggle_load_accessorials();
 		if (this.line_items_expanded) this.toggle_line_items_section(false);
 		this.render_rates();

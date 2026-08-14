@@ -160,14 +160,31 @@ def get_quote_request_detail(name: str) -> dict:
 	shipments = frappe.get_all(
 		"LTL Shipment",
 		filters={"quote_request": name},
-		fields=["name", "status", "bol_number", "pro_number"],
+		fields=[
+			"name",
+			"status",
+			"carrier",
+			"carrier_name",
+			"bol_number",
+			"pro_number",
+			"bol_document",
+			"bol_document_url",
+		],
 		order_by="creation desc",
+	)
+
+	from ltl_quote.utils.booking import resolve_shipment_bol_url
+
+	bol_url = resolve_shipment_bol_url(
+		shipment_name=shipments[0].name if shipments else None,
+		quote_request=doc,
 	)
 
 	return {
 		"doc": doc.as_dict(),
 		"accessorials": accessorials,
 		"shipments": shipments,
+		"bol_url": bol_url,
 	}
 
 

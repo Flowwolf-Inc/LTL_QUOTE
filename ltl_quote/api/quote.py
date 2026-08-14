@@ -167,6 +167,7 @@ def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 		height=float(request.get("height") or 0),
 		pieces=int(request.get("pieces") or 1),
 		accessorials=accessorials,
+		items=[item for item in (request.get("items") or []) if isinstance(item, dict)],
 	)
 
 
@@ -387,10 +388,14 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 		enrich_location_fields(doc, "origin")
 		enrich_location_fields(doc, "destination")
 
-		automated = carrier_key in ("ARCB", "ARCBEST", "DAYTON", "MOCK") or str(carrier_code).upper() in (
+		automated = carrier_key in ("ARCB", "ARCBEST", "DAYTON", "TFORCE", "MOCK") or str(
+			carrier_code
+		).upper() in (
 			"ARCB",
 			"ARCBEST",
 			"DAYTON",
+			"TFORCE",
+			"TFF",
 			"MOCK",
 		)
 		shipment_name = None

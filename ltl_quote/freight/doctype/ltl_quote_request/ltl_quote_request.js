@@ -137,6 +137,10 @@ function book_quote(frm) {
 					book_arcbest_quote(frm, selected_option);
 					return;
 				}
+				if (is_tforce_carrier(selected_option.carrier)) {
+					book_tforce_quote(frm, selected_option);
+					return;
+				}
 				book_dayton_quote(frm, selected_option);
 			}
 		);
@@ -161,6 +165,66 @@ function book_quote(frm) {
 function is_arcbest_carrier(carrier_code) {
 	const code = (carrier_code || "").toUpperCase();
 	return ["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code);
+}
+
+function is_tforce_carrier(carrier_code) {
+	const code = (carrier_code || "").toUpperCase();
+	return ["TFORCE", "TFF"].includes(code) || code.includes("TFORCE");
+}
+
+function book_tforce_quote(frm, selected_option) {
+	frappe.call({
+		method: "ltl_quote.api.quote.accept_carrier_quote",
+		args: {
+			quote_request_id: frm.doc.name,
+			carrier_code: selected_option.carrier,
+			total_charge: selected_option.total_charge,
+			carrier_quote_id: selected_option.carrier_quote_id,
+		},
+		freeze: true,
+		freeze_message: __("Connecting to TForce Freight... Creating Bill of Lading..."),
+		callback(r) {
+			if (r.exc || !r.message) {
+				return;
+			}
+
+			if (r.message.status === "success" || r.message.status === "already_booked") {
+				frappe.show_alert({
+					message: __("TForce quote booked successfully."),
+					indicator: "green",
+				});
+
+				const shipment = r.message.data?.shipment || r.message.shipment;
+				const bol_url = r.message.bol_document_url;
+				if (bol_url) {
+					frappe.msgprint({
+						title: __("TForce BOL Ready"),
+						indicator: "green",
+						message: __(
+							"BOL #{0} | PRO #{1}<br><br><a href='{2}' target='_blank'>Download BOL PDF</a>",
+							[r.message.bol_number, r.message.pro_number, bol_url]
+						),
+					});
+				}
+
+				if (shipment) {
+					frappe.set_route("Form", "LTL Shipment", shipment);
+					return;
+				}
+
+				frm.reload_doc();
+				return;
+			}
+
+			if (r.message.status === "failed") {
+				frappe.msgprint({
+					title: __("TForce API Rejection"),
+					indicator: "red",
+					message: r.message.message || r.message.error || __("TForce rejected the booking request."),
+				});
+			}
+		},
+	});
 }
 
 function book_arcbest_quote(frm, selected_option) {

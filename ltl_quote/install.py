@@ -19,6 +19,7 @@ def after_install():
 	_seed_accessorials()
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
+	_ensure_tforce_carrier()
 	_seed_carrier_accessorials()
 	_disable_mock_carriers()
 	_migrate_quote_currency()
@@ -28,6 +29,7 @@ def after_install():
 def after_migrate():
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
+	_ensure_tforce_carrier()
 	_seed_carrier_accessorials()
 	_migrate_quote_currency()
 	frappe.db.commit()
@@ -128,15 +130,56 @@ def _ensure_arcbest_carrier():
 		frappe.get_doc(carrier_data).insert(ignore_permissions=True)
 
 
+def _ensure_tforce_carrier():
+	"""Seed TForce Freight carrier record for OAuth rating + BOL APIs."""
+	carrier_data = {
+		"doctype": "LTL Carrier",
+		"carrier_code": "TFORCE",
+		"carrier_name": "TForce Freight",
+		"enabled": 1,
+		"connector_type": "TForce",
+		"reliability_score": 90,
+		"api_base_url": "https://api.tforcefreight.com",
+		"api_version": "cie-v1",
+		"auth_type": "OAuth2",
+		"scac": "TFFA",
+		"notes": (
+			'{"serviceCode":"308","billingCode":"30",'
+			'"token_url":"https://login.microsoftonline.com/'
+			'ca4f5969-c10f-40d4-8127-e74b691f95de/oauth2/v2.0/token",'
+			'"scope":"https://tffproduction.onmicrosoft.com/'
+			'f06cb173-a8e6-44ad-89a1-06c1070a1f62/.default"}'
+		),
+	}
+
+	if frappe.db.exists("LTL Carrier", "TFORCE"):
+		frappe.db.set_value(
+			"LTL Carrier",
+			"TFORCE",
+			{
+				"carrier_name": carrier_data["carrier_name"],
+				"enabled": 1,
+				"connector_type": "TForce",
+				"api_base_url": carrier_data["api_base_url"],
+				"api_version": carrier_data["api_version"],
+				"auth_type": "OAuth2",
+				"scac": carrier_data["scac"],
+			},
+			update_modified=False,
+		)
+	else:
+		frappe.get_doc(carrier_data).insert(ignore_permissions=True)
+
+
 def _seed_carrier_accessorials():
 	"""Backfill accessorial mappings for real carriers so rating keeps working.
 
 	The runtime rate path reads the per-carrier accessorial mapping table (no more
-	hardcoded fallback), so existing DAYTON / ARCB records must be seeded.
+	hardcoded fallback), so existing DAYTON / ARCB / TFORCE records must be seeded.
 	"""
 	from ltl_quote.carrier_network.accessorial_sync import sync_carrier_accessorials
 
-	for carrier_code in ("DAYTON", "ARCB"):
+	for carrier_code in ("DAYTON", "ARCB", "TFORCE"):
 		if not frappe.db.exists("LTL Carrier", carrier_code):
 			continue
 		carrier_doc = frappe.get_doc("LTL Carrier", carrier_code)

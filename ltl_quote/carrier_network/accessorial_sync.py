@@ -48,6 +48,21 @@ ARCBEST_SEED: dict[str, tuple[str, str]] = {
 	"LIMITED_ACCESS": ("Acc_LAD", "Limited Access Delivery"),
 }
 
+TFORCE_PICKUP_SEED: dict[str, tuple[str, str]] = {
+	"LIFTGATE": ("LIFO", "Lift Gate Pickup"),
+	"RESIDENTIAL": ("RESP", "Residential Pickup"),
+	"INSIDE_DELIVERY": ("INPU", "Inside Pickup"),
+	"LIMITED_ACCESS": ("LAPU", "Limited Access Pickup"),
+}
+
+TFORCE_DELIVERY_SEED: dict[str, tuple[str, str]] = {
+	"LIFTGATE": ("LIFD", "Lift Gate Delivery"),
+	"RESIDENTIAL": ("RESD", "Residential Delivery"),
+	"INSIDE_DELIVERY": ("INDE", "Inside Delivery"),
+	"LIMITED_ACCESS": ("LADC", "Limited Access Delivery"),
+	"APPOINTMENT": ("NTFY", "Notify Before Delivery"),
+}
+
 # keywords used to match a live carrier catalog description to an internal code
 _MATCH_KEYWORDS: dict[str, str] = {
 	"LIFTGATE": "liftgate",
@@ -98,6 +113,20 @@ def sync_carrier_accessorials(carrier_doc, seed_only: bool = False) -> dict:
 			source="Seeded",
 			label="ArcBest",
 			extra_note="ArcBest exposes no accessorial-list API endpoint; seeded from documented ARC 111 flags.",
+		)
+
+	if connector == "TForce":
+		desired = {}
+		for internal, (carrier_code, name) in TFORCE_PICKUP_SEED.items():
+			desired[f"{internal}|pickup"] = (carrier_code, name, "pickup")
+		for internal, (carrier_code, name) in TFORCE_DELIVERY_SEED.items():
+			desired[f"{internal}|delivery"] = (carrier_code, name, "delivery")
+		return _apply_map(
+			carrier_doc,
+			desired,
+			source="Seeded",
+			label="TForce",
+			extra_note="TForce service-option codes seeded from rating/BOL docs (pickup vs delivery).",
 		)
 
 	return {

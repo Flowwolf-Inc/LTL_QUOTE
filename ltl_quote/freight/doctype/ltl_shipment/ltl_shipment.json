@@ -19,6 +19,7 @@
   "column_break_lifecycle",
   "bol_number",
   "dayton_bol_id",
+  "tforce_bol_id",
   "pro_number",
   "carrier_confirmation",
   "dispatch_status",
@@ -171,6 +172,12 @@
    "fieldname": "dayton_bol_id",
    "fieldtype": "Data",
    "label": "Dayton BOL ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tforce_bol_id",
+   "fieldtype": "Data",
+   "label": "TForce BOL ID",
    "read_only": 1
   },
   {

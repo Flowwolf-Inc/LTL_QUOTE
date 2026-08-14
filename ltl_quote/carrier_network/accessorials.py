@@ -123,6 +123,81 @@ def arcbest_accessorial_params(accessorials: list[AccessorialItem], carrier_doc)
 	return params
 
 
+# Fallback TForce service-option codes when LTL Carrier mappings are empty.
+TFORCE_DEFAULT_CODES: dict[tuple[str, str], str] = {
+	("LIFTGATE", "pickup"): "LIFO",
+	("LIFTGATE", "delivery"): "LIFD",
+	("INSIDE_DELIVERY", "pickup"): "INPU",
+	("INSIDE_DELIVERY", "delivery"): "INDE",
+	("RESIDENTIAL", "pickup"): "RESP",
+	("RESIDENTIAL", "delivery"): "RESD",
+	("LIMITED_ACCESS", "pickup"): "LAPU",
+	("LIMITED_ACCESS", "delivery"): "LADC",
+	("APPOINTMENT", "delivery"): "NTFY",
+}
+
+
+def tforce_rate_service_options(
+	accessorials: list[AccessorialItem],
+	carrier_doc,
+) -> dict[str, list[str]]:
+	"""Map platform accessorials to TForce ``serviceOptions.pickup/delivery`` codes.
+
+	HAZMAT is intentionally omitted here — TForce expects ``dangerousGoods`` on
+	commodities rather than a service-option code for rating/BOL.
+	"""
+	by_group = carrier_accessorial_map_by_group(carrier_doc)
+	fallback = carrier_accessorial_map(carrier_doc)
+	pickup: list[str] = []
+	delivery: list[str] = []
+	seen_pickup: set[str] = set()
+	seen_delivery: set[str] = set()
+
+	for item in accessorials or []:
+		internal = normalize_accessorial_code(item.code)
+		if not internal or item.quantity < 1:
+			continue
+		if internal == "HAZMAT":
+			continue
+
+		group = normalize_service_group(getattr(item, "service_group", None))
+		mapped = None
+		if group:
+			mapped = by_group.get((internal, group))
+			if not mapped and group == "load":
+				mapped = by_group.get((internal, "delivery"))
+		if not mapped:
+			mapped = by_group.get((internal, "")) or fallback.get(internal)
+		if not mapped and group:
+			mapped = TFORCE_DEFAULT_CODES.get((internal, group))
+		if not mapped:
+			# Prefer delivery default when group is blank (legacy payloads).
+			mapped = TFORCE_DEFAULT_CODES.get((internal, "delivery")) or TFORCE_DEFAULT_CODES.get(
+				(internal, "pickup")
+			)
+		if not mapped:
+			# Pass through already-native TForce codes (INPU, LIFO, RESP, …).
+			mapped = internal if len(internal) <= 5 else None
+		if not mapped:
+			continue
+
+		code = str(mapped).strip().upper()
+		if not code:
+			continue
+
+		target_group = group or ("pickup" if code.endswith("PU") or code in {"LIFO", "INPU", "RESP", "LAPU"} else "delivery")
+		if target_group == "pickup":
+			if code not in seen_pickup:
+				pickup.append(code)
+				seen_pickup.add(code)
+		else:
+			if code not in seen_delivery:
+				delivery.append(code)
+				seen_delivery.add(code)
+
+	return {"pickup": pickup, "delivery": delivery}
+
+
 def dayton_rate_accessorials(accessorials: list[AccessorialItem], carrier_doc) -> list:
 	"""Map accessorial codes to Dayton service codes via the carrier mapping table.
 

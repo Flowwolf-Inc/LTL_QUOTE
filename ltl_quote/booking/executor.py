@@ -21,6 +21,7 @@ class ShipmentExecutor:
 		self.connector_type = ""
 		self.is_dayton_carrier = False
 		self.is_arcbest_carrier = False
+		self.is_tforce_carrier = False
 
 	def book(self, is_test: bool = False) -> dict:
 		"""Orchestrates the platform booking execution path."""
@@ -114,6 +115,7 @@ class ShipmentExecutor:
 		self.connector_type = connector_type
 		self.is_dayton_carrier = self.carrier_code == "DAYTON" or connector_type == "Dayton"
 		self.is_arcbest_carrier = self.carrier_code in ("ARCB", "ARCBEST") or connector_type == "ArcBest API"
+		self.is_tforce_carrier = self.carrier_code in ("TFORCE", "TFF") or connector_type == "TForce"
 
 		booking_result = self.adapter.book_shipment(self.booking_payload)
 		shipment = self._create_shipment(selected, booking_result)
@@ -129,6 +131,7 @@ class ShipmentExecutor:
 			"pro_number": shipment.pro_number,
 			"bol_document_url": shipment.bol_document_url or shipment.bol_document or "",
 			"dayton_bol_id": getattr(shipment, "dayton_bol_id", None),
+			"tforce_bol_id": getattr(shipment, "tforce_bol_id", None),
 		}
 
 	def _serialize_line_items(self) -> list[dict]:
@@ -203,6 +206,8 @@ class ShipmentExecutor:
 				"pro_number": booking_result.get("pro_number"),
 				"carrier_confirmation": booking_result.get("carrier_confirmation"),
 				"dayton_bol_id": booking_result.get("dayton_bol_id"),
+				"tforce_bol_id": booking_result.get("tforce_bol_id"),
+				"pickup_number": booking_result.get("pickup_number"),
 				"dispatch_status": "Pending",
 				"current_status": "Booked",
 			}
@@ -229,6 +234,37 @@ class ShipmentExecutor:
 			if res.get("status") == "success" and res.get("document_url"):
 				shipment.bol_document = res.get("document_url")
 				shipment.bol_document_url = res.get("document_url")
+			shipment.status = "Booked"
+			shipment.dispatch_status = "Pending"
+			shipment.save(ignore_permissions=True)
+		elif self.is_tforce_carrier:
+			from ltl_quote.carrier_network.adapters.tforce import (
+				apply_tforce_bol_details_to_shipment,
+				attach_tforce_bol_to_shipment,
+			)
+
+			res = attach_tforce_bol_to_shipment(shipment, bol_result=booking_result)
+			apply_tforce_bol_details_to_shipment(
+				shipment.name,
+				quote_data=self.booking_payload,
+				bol_result=booking_result,
+			)
+			shipment.reload()
+			shipment.bol_number = res.get("bol_number") or shipment.bol_number
+			shipment.pro_number = res.get("pro_number") or shipment.pro_number
+			if booking_result.get("tforce_bol_id"):
+				shipment.tforce_bol_id = booking_result.get("tforce_bol_id")
+			if booking_result.get("pickup_number"):
+				shipment.pickup_number = booking_result.get("pickup_number")
+			if res.get("status") == "success" and res.get("document_url"):
+				file_url = res.get("document_url") or ""
+				shipment.bol_document_url = file_url
+				if "/files/" in file_url:
+					shipment.bol_document = file_url[file_url.find("/files/") :]
+				elif "/private/files/" in file_url:
+					shipment.bol_document = file_url[file_url.find("/private/files/") :]
+				else:
+					shipment.bol_document = file_url
 			shipment.status = "Booked"
 			shipment.dispatch_status = "Pending"
 			shipment.save(ignore_permissions=True)
@@ -259,6 +295,26 @@ class ShipmentExecutor:
 					f"<b>Dayton Freight eBOL Confirmed Successfully</b><br>"
 					f"BOL #: {self.quote_request.bol_number}<br>"
 					f"PRO #: {self.quote_request.pro_number}"
+					+ (
+						f"<br><a href='{bol_url}' target='_blank' "
+						f"class='btn btn-xs btn-primary' style='margin-top: 5px; color: #fff;'>"
+						f"Download BOL PDF</a>"
+						if bol_url
+						else ""
+					)
+				)
+			)
+		elif self.is_tforce_carrier:
+			self.quote_request.add_comment(
+				text=(
+					f"<b>TForce Freight BOL Confirmed Successfully</b><br>"
+					f"BOL #: {self.quote_request.bol_number}<br>"
+					f"PRO #: {self.quote_request.pro_number}"
+					+ (
+						f"<br>Pickup Confirmation #: {booking_result.get('pickup_number')}"
+						if booking_result.get("pickup_number")
+						else ""
+					)
 					+ (
 						f"<br><a href='{bol_url}' target='_blank' "
 						f"class='btn btn-xs btn-primary' style='margin-top: 5px; color: #fff;'>"

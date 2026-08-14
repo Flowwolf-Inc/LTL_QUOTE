@@ -80,7 +80,7 @@
    "fieldname": "connector_type",
    "fieldtype": "Select",
    "label": "Connector Type",
-   "options": "Mock\nDayton\nArcBest API\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
+   "options": "Mock\nDayton\nArcBest API\nTForce\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
    "default": "Mock"
   },
   {

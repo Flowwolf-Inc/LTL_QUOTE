@@ -137,6 +137,25 @@ class RateAggregator:
 		return get_enabled_carriers()
 
 	def _build_shipment_request(self) -> ShipmentRequest:
+		items = []
+		for row in getattr(self.doc, "line_items", None) or []:
+			items.append(
+				{
+					"description": getattr(row, "description", None) or getattr(row, "item_name", None) or "",
+					"freight_class": getattr(row, "freight_class", None) or self.doc.freight_class,
+					"classification": getattr(row, "freight_class", None) or self.doc.freight_class,
+					"nmfc": getattr(row, "nmfc", None) or "",
+					"qty": getattr(row, "quantity", None) or 1,
+					"weight": getattr(row, "weight", None) or 0,
+					"hazmat": 1 if getattr(row, "hazmat", None) else 0,
+					"length": getattr(row, "length", None),
+					"width": getattr(row, "width", None),
+					"height": getattr(row, "height", None),
+					"weight_unit": getattr(row, "weight_unit", None) or "LBS",
+					"dimension_unit": getattr(row, "dimension_unit", None) or "IN",
+					"packaging_type": getattr(row, "packaging_units", None) or "",
+				}
+			)
 		return ShipmentRequest(
 			origin_zip=self.doc.origin_zip,
 			destination_zip=self.doc.destination_zip,
@@ -151,6 +170,7 @@ class RateAggregator:
 			origin_state=self.doc.origin_state or "",
 			destination_city=self.doc.destination_city or "",
 			destination_state=self.doc.destination_state or "",
+			items=items,
 		)
 
 	def _fetch_carrier_rate(self, carrier_name: str, request: ShipmentRequest, site: str, user: str):
