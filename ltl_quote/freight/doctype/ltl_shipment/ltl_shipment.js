@@ -80,13 +80,14 @@ frappe.ui.form.on("LTL Shipment", {
 				});
 			}, __("Visibility"));
 
-			if (frm.doc.carrier === "DAYTON" && frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+			if (is_pickup_tracking_carrier(frm.doc.carrier) && frm.doc.status === "Booked" && frm.doc.dispatch_status !== "Acknowledged") {
+				const carrier_label = pickup_carrier_label(frm.doc.carrier);
 				frm.add_custom_button(__("Schedule Pickup"), () => {
 					frappe.call({
 						method: "dispatch_to_carrier",
 						doc: frm.doc,
 						freeze: true,
-						freeze_message: __("Scheduling pickup with Dayton..."),
+						freeze_message: __("Scheduling pickup with {0}...", [carrier_label]),
 						callback(r) {
 							if (r.message?.status === "acknowledged" || r.message?.pickup_number) {
 								frappe.show_alert({
@@ -111,21 +112,22 @@ frappe.ui.form.on("LTL Shipment", {
 				});
 			}
 
-			if (frm.doc.carrier === "DAYTON" && frm.doc.pickup_number) {
+			if (is_pickup_tracking_carrier(frm.doc.carrier) && frm.doc.pickup_number) {
+				const carrier_label = pickup_carrier_label(frm.doc.carrier);
+				const pickup_method = pickup_lookup_method(frm.doc.carrier);
 				frm.add_custom_button(__("View Pickup"), () => {
 					frappe.call({
-						method: "ltl_quote.api.shipping.get_dayton_pickup",
+						method: pickup_method,
 						args: { shipment: frm.doc.name },
 						freeze: true,
 						callback(r) {
 							const pickup = r.message?.pickup || {};
 							frappe.msgprint({
-								title: __("Dayton Pickup"),
+								title: __("{0} Pickup", [carrier_label]),
 								indicator: r.message?.status === "success" ? "green" : "orange",
 								message: [
 									`${__("Pickup Number")}: ${pickup.pickup_number || "—"}`,
 									`${__("Status")}: ${pickup.status || "—"}`,
-									`${__("PSID")}: ${pickup.psid || "—"}`,
 									`${__("Ready")}: ${pickup.ready || "—"}`,
 									`${__("Close")}: ${pickup.close || "—"}`,
 								].join("<br>"),
@@ -133,27 +135,30 @@ frappe.ui.form.on("LTL Shipment", {
 							frm.reload_doc();
 						},
 					});
-				}, __("Dayton Actions"));
+				}, __("{0} Actions", [carrier_label]));
 
 				if (frm.doc.pickup_status !== "Cancelled") {
 					frm.add_custom_button(__("Cancel Pickup"), () => {
-						frappe.confirm(__("Cancel this Dayton pickup?"), () => {
-							frappe.call({
-								method: "cancel_pickup",
-								doc: frm.doc,
-								freeze: true,
-								callback(r) {
-									if (r.message?.status === "success") {
-										frappe.show_alert({
-											message: __("Pickup cancelled."),
-											indicator: "green",
-										});
-									}
-									frm.reload_doc();
-								},
-							});
-						});
-					}, __("Dayton Actions"));
+						frappe.confirm(
+							__("Cancel this {0} pickup?", [carrier_label]),
+							() => {
+								frappe.call({
+									method: "cancel_pickup",
+									doc: frm.doc,
+									freeze: true,
+									callback(r) {
+										if (r.message?.status === "success") {
+											frappe.show_alert({
+												message: __("Pickup cancelled."),
+												indicator: "green",
+											});
+										}
+										frm.reload_doc();
+									},
+								});
+							}
+						);
+					}, __("{0} Actions", [carrier_label]));
 				}
 			}
 
@@ -163,17 +168,27 @@ frappe.ui.form.on("LTL Shipment", {
 				}).addClass("btn-primary");
 			}
 
-			if (frm.doc.carrier === "DAYTON" && frm.doc.status === "Booked" && frm.doc.pro_number) {
+			if (is_pickup_tracking_carrier(frm.doc.carrier) && frm.doc.pro_number) {
+				const carrier_label = pickup_carrier_label(frm.doc.carrier);
+				const is_dayton = pickup_connector_key(frm.doc.carrier) === "DAYTON";
 				frm.add_custom_button(__("Track Location"), () => {
 					frappe.show_alert({
-						message: __("Contacting Dayton network..."),
+						message: __("Contacting {0} network...", [carrier_label]),
 						indicator: "blue",
 					});
 
 					frappe.call({
-						method: "fetch_dayton_tracking_updates",
+						method: is_dayton ? "fetch_dayton_tracking_updates" : "refresh_tracking",
 						doc: frm.doc,
 						callback(r) {
+							if (!is_dayton) {
+								frm.reload_doc();
+								frappe.show_alert({
+									message: __("Tracking details synchronized."),
+									indicator: "green",
+								});
+								return;
+							}
 							if (r.message?.status === "success") {
 								frm.reload_doc();
 								frappe.show_alert({
@@ -380,4 +395,39 @@ function render_dayton_tracking_dashboard(frm, title, results) {
 	frm.dashboard.show();
 
 	frappe.utils.scroll_to(frm.dashboard.wrapper);
+}
+
+function pickup_connector_key(carrier_code) {
+	const code = String(carrier_code || "").toUpperCase();
+	if (code === "DAYTON") return "DAYTON";
+	if (["TFORCE", "TFF"].includes(code) || code.includes("TFORCE")) return "TFORCE";
+	if (["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code) || code.includes("ARC")) return "ARCB";
+	return code;
+}
+
+function is_tforce_carrier(carrier_code) {
+	return pickup_connector_key(carrier_code) === "TFORCE";
+}
+
+function is_arcbest_carrier(carrier_code) {
+	return pickup_connector_key(carrier_code) === "ARCB";
+}
+
+function is_pickup_tracking_carrier(carrier_code) {
+	return ["DAYTON", "TFORCE", "ARCB"].includes(pickup_connector_key(carrier_code));
+}
+
+function pickup_carrier_label(carrier_code) {
+	const key = pickup_connector_key(carrier_code);
+	if (key === "TFORCE") return "TForce";
+	if (key === "ARCB") return "ArcBest";
+	if (key === "DAYTON") return "Dayton";
+	return key || "Carrier";
+}
+
+function pickup_lookup_method(carrier_code) {
+	const key = pickup_connector_key(carrier_code);
+	if (key === "TFORCE") return "ltl_quote.api.shipping.get_tforce_pickup";
+	if (key === "ARCB") return "ltl_quote.api.shipping.get_arcbest_pickup";
+	return "ltl_quote.api.shipping.get_dayton_pickup";
 }

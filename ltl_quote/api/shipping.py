@@ -668,14 +668,14 @@ def refresh_dayton_shipment_bol(shipment=None, shipment_name=None):
 
 
 def _get_dayton_shipment(shipment=None, shipment_name=None):
-	from ltl_quote.carrier_network.adapters.dayton import _is_dayton_shipment
+	from ltl_quote.carrier_network.carrier_identity import CONNECTOR_DAYTON, shipment_connector
 
 	name = str(shipment or shipment_name or "").strip()
 	if not name or not frappe.db.exists("LTL Shipment", name):
 		frappe.throw("A valid shipment ID is required.")
 	doc = frappe.get_doc("LTL Shipment", name)
 	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
-	if not _is_dayton_shipment(doc):
+	if shipment_connector(doc) != CONNECTOR_DAYTON:
 		frappe.throw("Pickup APIs are only available for Dayton Freight shipments.")
 	return doc
 
@@ -813,3 +813,158 @@ def cancel_dayton_pickup(shipment=None, shipment_name=None, number=None):
 		doc.reload()
 		return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
 	return {"status": "success" if result.get("success") else "error", **result}
+
+
+def _get_tforce_shipment(shipment=None, shipment_name=None):
+	from ltl_quote.carrier_network.carrier_identity import CONNECTOR_TFORCE, shipment_connector
+
+	name = str(shipment or shipment_name or "").strip()
+	if not name or not frappe.db.exists("LTL Shipment", name):
+		frappe.throw("A valid shipment ID is required.")
+	doc = frappe.get_doc("LTL Shipment", name)
+	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
+	if shipment_connector(doc) != CONNECTOR_TFORCE:
+		frappe.throw("TForce pickup APIs are only available for TForce Freight shipments.")
+	return doc
+
+
+@frappe.whitelist(allow_guest=False)
+def create_tforce_pickup(shipment=None, shipment_name=None):
+	"""Schedule a TForce pickup for a booked shipment (POST /pickup/request)."""
+	from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_tforce_shipment(shipment, shipment_name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	adapter = TForceCarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier))
+	result = adapter.create_pickup(doc)
+	doc.reload()
+	return {
+		"status": "success",
+		"shipment": doc.name,
+		"pickup": shipment_pickup_summary(doc),
+		**result,
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def get_tforce_pickup(shipment=None, shipment_name=None, number=None):
+	"""Return stored TForce pickup confirmation (TForce has no pickup GET)."""
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_tforce_shipment(shipment, shipment_name)
+	pickup_number = str(number or doc.pickup_number or "").strip()
+	if not pickup_number:
+		frappe.throw("This shipment does not have a TForce pickup confirmation yet.")
+	summary = shipment_pickup_summary(doc)
+	return {
+		"status": "success",
+		"ok": True,
+		"shipment": doc.name,
+		"pickup": summary,
+		"pickup_number": pickup_number,
+		"pickup_status": doc.pickup_status or "Scheduled",
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def cancel_tforce_pickup(shipment=None, shipment_name=None, number=None):
+	"""Cancel a TForce pickup (DELETE /pickup/request/{confirmationNumber})."""
+	from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
+	from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number, shipment_pickup_summary
+
+	doc = None
+	if shipment or shipment_name:
+		doc = _get_tforce_shipment(shipment, shipment_name)
+		frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+		target = str(number or "").strip() or resolve_pickup_cancel_number(doc)
+	else:
+		target = str(number or "").strip()
+		if not target:
+			frappe.throw("Provide either shipment or number.")
+
+	adapter = TForceCarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier) if doc else None)
+	result = adapter.cancel_pickup(target)
+	if doc and result.get("success"):
+		doc.pickup_status = "Cancelled"
+		doc.dispatch_status = "Failed"
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()
+		doc.reload()
+		return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
+	return {"status": "success" if result.get("success") else "error", **result}
+
+
+def _get_arcbest_shipment(shipment=None, shipment_name=None):
+	from ltl_quote.carrier_network.carrier_identity import CONNECTOR_ARCBEST, shipment_connector
+
+	name = str(shipment or shipment_name or "").strip()
+	if not name or not frappe.db.exists("LTL Shipment", name):
+		frappe.throw("A valid shipment ID is required.")
+	doc = frappe.get_doc("LTL Shipment", name)
+	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
+	if shipment_connector(doc) != CONNECTOR_ARCBEST:
+		frappe.throw("ArcBest pickup APIs are only available for ArcBest shipments.")
+	return doc
+
+
+@frappe.whitelist(allow_guest=False)
+def create_arcbest_pickup(shipment=None, shipment_name=None):
+	"""Record ArcBest pickup from the booked BOL ship date (no separate pickup API)."""
+	from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_arcbest_shipment(shipment, shipment_name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	adapter = ArcBestCarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier))
+	result = adapter.create_pickup(doc)
+	doc.reload()
+	return {
+		"status": "success",
+		"shipment": doc.name,
+		"pickup": shipment_pickup_summary(doc),
+		**result,
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def get_arcbest_pickup(shipment=None, shipment_name=None, number=None):
+	"""Return stored ArcBest pickup fields (BOL ship date / pickup number)."""
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_arcbest_shipment(shipment, shipment_name)
+	pickup_number = str(number or doc.pickup_number or doc.bol_number or doc.pro_number or "").strip()
+	if not pickup_number:
+		frappe.throw("This shipment does not have an ArcBest pickup reference yet.")
+	summary = shipment_pickup_summary(doc)
+	if not summary.get("pickup_number"):
+		summary["pickup_number"] = pickup_number
+	return {
+		"status": "success",
+		"ok": True,
+		"shipment": doc.name,
+		"pickup": summary,
+		"pickup_number": pickup_number,
+		"pickup_status": doc.pickup_status or "Scheduled",
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def cancel_arcbest_pickup(shipment=None, shipment_name=None, number=None):
+	"""Cancel a locally recorded ArcBest pickup (no carrier cancel API)."""
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_arcbest_shipment(shipment, shipment_name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	doc.pickup_status = "Cancelled"
+	doc.dispatch_status = "Failed"
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+	doc.reload()
+	return {
+		"status": "success",
+		"success": True,
+		"shipment": doc.name,
+		"pickup": shipment_pickup_summary(doc),
+		"message": "ArcBest pickup marked cancelled locally. Contact ArcBest to change a tendered pickup.",
+	}

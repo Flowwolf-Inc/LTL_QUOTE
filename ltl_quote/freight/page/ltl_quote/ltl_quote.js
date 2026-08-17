@@ -1,5 +1,29 @@
 window.ltl_quote = window.ltl_quote || {};
 
+function ltl_connector_key(carrier) {
+	const code = String(carrier || "").toUpperCase();
+	if (code === "DAYTON") return "DAYTON";
+	if (["TFORCE", "TFF"].includes(code) || code.includes("TFORCE")) return "TFORCE";
+	if (["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code) || code.includes("ARC")) return "ARCB";
+	return code;
+}
+
+function ltl_connector_label(carrier) {
+	const key = ltl_connector_key(carrier);
+	if (key === "TFORCE") return "TForce";
+	if (key === "ARCB") return "ArcBest";
+	if (key === "DAYTON") return "Dayton";
+	return key || "Carrier";
+}
+
+function ltl_supports_pickup(carrier) {
+	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
+}
+
+function ltl_supports_tracking(carrier) {
+	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
+}
+
 frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -1131,11 +1155,15 @@ ltl_quote.Dashboard = class Dashboard {
 			if (!shipment) return;
 			const comments = this.body.find(".ltl-pickup-create-comments").val() || "";
 			const schedule = () => {
+				const carrier = String(
+					(this.pickup_doc && (this.pickup_doc.carrier || (this.pickup_doc.doc && this.pickup_doc.doc.carrier))) || ""
+				);
+				const label = ltl_connector_label(carrier);
 				frappe.call({
 					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.schedule_shipment_pickup",
 					args: { name: shipment },
 					freeze: true,
-					freeze_message: __("Scheduling pickup with Dayton…"),
+					freeze_message: __("Scheduling pickup with {0}…", [label]),
 					callback: (r) => {
 						const result = r.message || {};
 						if (result.status === "success") {
@@ -1293,7 +1321,7 @@ ltl_quote.Dashboard = class Dashboard {
 				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.refresh_shipment_tracking",
 				args: { name: shipment },
 				freeze: true,
-				freeze_message: __("Refreshing tracking from Dayton…"),
+				freeze_message: __("Refreshing tracking…"),
 				callback: (r) => {
 					const result = r.message || {};
 					const refresh = result.refresh_result || {};
@@ -2120,7 +2148,7 @@ ltl_quote.Dashboard = class Dashboard {
 		}
 
 		if (is_pickup) {
-			this.body.find(".ltl-breadcrumb .current").text("Dayton Pickup");
+			this.body.find(".ltl-breadcrumb .current").text(__("Pickup"));
 			return;
 		}
 
@@ -2229,6 +2257,8 @@ ltl_quote.Dashboard = class Dashboard {
 				}
 				this.pickup_doc = r.message;
 				container.html(this.render_pickup_detail(r.message));
+				const label = ltl_connector_label(r.message.carrier || (r.message.doc && r.message.doc.carrier));
+				this.body.find(".ltl-breadcrumb .current").text(__("{0} Pickup", [label]));
 			},
 			error: () => {
 				container.html('<div class="ltl-empty">Unable to load pickup.</div>');
@@ -2261,7 +2291,7 @@ ltl_quote.Dashboard = class Dashboard {
 			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_tracking_page_data",
 			args: { name, refresh },
 			freeze: Boolean(refresh),
-			freeze_message: __("Refreshing tracking from Dayton…"),
+			freeze_message: __("Refreshing tracking…"),
 			callback: (r) => {
 				if (!r.message || !r.message.doc) {
 					container.html('<div class="ltl-empty">Unable to load tracking.</div>');
@@ -2732,20 +2762,22 @@ ltl_quote.Dashboard = class Dashboard {
 		};
 	}
 
-	render_dayton_pickup_status(doc, pickup) {
+	render_dayton_pickup_status(doc, pickup, carrier_hint) {
 		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
-		const carrier = String(doc.carrier || "").toUpperCase();
+		const carrier = String(carrier_hint || doc.carrier || "").toUpperCase();
+		const is_tforce = ltl_connector_key(carrier) === "TFORCE";
+		const is_arcbest = ltl_connector_key(carrier) === "ARCB";
 		const pro = String(doc.pro_number || "").trim();
-		if (carrier !== "DAYTON") {
+		if (!ltl_supports_pickup(carrier)) {
 			return { badge: "", actions: "" };
 		}
 
 		const info = pickup || {};
 		const pickup_number = String(doc.pickup_number || info.pickup_number || "").trim();
 		const status = String(doc.pickup_status || info.status || "").trim();
-		const can_view =
-			Boolean(pro) &&
-			["Booked", "Dispatched", "In Transit", "Out for Delivery"].includes(String(doc.status || ""));
+		const shipment_status = String(doc.status || "");
+		const can_view = ["Booked", "Dispatched", "In Transit", "Out for Delivery"].includes(shipment_status)
+			&& (is_tforce || is_arcbest || Boolean(pro));
 
 		let badge_class = "ltl-pickup-status-pending";
 		let badge_label = __("Pickup not scheduled");
@@ -2783,6 +2815,12 @@ ltl_quote.Dashboard = class Dashboard {
 		const raw = payload.raw || {};
 		const quote = payload.quote || {};
 		const items = payload.items || [];
+		const carrier = String(payload.carrier || doc.carrier || "").toUpperCase();
+		const connector = ltl_connector_key(carrier);
+		const is_tforce = connector === "TFORCE";
+		const is_arcbest = connector === "ARCB";
+		const hide_dayton_fields = is_tforce || is_arcbest;
+		const carrier_title = ltl_connector_label(carrier);
 		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
 		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
 		const shipment = esc(doc.name);
@@ -2823,62 +2861,65 @@ ltl_quote.Dashboard = class Dashboard {
 			return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 		};
 
-		return `
-			<div class="ltl-detail ltl-pickup-detail">
-				<div class="ltl-detail-hero">
-					<div class="ltl-detail-hero-left">
-						<button type="button" class="ltl-btn ltl-pickup-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
-						<span class="ltl-detail-hero-icon"><i class="fa fa-calendar"></i></span>
-						<div>
-							<div class="ltl-detail-hero-title">${__("Dayton Pickup")}</div>
-							<div class="ltl-detail-hero-sub">${__("Manage pickup scheduling and Dayton API actions")}</div>
-						</div>
-					</div>
-					<div class="ltl-detail-hero-right">
-						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
-						${has_pickup ? `<div class="ltl-detail-hero-badge">${__("Pickup")}: ${esc(pickup_number)}</div>` : ""}
-					</div>
-				</div>
+		const tforce_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("TForce Pickup API Actions")}</div>
 
-				<div class="ltl-pickup-grid">
-					<section class="ltl-detail-card">
-						<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Pickup Overview")}</div>
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">POST</span> /pickup/request — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a TForce pickup for this shipment after BOL booking.")}</p>
 						<div class="ltl-detail-grid ltl-detail-grid-2">
-							<div class="ltl-field"><label>${__("Pickup Number")}</label><input class="ltl-input" value="${esc(pickup_number || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Status")}</label><input class="ltl-input" value="${esc(status || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("PSID")}</label><input class="ltl-input" value="${esc(psid || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("PRO")}</label><input class="ltl-input" value="${esc(doc.pro_number || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Ready")}</label><input class="ltl-input" value="${esc(fmt_dt(ready_val))}" readonly /></div>
-							<div class="ltl-field"><label>${__("Close")}</label><input class="ltl-input" value="${esc(fmt_dt(close_val))}" readonly /></div>
-							<div class="ltl-field"><label>${__("BOL")}</label><input class="ltl-input" value="${esc(doc.bol_number || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Comments")}</label><input class="ltl-input" value="${esc(pickup.comments || doc.pickup_comments || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
 						</div>
-					</section>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("TForce does not expose a pickup GET. This confirmation was stored from /pickup/request.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">DELETE</span> /pickup/request/{confirmationNumber} — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup with TForce.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
 
-					<section class="ltl-detail-card">
-						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper & Contacts")}</div>
+		const arcbest_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("ArcBest Pickup")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Schedule from BOL")}</div>
+						<p class="ltl-pickup-action-desc">${__("ArcBest has no separate pickup API. Scheduling stores the BOL/PRO as the pickup number using the BOL ship date.")}</p>
 						<div class="ltl-detail-grid ltl-detail-grid-2">
-							<div class="ltl-field"><label>${__("Shipper")}</label><input class="ltl-input" value="${esc(shipper.name || doc.bol_shipper_name || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Origin ZIP")}</label><input class="ltl-input" value="${esc(shipper_addr.zip || quote.origin_zip || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Destination ZIP")}</label><input class="ltl-input" value="${esc(quote.destination_zip || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Contact")}</label><input class="ltl-input" value="${esc(contact.name || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Contact Phone")}</label><input class="ltl-input" value="${esc(contact.phone || "—")}" readonly /></div>
-							<div class="ltl-field"><label>${__("Requester")}</label><input class="ltl-input" value="${esc(requester.name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
 						</div>
-					</section>
-				</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("Pickup is recorded from the ArcBest BOL ship date. There is no live GET, update, or PSID call.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title">${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Mark this pickup cancelled locally. Contact ArcBest to change a tendered pickup.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
 
-				<section class="ltl-detail-card">
-					<div class="ltl-detail-card-head"><i class="fa fa-list"></i> ${__("Pickup Line Items")}</div>
-					<table class="ltl-table ltl-detail-acc-table">
-						<thead><tr>
-							<th>#</th><th>${__("PSID")}</th><th>${__("PRO")}</th><th>${__("Dest ZIP")}</th>
-							<th>${__("H/U")}</th><th>${__("Weight")}</th><th>${__("Hazmat")}</th>
-						</tr></thead>
-						<tbody>${item_rows}</tbody>
-					</table>
-				</section>
-
+		const dayton_actions = `
 				<section class="ltl-detail-card ltl-pickup-actions-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Dayton Pickup API Actions")}</div>
 
@@ -2954,7 +2995,68 @@ ltl_quote.Dashboard = class Dashboard {
 							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
 						</button>
 					</div>` : ""}
-				</section>
+				</section>`;
+
+		const pickup_actions = is_tforce ? tforce_actions : is_arcbest ? arcbest_actions : dayton_actions;
+
+		return `
+			<div class="ltl-detail ltl-pickup-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-calendar"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("{0} Pickup", [carrier_title])}</div>
+							<div class="ltl-detail-hero-sub">${__("Manage pickup scheduling and carrier API actions")}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
+						${has_pickup ? `<div class="ltl-detail-hero-badge">${__("Pickup")}: ${esc(pickup_number)}</div>` : ""}
+					</div>
+				</div>
+
+				<div class="ltl-pickup-grid">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Pickup Overview")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Number")}</label><input class="ltl-input" value="${esc(pickup_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Status")}</label><input class="ltl-input" value="${esc(status || "—")}" readonly /></div>
+							${!hide_dayton_fields ? `<div class="ltl-field"><label>${__("PSID")}</label><input class="ltl-input" value="${esc(psid || "—")}" readonly /></div>` : ""}
+							<div class="ltl-field"><label>${__("PRO")}</label><input class="ltl-input" value="${esc(doc.pro_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Ready")}</label><input class="ltl-input" value="${esc(fmt_dt(ready_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("Close")}</label><input class="ltl-input" value="${esc(fmt_dt(close_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("BOL")}</label><input class="ltl-input" value="${esc(doc.bol_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Comments")}</label><input class="ltl-input" value="${esc(pickup.comments || doc.pickup_comments || "—")}" readonly /></div>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper & Contacts")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Shipper")}</label><input class="ltl-input" value="${esc(shipper.name || doc.bol_shipper_name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Origin ZIP")}</label><input class="ltl-input" value="${esc(shipper_addr.zip || quote.origin_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Destination ZIP")}</label><input class="ltl-input" value="${esc(quote.destination_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact")}</label><input class="ltl-input" value="${esc(contact.name || doc.bol_shipper_contact_name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact Phone")}</label><input class="ltl-input" value="${esc(contact.phone || doc.bol_shipper_contact_phone || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Requester")}</label><input class="ltl-input" value="${esc(requester.name || "—")}" readonly /></div>
+						</div>
+					</section>
+				</div>
+
+				${!hide_dayton_fields ? `
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-list"></i> ${__("Pickup Line Items")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th><th>${__("PSID")}</th><th>${__("PRO")}</th><th>${__("Dest ZIP")}</th>
+							<th>${__("H/U")}</th><th>${__("Weight")}</th><th>${__("Hazmat")}</th>
+						</tr></thead>
+						<tbody>${item_rows}</tbody>
+					</table>
+				</section>` : ""}
+
+				${pickup_actions}
 			</div>`;
 	}
 
@@ -3024,11 +3126,13 @@ ltl_quote.Dashboard = class Dashboard {
 			current_stop.label !== "—" &&
 			current_stop.label !== destination.label;
 		const awaiting = Boolean(tracking.awaiting_carrier_scan);
+		const carrier_title = ltl_connector_label(payload.carrier || doc.carrier);
 		const waiting_banner = awaiting
 			? `<div class="ltl-tracking-waiting-banner" role="status">
 					<i class="fa fa-clock-o"></i>
 					<span>${__(
-						"Waiting for Dayton to scan this PRO. Events appear after pickup is completed and scanned."
+						"Waiting for {0} to scan this PRO. Events appear after pickup is completed and scanned.",
+						[carrier_title]
 					)}</span>
 				</div>`
 			: "";
@@ -3222,9 +3326,10 @@ ltl_quote.Dashboard = class Dashboard {
 
 		const bol_url = resolve_bol_url(doc);
 		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
-		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup);
+		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup, payload.carrier);
 		const can_track =
-			String(doc.carrier || "").toUpperCase() === "DAYTON" && Boolean(String(doc.pro_number || "").trim());
+			ltl_supports_tracking(payload.carrier || doc.carrier)
+			&& Boolean(String(doc.pro_number || "").trim());
 		const track_btn = can_track
 			? `<button type="button" class="ltl-btn ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
 					<i class="fa fa-map-marker"></i> ${__("Track Shipment")}

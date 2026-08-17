@@ -48,6 +48,7 @@ class ShipmentTracker:
 			self.shipment.current_location = latest.get("location")
 			self.shipment.last_tracking_update = now_datetime()
 			self._update_shipment_status(latest.get("status_code"))
+			self._apply_tracking_dates(events)
 
 		self.shipment.has_exception = has_exception
 		self.shipment.eta_predicted = self._predict_eta()
@@ -73,9 +74,36 @@ class ShipmentTracker:
 			"IN_TRANSIT": "In Transit",
 			"OUT_FOR_DELIVERY": "Out for Delivery",
 			"DELIVERED": "Delivered",
+			"VOIDED": "Cancelled",
 		}
 		if status_code and status_code in mapping:
 			self.shipment.status = mapping[status_code]
+
+	def _apply_tracking_dates(self, events: list[dict]) -> None:
+		from frappe.utils import getdate
+
+		pickup_date = None
+		estimated = None
+		actual = None
+		for ev in events or []:
+			pickup_date = ev.get("pickup_date") or pickup_date
+			estimated = ev.get("estimated_delivery") or estimated
+			actual = ev.get("actual_delivery") or actual
+		if pickup_date and not self.shipment.pickup_date:
+			try:
+				self.shipment.pickup_date = getdate(pickup_date)
+			except Exception:
+				pass
+		if estimated:
+			try:
+				self.shipment.estimated_delivery_date = getdate(estimated)
+			except Exception:
+				pass
+		if actual:
+			try:
+				self.shipment.actual_delivery_date = getdate(actual)
+			except Exception:
+				pass
 
 	def _predict_eta(self):
 		if self.shipment.estimated_delivery_date:

@@ -25,6 +25,22 @@ DAYTON_ACTIVITY_LABELS: dict[str, str] = {
 	"IN_TRANSIT": "In Transit",
 	"OUT_FOR_DELIVERY": "Out for Delivery",
 	"DELIVERED": "Delivered",
+	# TForce Freight currentStatus / event codes
+	"DL": "Delivered",
+	"OF": "Out for Delivery",
+	"PU": "Picked Up",
+	"PK": "Picked Up",
+	"AR": "Arrived at Service Center",
+	"DP": "Departure",
+	"IT": "In Transit",
+	"EX": "Exception",
+	"EXCEPTION": "Exception",
+	"VOIDED": "Voided",
+	# ArcBest Trace XML status aliases
+	"PUP": "Picked Up",
+	"DEL": "Delivered",
+	"XCP": "Exception",
+	"EXC": "Exception",
 }
 
 # Milestone keys used by the orange tracking timeline UI.
@@ -56,9 +72,23 @@ _ACTIVITY_MILESTONE_INDEX: dict[str, int] = {
 	"DLV": 5,
 	"OK": 5,
 	"DELIVERED": 5,
+	"DL": 5,
+	"OF": 4,
+	"PU": 2,
+	"PK": 2,
+	"PUP": 2,
+	"AR": 3,
+	"DP": 3,
+	"IT": 3,
+	"EX": 3,
+	"EXCEPTION": 3,
+	"XCP": 3,
+	"EXC": 3,
+	"DEL": 5,
+	"VOIDED": 1,
 }
 
-EXCEPTION_CODES = {"PWD"}
+EXCEPTION_CODES = {"PWD", "EX", "EXCEPTION", "013", "XCP", "EXC"}
 
 _STATUS_ORDER = [
 	"Draft",

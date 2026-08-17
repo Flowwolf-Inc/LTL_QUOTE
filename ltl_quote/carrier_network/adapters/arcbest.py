@@ -14,10 +14,12 @@ from ltl_quote.carrier_network.adapters.base import (
     CarrierRateQuote,
     ShipmentRequest,
 )
+from ltl_quote.utils.location import resolve_us_location
 
 DEFAULT_BASE_URL = "https://www.abfs.com/xml/aquotexml.asp"
 DEFAULT_API_ID = "H0TTC3W3"
 BOL_URL = "https://www.abfs.com/xml/bolxml.asp"
+TRACE_URL = "https://www.abfs.com/xml/tracexml.asp"
 SANDBOX_QUOTE_ID = "1234567890"
 
 
@@ -261,11 +263,223 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         return "Validation Error"
 
     def get_tracking(self, pro_number: str) -> list[dict]:
-        frappe.log_error(
-            message=f"Tracking not implemented for ArcBest PRO {pro_number}",
-            title="ArcBest Tracking Not Implemented",
+        """Poll ABF Trace XML (tracexml.asp) and return normalized tracking events."""
+        pro = str(pro_number or "").strip()
+        if not pro:
+            return []
+
+        settings = frappe.get_single("LTL Platform Settings")
+        timeout = cint(settings.rate_request_timeout_seconds) or 15
+        # RefType A is ABF PRO. P is PO in ABF docs; A is the correct PRO qualifier.
+        params = {"ID": self.api_id, "RefNum": pro, "RefType": "A"}
+
+        try:
+            response = requests.get(TRACE_URL, params=params, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            frappe.log_error(message=str(e), title="ArcBest Tracking Connection Error")
+            return []
+
+        if response.status_code != 200:
+            frappe.log_error(
+                message=f"HTTP {response.status_code}: {response.text[:500]}",
+                title="ArcBest Tracking Failure",
+            )
+            return []
+
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as pe:
+            frappe.log_error(
+                message=f"{pe}\n\nRaw: {response.text[:2000]}",
+                title="ArcBest Tracking XML Parse Failure",
+            )
+            return []
+
+        num_errors = cint(self._xml_text(root, "NUMERRORS") or "0")
+        if num_errors > 0:
+            return []
+
+        return self._parse_trace_xml(root)
+
+    def create_pickup(self, shipment) -> dict:
+        """Mark pickup as scheduled from the ArcBest BOL ship date (no separate pickup API)."""
+        from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment
+        from frappe.utils import getdate, nowdate
+
+        if isinstance(shipment, str):
+            shipment = frappe.get_doc("LTL Shipment", shipment)
+
+        if shipment.pickup_number:
+            frappe.throw(f"Pickup {shipment.pickup_number} is already scheduled for this shipment.")
+
+        pickup_number = str(
+            shipment.bol_number or shipment.pro_number or shipment.name or ""
+        ).strip()
+        if not pickup_number:
+            frappe.throw("Book an ArcBest BOL before scheduling pickup.")
+
+        pickup_date = shipment.pickup_date or nowdate()
+        try:
+            pickup_date = getdate(pickup_date)
+        except Exception:
+            pickup_date = getdate(nowdate())
+
+        normalized = {
+            "ok": True,
+            "status": "acknowledged",
+            "pickup_number": pickup_number,
+            "pickup_status": "Scheduled",
+            "ready": f"{pickup_date} 09:00:00",
+            "close": f"{pickup_date} 17:00:00",
+            "raw": {
+                "pickupNumber": pickup_number,
+                "status": "Scheduled",
+                "source": "arcbest_bol",
+            },
+        }
+        apply_pickup_response_to_shipment(shipment, normalized, save=True)
+        return normalized
+
+    def dispatch_shipment(self, shipment_data: dict) -> dict:
+        """Treat ArcBest BOL ship date as the pickup request."""
+        shipment_name = shipment_data.get("shipment_name")
+        if not shipment_name:
+            frappe.throw("shipment_name is required to dispatch an ArcBest pickup.")
+
+        shipment = frappe.get_doc("LTL Shipment", shipment_name)
+        if shipment.pickup_number:
+            return {
+                "status": "acknowledged",
+                "ok": True,
+                "pickup_number": shipment.pickup_number,
+                "pickup_status": shipment.pickup_status or "Scheduled",
+                "message": f"Pickup {shipment.pickup_number} is already scheduled.",
+            }
+        result = self.create_pickup(shipment)
+        return {"status": "acknowledged", **result}
+
+    def _parse_trace_xml(self, root) -> list[dict]:
+        events: list[dict] = []
+        event_nodes = []
+        for tag in ("EVENT", "HISTORY", "TRACE", "SHIPMENTSTATUS", "STATUS"):
+            event_nodes.extend(list(root.iter(tag)))
+            event_nodes.extend(root.findall(f".//{tag}"))
+
+        seen = set()
+        unique_nodes = []
+        for node in event_nodes:
+            marker = id(node)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            unique_nodes.append(node)
+
+        for node in unique_nodes:
+            parsed = self._parse_trace_event(node)
+            if parsed and (parsed.get("status_description") or parsed.get("event_datetime")):
+                events.append(parsed)
+
+        if not events:
+            status = self._xml_text(root, "STATUS") or self._xml_text(root, "CURRENTSTATUS")
+            location = (
+                self._xml_text(root, "LOCATION")
+                or self._xml_text(root, "CITY")
+                or self._xml_text(root, "TERMINAL")
+            )
+            event_dt = (
+                self._xml_text(root, "DATETIME")
+                or self._xml_text(root, "STATUSDATE")
+                or self._xml_text(root, "DELVDATE")
+                or self._xml_text(root, "SHIPDATE")
+            )
+            if status or event_dt:
+                code = self._arcbest_status_code(status)
+                events.append(
+                    {
+                        "event_datetime": event_dt,
+                        "status_code": code,
+                        "status_description": status or code,
+                        "location": location,
+                        "is_exception": 1 if code in {"EXCEPTION", "EX"} else 0,
+                    }
+                )
+        return events
+
+    @classmethod
+    def _parse_trace_event(cls, node) -> dict | None:
+        if node is None:
+            return None
+        children = {child.tag.split("}")[-1].upper(): (child.text or "").strip() for child in list(node)}
+        if not children and (node.text or "").strip() and node.tag.split("}")[-1].upper() in {"STATUS", "EVENT"}:
+            children["STATUS"] = (node.text or "").strip()
+
+        description = (
+            children.get("STATUS")
+            or children.get("DESCRIPTION")
+            or children.get("COMMENT")
+            or children.get("ACTIVITY")
+            or children.get("REMARKS")
+            or ""
         )
-        return []
+        code_raw = children.get("STATUSCODE") or children.get("CODE") or children.get("ST") or description
+        date_val = children.get("DATETIME") or children.get("DATE") or children.get("EVENTDATE") or ""
+        time_val = children.get("TIME") or children.get("EVENTTIME") or ""
+        event_dt = " ".join(part for part in (date_val, time_val) if part).strip() or date_val
+        city = children.get("CITY") or ""
+        state = children.get("STATE") or children.get("ST") or ""
+        location = (
+            children.get("LOCATION")
+            or children.get("TERMINAL")
+            or ", ".join(part for part in (city, state) if part)
+        )
+        if not description and not event_dt:
+            return None
+        code = cls._arcbest_status_code(code_raw or description)
+        return {
+            "event_datetime": event_dt,
+            "status_code": code,
+            "status_description": description or code,
+            "location": location,
+            "is_exception": 1 if code in {"EXCEPTION", "EX"} else 0,
+        }
+
+    @staticmethod
+    def _arcbest_status_code(raw) -> str:
+        from ltl_quote.carrier_network.tracking import normalize_activity_code
+
+        value = normalize_activity_code(raw)
+        code_map = {
+            "PU": "PICKED_UP",
+            "PUP": "PICKED_UP",
+            "PK": "PICKED_UP",
+            "OFD": "OUT_FOR_DELIVERY",
+            "OF": "OUT_FOR_DELIVERY",
+            "DLV": "DELIVERED",
+            "DEL": "DELIVERED",
+            "DL": "DELIVERED",
+            "AR": "IN_TRANSIT",
+            "DP": "IN_TRANSIT",
+            "IT": "IN_TRANSIT",
+            "XCP": "EXCEPTION",
+            "EX": "EXCEPTION",
+            "EXC": "EXCEPTION",
+        }
+        if value in code_map:
+            return code_map[value]
+        if value in {"PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED", "EXCEPTION"}:
+            return value
+        text = str(raw or "").strip().lower()
+        if "deliver" in text and "out for" not in text and "attempt" not in text:
+            return "DELIVERED"
+        if "out for delivery" in text:
+            return "OUT_FOR_DELIVERY"
+        if "picked" in text or "pickup" in text or "pick-up" in text:
+            return "PICKED_UP"
+        if "exception" in text or "delay" in text:
+            return "EXCEPTION"
+        if text:
+            return "IN_TRANSIT"
+        return "IN_TRANSIT"
 
     def _carrier_name(self) -> str:
         return getattr(self.carrier, "carrier_name", None) or "ArcBest Freight"
@@ -300,18 +514,28 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         """Read fields with dynamic fallback to raw JSON if ShipmentRequest values are missing."""
         raw_json = self._read_raw_request_json()
 
-        def city_state(value, raw_key: str, default: str = "") -> str:
-            return (value or raw_json.get(raw_key) or default).strip()
+        def field(value, raw_key: str) -> str:
+            return str(value or raw_json.get(raw_key) or "").strip()
 
         if isinstance(request, ShipmentRequest):
+            origin_city, origin_state = resolve_us_location(
+                request.origin_zip,
+                field(request.origin_city, "origin_city"),
+                field(request.origin_state, "origin_state"),
+            )
+            dest_city, dest_state = resolve_us_location(
+                request.destination_zip,
+                field(request.destination_city, "destination_city"),
+                field(request.destination_state, "destination_state"),
+            )
             return {
                 "origin_zip": request.origin_zip,
-                "origin_city": city_state(request.origin_city, "origin_city", "DAYTON"),
-                "origin_state": city_state(request.origin_state, "origin_state", "OH"),
+                "origin_city": origin_city,
+                "origin_state": origin_state,
                 "origin_country": "US",
                 "destination_zip": request.destination_zip,
-                "destination_city": city_state(request.destination_city, "destination_city", "CHICAGO"),
-                "destination_state": city_state(request.destination_state, "destination_state", "IL"),
+                "destination_city": dest_city,
+                "destination_state": dest_state,
                 "destination_country": "US",
                 "total_weight": request.total_weight,
                 "freight_class": request.freight_class,
@@ -322,15 +546,25 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
 
         items = request.get("items") or [{}]
         first_item = items[0] if isinstance(items, list) and items else {}
+        origin_city, origin_state = resolve_us_location(
+            request.get("origin_zip"),
+            field(request.get("origin_city"), "origin_city"),
+            field(request.get("origin_state"), "origin_state"),
+        )
+        dest_city, dest_state = resolve_us_location(
+            request.get("destination_zip"),
+            field(request.get("destination_city"), "destination_city"),
+            field(request.get("destination_state"), "destination_state"),
+        )
 
         return {
             "origin_zip": request.get("origin_zip"),
-            "origin_city": city_state(request.get("origin_city"), "origin_city", "DAYTON"),
-            "origin_state": city_state(request.get("origin_state"), "origin_state", "OH"),
+            "origin_city": origin_city,
+            "origin_state": origin_state,
             "origin_country": request.get("origin_country") or "US",
             "destination_zip": request.get("destination_zip"),
-            "destination_city": city_state(request.get("destination_city"), "destination_city", "CHICAGO"),
-            "destination_state": city_state(request.get("destination_state"), "destination_state", "IL"),
+            "destination_city": dest_city,
+            "destination_state": dest_state,
             "destination_country": request.get("destination_country") or "US",
             "total_weight": request.get("total_weight") or first_item.get("weight") or 400,
             "freight_class": request.get("freight_class") or first_item.get("classification") or first_item.get("freight_class") or "70",

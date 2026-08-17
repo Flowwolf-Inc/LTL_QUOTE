@@ -1,7 +1,7 @@
 # Copyright (c) 2026, LTL Quote and contributors
 # For license information, please see license.txt
 
-"""TForce Freight rating + BOL adapter (OAuth2 Bearer)."""
+"""TForce Freight rating + BOL + pickup adapter (OAuth2 Bearer)."""
 
 from __future__ import annotations
 
@@ -12,13 +12,15 @@ from typing import Any
 
 import frappe
 import requests
-from frappe.utils import cint, flt, getdate, nowdate
+from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.file_manager import save_file
 
 from ltl_quote.carrier_network.accessorials import (
+	build_accessorial_items,
 	build_accessorial_items_from_payload,
 	tforce_rate_service_options,
 )
+from ltl_quote.utils.location import resolve_us_location
 from ltl_quote.carrier_network.adapters.base import (
 	AccessorialItem,
 	BaseCarrierAdapter,
@@ -239,7 +241,582 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		return self._parse_bol_response(data)
 
 	def get_tracking(self, pro_number: str) -> list[dict]:
-		return []
+		"""Poll TForce GET /track/pro/{pro} and return normalized tracking events."""
+		pro = str(pro_number or "").strip()
+		if not pro:
+			return []
+
+		endpoint = f"{self.base_url}/track/pro/{pro}"
+		params = {"api-version": self.api_version}
+		try:
+			response = requests.get(
+				endpoint,
+				params=params,
+				headers=self.get_headers(),
+				timeout=self._request_timeout(),
+			)
+		except requests.exceptions.RequestException as e:
+			self._log("LTL Quote - TForce Tracking Connection Error", str(e))
+			return []
+
+		if response.status_code in (401, 403):
+			self._log(
+				"LTL Quote - TForce Tracking Auth Failure",
+				f"HTTP {response.status_code} for PRO {pro}: {response.text[:500]}",
+			)
+			return []
+
+		if response.status_code != 200:
+			self._log(
+				"LTL Quote - TForce Tracking Failure",
+				self._format_http_error(response),
+			)
+			return []
+
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			self._log("LTL Quote - TForce Tracking Parse Failure", response.text[:500])
+			return []
+
+		return self._parse_tracking_response(data)
+
+	def _parse_tracking_response(self, data: dict) -> list[dict]:
+		if not isinstance(data, dict):
+			return []
+
+		summary = data.get("summary") or {}
+		status = summary.get("responseStatus") or {}
+		code = str(status.get("code") or "").upper()
+		if code and code not in {"OK", "1", "SUCCESS"}:
+			return []
+
+		details = data.get("detail") or []
+		if isinstance(details, dict):
+			details = [details]
+		detail = next((row for row in details if isinstance(row, dict)), None)
+		if not detail:
+			return []
+
+		detail_status = detail.get("detailStatus") or {}
+		detail_code = str(detail_status.get("code") or "").upper()
+		if detail_code and detail_code not in {"1", "OK", "SUCCESS"}:
+			return []
+
+		current = detail.get("currentStatus") if isinstance(detail.get("currentStatus"), dict) else {}
+		pickup = detail.get("pickup") if isinstance(detail.get("pickup"), dict) else {}
+		delivery = detail.get("delivery") if isinstance(detail.get("delivery"), dict) else {}
+		estimated = delivery.get("estimated") if isinstance(delivery.get("estimated"), dict) else {}
+		actual = delivery.get("actual") if isinstance(delivery.get("actual"), dict) else {}
+
+		estimated_delivery = estimated.get("date") or ""
+		actual_delivery = actual.get("date") or ""
+		pickup_date = pickup.get("date") or ""
+		signed_by = str(delivery.get("signedBy") or "").strip()
+
+		events: list[dict] = []
+		raw_events = detail.get("events") or []
+		if not isinstance(raw_events, list):
+			raw_events = []
+		for row in raw_events:
+			if not isinstance(row, dict):
+				continue
+			parsed = self._parse_tracking_event(row)
+			parsed["estimated_delivery"] = estimated_delivery
+			parsed["actual_delivery"] = actual_delivery
+			parsed["pickup_date"] = pickup_date
+			parsed["signed_by"] = signed_by
+			events.append(parsed)
+
+		if not events and (current or pickup_date or actual_delivery):
+			status_code = self._tforce_status_code(
+				current.get("code"),
+				current.get("details"),
+				current.get("description"),
+			)
+			location = (
+				(actual.get("serviceCenter") if actual_delivery else "")
+				or (estimated.get("serviceCenter") if estimated_delivery else "")
+				or pickup.get("serviceCenter")
+				or ""
+			)
+			events.append(
+				{
+					"event_datetime": actual_delivery or pickup_date or estimated_delivery,
+					"status_code": status_code,
+					"status_description": str(
+						current.get("description") or self._tforce_status_label(status_code)
+					),
+					"location": location,
+					"is_exception": 1 if status_code in {"EXCEPTION", "EX"} else 0,
+					"estimated_delivery": estimated_delivery,
+					"actual_delivery": actual_delivery,
+					"pickup_date": pickup_date,
+					"signed_by": signed_by,
+				}
+			)
+		return events
+
+	@staticmethod
+	def _parse_tracking_event(event: dict) -> dict:
+		from ltl_quote.carrier_network.tracking import is_exception_code
+
+		description = str(
+			event.get("displayDescription") or event.get("description") or ""
+		).strip()
+		status_code = TForceCarrierAdapter._tforce_status_code(
+			event.get("code"),
+			event.get("details"),
+			description,
+		)
+		return {
+			"event_datetime": event.get("date") or event.get("event_datetime"),
+			"status_code": status_code,
+			"status_description": description or TForceCarrierAdapter._tforce_status_label(status_code),
+			"location": str(event.get("serviceCenter") or event.get("location") or "").strip(),
+			"is_exception": 1 if is_exception_code(status_code) else 0,
+		}
+
+	@staticmethod
+	def _tforce_status_code(code=None, details=None, description=None) -> str:
+		from ltl_quote.carrier_network.tracking import normalize_activity_code
+
+		detail = str(details or "").strip()
+		detail_map = {
+			"004": "VOIDED",
+			"005": "IN_TRANSIT",
+			"006": "OUT_FOR_DELIVERY",
+			"011": "DELIVERED",
+			"013": "EXCEPTION",
+		}
+		if detail in detail_map:
+			return detail_map[detail]
+
+		value = normalize_activity_code(code)
+		code_map = {
+			"DL": "DELIVERED",
+			"D1": "DELIVERED",
+			"OF": "OUT_FOR_DELIVERY",
+			"OFD": "OUT_FOR_DELIVERY",
+			"PU": "PICKED_UP",
+			"PK": "PICKED_UP",
+			"P1": "PICKED_UP",
+			"AR": "IN_TRANSIT",
+			"DP": "IN_TRANSIT",
+			"IT": "IN_TRANSIT",
+			"EX": "EXCEPTION",
+			"XC": "EXCEPTION",
+			"VD": "VOIDED",
+		}
+		if value in code_map:
+			return code_map[value]
+		if value in {"DELIVERED", "OUT_FOR_DELIVERY", "PICKED_UP", "IN_TRANSIT", "EXCEPTION", "VOIDED"}:
+			return value
+
+		text = str(description or "").strip().lower()
+		if "deliver" in text and "attempt" not in text and "out for" not in text:
+			return "DELIVERED"
+		if "out for delivery" in text:
+			return "OUT_FOR_DELIVERY"
+		if "picked" in text or "pick-up" in text or "pickup" in text:
+			return "PICKED_UP"
+		if "exception" in text or "delay" in text or "weather" in text:
+			return "EXCEPTION"
+		if "void" in text or "cancel" in text:
+			return "VOIDED"
+		if text:
+			return "IN_TRANSIT"
+		return "IN_TRANSIT"
+
+	@staticmethod
+	def _tforce_status_label(code: str) -> str:
+		from ltl_quote.carrier_network.tracking import activity_label
+
+		return activity_label(code)
+
+	def request_pickup(self, quote_data: dict) -> dict:
+		"""Backward-compatible alias — prefer ``create_pickup`` on a shipment doc."""
+		if isinstance(quote_data, str):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", quote_data))
+		if quote_data.get("shipment_name"):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", quote_data["shipment_name"]))
+		shipment_name = quote_data.get("shipment") or quote_data.get("name")
+		if shipment_name and frappe.db.exists("LTL Shipment", shipment_name):
+			return self.create_pickup(frappe.get_doc("LTL Shipment", shipment_name))
+		frappe.throw("Pickup scheduling requires a booked LTL Shipment.")
+
+	def create_pickup(self, shipment) -> dict:
+		"""Schedule a TForce pickup via POST /pickup/request after BOL booking."""
+		from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment
+
+		if isinstance(shipment, str):
+			shipment = frappe.get_doc("LTL Shipment", shipment)
+
+		if shipment.pickup_number:
+			frappe.throw(f"Pickup {shipment.pickup_number} is already scheduled for this shipment.")
+
+		payload = self._build_pickup_payload_from_shipment(shipment)
+		endpoint = f"{self.base_url}/pickup/request"
+		params = {"api-version": self.api_version}
+		timeout = self._request_timeout()
+
+		try:
+			response = requests.post(
+				endpoint,
+				params=params,
+				headers=self.get_headers(),
+				json=payload,
+				timeout=timeout,
+			)
+		except requests.exceptions.RequestException as e:
+			self._log("LTL Quote - TForce Pickup Connection Error", str(e))
+			frappe.throw(f"TForce pickup request failed: {e}")
+
+		if response.status_code != 200:
+			error = self._format_pickup_http_error(response)
+			self._log("LTL Quote - TForce Pickup Failure", error)
+			frappe.throw(error)
+
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			frappe.throw(f"TForce pickup returned non-JSON response: {response.text[:250]}")
+
+		normalized = self._parse_pickup_response(data)
+		pickup_block = payload.get("pickup") or {}
+		if pickup_block.get("date") and pickup_block.get("time"):
+			normalized["ready"] = f"{pickup_block['date']} {pickup_block['time']}"
+		if pickup_block.get("date") and pickup_block.get("closeTime"):
+			normalized["close"] = f"{pickup_block['date']} {pickup_block['closeTime']}"
+		normalized["status"] = "acknowledged"
+		apply_pickup_response_to_shipment(shipment, normalized, save=True)
+		return normalized
+
+	def get_pickup(self, pickup_number: str) -> dict:
+		"""TForce has no pickup GET — return the stored confirmation shape."""
+		number = str(pickup_number or "").strip()
+		if not number:
+			return {"ok": False, "message": "A pickup confirmation number is required.", "raw": {}}
+		return {
+			"ok": True,
+			"pickup_number": number,
+			"pickup_status": "Scheduled",
+			"raw": {"confirmationNumber": number},
+		}
+
+	def cancel_pickup(self, number: str) -> dict:
+		"""Cancel a TForce pickup via DELETE /pickup/request/{confirmationNumber}."""
+		target = str(number or "").strip()
+		if not target:
+			return {"success": False, "message": "No pickup confirmation number available to cancel."}
+
+		endpoint = f"{self.base_url}/pickup/request/{target}"
+		params = {"api-version": self.api_version}
+		try:
+			response = requests.delete(
+				endpoint,
+				params=params,
+				headers=self.get_headers(),
+				timeout=self._request_timeout(),
+			)
+		except requests.exceptions.RequestException as e:
+			self._log("LTL Quote - TForce Pickup Cancel Error", str(e))
+			return {"success": False, "message": str(e)}
+
+		if response.status_code == 200:
+			return {"success": True, "message": "Pickup cancelled successfully."}
+
+		error = self._format_pickup_http_error(response)
+		self._log("LTL Quote - TForce Pickup Cancel Failure", error)
+		return {"success": False, "message": error, "code": response.status_code}
+
+	def dispatch_shipment(self, shipment_data: dict) -> dict:
+		"""Schedule a TForce pickup for a booked shipment."""
+		shipment_name = shipment_data.get("shipment_name")
+		if not shipment_name:
+			frappe.throw("shipment_name is required to dispatch a TForce pickup.")
+
+		shipment = frappe.get_doc("LTL Shipment", shipment_name)
+		if shipment.pickup_number:
+			return {
+				"status": "acknowledged",
+				"ok": True,
+				"pickup_number": shipment.pickup_number,
+				"pickup_status": shipment.pickup_status or "Scheduled",
+				"message": f"Pickup {shipment.pickup_number} is already scheduled.",
+			}
+
+		result = self.create_pickup(shipment)
+		return {"status": "acknowledged", **result}
+
+	def _build_pickup_payload_from_shipment(self, shipment) -> dict:
+		"""Map an LTL Shipment + quote request to TForce POST /pickup/request."""
+		from ltl_quote.carrier_network.pickup import (
+			_load_quote_request,
+			_pickup_comments,
+			default_pickup_window,
+			resolve_pickup_window,
+		)
+
+		quote_request = _load_quote_request(shipment)
+		shipper = resolve_shipper_context({}, quote_request)
+
+		origin_zip = str(
+			getattr(shipment, "bol_shipper_postal_code", None)
+			or (getattr(quote_request, "origin_zip", None) if quote_request else "")
+			or ""
+		).strip()
+		origin_city = str(
+			getattr(shipment, "bol_shipper_city", None)
+			or (getattr(quote_request, "origin_city", None) if quote_request else "")
+			or ""
+		).strip()
+		origin_state = str(
+			getattr(shipment, "bol_shipper_state", None)
+			or (getattr(quote_request, "origin_state", None) if quote_request else "")
+			or ""
+		).strip()
+		destination_zip = str(
+			getattr(shipment, "bol_consignee_postal_code", None)
+			or (getattr(quote_request, "destination_zip", None) if quote_request else "")
+			or ""
+		).strip()
+
+		origin_city, origin_state = resolve_us_location(origin_zip, origin_city, origin_state)
+		if not origin_zip:
+			frappe.throw("Origin ZIP is required for TForce pickup scheduling.")
+		if not origin_state:
+			frappe.throw(
+				"Origin state is required for TForce pickup scheduling. Provide origin state or a valid US origin ZIP."
+			)
+		if not destination_zip:
+			frappe.throw("Destination ZIP is required for TForce pickup scheduling.")
+
+		ready_dt, close_dt = resolve_pickup_window(shipment)
+		if ready_dt <= now_datetime():
+			ready_dt, close_dt = default_pickup_window()
+
+		pickup_date = ready_dt.strftime("%Y-%m-%d")
+		origin_phone = self._phone_object(
+			getattr(shipment, "bol_shipper_contact_phone", None) or shipper.get("contact_phone"),
+			dashed=True,
+		)
+		origin_email = self._pickup_email(
+			getattr(quote_request, "origin_contact_email", None) if quote_request else None,
+			getattr(quote_request, "contact_email", None) if quote_request else None,
+		)
+		company_name = str(
+			getattr(shipment, "bol_shipper_name", None) or shipper.get("shipper_name") or "Shipper"
+		)
+		contact_name = str(
+			getattr(shipment, "bol_shipper_contact_name", None)
+			or shipper.get("contact_name")
+			or "Shipper"
+		)
+
+		origin = {
+			"companyName": company_name,
+			"email": origin_email,
+			"contactName": contact_name,
+			"phone": origin_phone,
+			"address": self._pickup_address(
+				getattr(shipment, "bol_shipper_address1", None) or shipper.get("shipper_address"),
+				origin_city,
+				origin_state,
+				origin_zip,
+			),
+		}
+
+		payload: dict[str, Any] = {
+			"pickup": {
+				"date": pickup_date,
+				"time": ready_dt.strftime("%H:%M:%S"),
+				"openTime": "08:00:00",
+				"closeTime": close_dt.strftime("%H:%M:%S"),
+			},
+			"requester": {
+				"companyName": company_name,
+				"contactName": contact_name,
+				"email": origin_email,
+				"phone": origin_phone,
+				"thirdParty": False,
+			},
+			"origin": origin,
+			"destination": {
+				"postalCode": destination_zip,
+				"country": "US",
+			},
+			"lineItems": self._pickup_line_items(shipment, quote_request),
+			"instructions": {
+				"pickup": str(_pickup_comments(shipment, quote_request) or "Pickup as scheduled"),
+				"handling": "Handle with care",
+				"delivery": "Deliver as scheduled",
+			},
+			"pomIndicator": False,
+		}
+
+		pro = str(getattr(shipment, "pro_number", None) or "").strip()
+		if pro:
+			payload["pickup"]["existingShipment"] = {"pro": pro}
+
+		accessorials = build_accessorial_items(
+			getattr(quote_request, "accessorials", None) if quote_request else None
+		)
+		services = list((tforce_rate_service_options(accessorials, self.carrier_doc) or {}).get("pickup") or [])
+		if services:
+			payload["services"] = services
+
+		return payload
+
+	def _pickup_line_items(self, shipment, quote_request) -> list[dict]:
+		rows: list[dict] = []
+		quote_items = getattr(quote_request, "line_items", None) if quote_request else None
+		if quote_items:
+			for row in quote_items:
+				rows.append(
+					self._pickup_line_item(
+						{
+							"description": getattr(row, "description", None) or getattr(row, "item_name", None),
+							"weight": getattr(row, "weight", None),
+							"weight_unit": getattr(row, "weight_unit", None),
+							"pieces": getattr(row, "quantity", None) or getattr(row, "qty", None),
+							"packaging_type": getattr(row, "units", None) or getattr(row, "packaging_units", None),
+							"hazmat": getattr(row, "hazmat", None),
+						}
+					)
+				)
+		if not rows:
+			for row in getattr(shipment, "bol_line_items", None) or []:
+				rows.append(
+					self._pickup_line_item(
+						{
+							"description": getattr(row, "commodity_description", None),
+							"weight": getattr(row, "weight", None),
+							"weight_unit": getattr(row, "weight_unit", None),
+							"pieces": getattr(row, "package_qty", None) or getattr(row, "handling_unit_qty", None),
+							"packaging_type": getattr(row, "package_type", None) or getattr(row, "handling_unit_type", None),
+							"hazmat": getattr(row, "hazmat", None),
+						}
+					)
+				)
+		if not rows:
+			rows.append(
+				self._pickup_line_item(
+					{
+						"description": "General Freight",
+						"weight": getattr(quote_request, "total_weight", None) if quote_request else 1,
+						"weight_unit": "LBS",
+						"pieces": getattr(quote_request, "pieces", None) if quote_request else 1,
+						"packaging_type": "BOX",
+						"hazmat": False,
+					}
+				)
+			)
+		return rows
+
+	@staticmethod
+	def _pickup_line_item(item: dict) -> dict:
+		packaging = str(
+			item.get("packaging_type") or item.get("packagingType") or item.get("units") or "BOX"
+		).strip().upper() or "BOX"
+		aliases = {
+			"PALLET": "PLT",
+			"SKID": "SKD",
+			"CRATE": "CRT",
+			"CARTON": "CTN",
+			"DRUM": "DRM",
+			"BAG": "BAG",
+			"BOX": "BOX",
+		}
+		packaging = aliases.get(packaging, packaging if len(packaging) <= 4 else "BOX")
+		return {
+			"description": str(item.get("description") or "General Freight")[:50],
+			"weight": max(flt(item.get("weight") or 1), 1),
+			"weightUnit": str(item.get("weight_unit") or item.get("weightUnit") or "LBS").upper() or "LBS",
+			"pieces": max(cint(item.get("pieces") or item.get("qty") or item.get("quantity") or 1), 1),
+			"packagingType": packaging,
+			"hazardous": bool(item.get("hazmat") or item.get("hazardous")),
+		}
+
+	@staticmethod
+	def _pickup_address(address1, city, state, postal, country: str = "US") -> dict:
+		return {
+			"address1": str(address1 or "Shipper Address"),
+			"city": str(city or "Unknown"),
+			"stateProvinceCode": str(state or "XX"),
+			"postalCode": str(postal or ""),
+			"country": country or "US",
+		}
+
+	@staticmethod
+	def _pickup_email(*values) -> str:
+		for value in values:
+			email = str(value or "").strip()
+			if email and "@" in email:
+				return email
+		if frappe.session.user:
+			session_email = frappe.db.get_value("User", frappe.session.user, "email")
+			if session_email and "@" in str(session_email):
+				return str(session_email).strip()
+		return "shipping@example.com"
+
+	def _parse_pickup_response(self, data: dict) -> dict:
+		status = data.get("responseStatus") or {}
+		code = str(status.get("code") or "").upper()
+		description = str(status.get("description") or status.get("message") or "Pickup failed")
+		if code and code not in {"1", "OK", "SUCCESS"}:
+			frappe.throw(f"TForce pickup rejected: {description}")
+
+		txn = data.get("transactionReference") or {}
+		confirmation = str(txn.get("confirmationNumber") or "").strip()
+		if not confirmation:
+			frappe.throw("TForce pickup succeeded but returned no confirmationNumber.")
+
+		alerts = status.get("alerts") or []
+		alert_messages = []
+		for alert in alerts:
+			if isinstance(alert, dict):
+				msg = str(alert.get("message") or "").strip()
+				if msg:
+					alert_messages.append(msg)
+			elif alert:
+				alert_messages.append(str(alert))
+
+		return {
+			"ok": True,
+			"pickup_number": confirmation,
+			"pickup_status": "Scheduled",
+			"transaction_id": str(txn.get("transactionId") or ""),
+			"email_sent": txn.get("emailSent"),
+			"origin_is_rural": txn.get("originIsRural"),
+			"destination_is_rural": txn.get("destinationIsRural"),
+			"alerts": alerts,
+			"alert_messages": alert_messages,
+			"raw": data,
+		}
+
+	@staticmethod
+	def _format_pickup_http_error(response) -> str:
+		code = ""
+		message = ""
+		try:
+			data = response.json()
+			status = (data.get("responseStatus") if isinstance(data, dict) else None) or {}
+			code = str(status.get("code") or "")
+			message = str(status.get("description") or status.get("message") or "")
+			alerts = status.get("alerts") or []
+			if not message and alerts:
+				first = alerts[0] if isinstance(alerts, list) else {}
+				if isinstance(first, dict):
+					message = str(first.get("message") or "")
+		except Exception:
+			message = ""
+		if not message:
+			message = (getattr(response, "text", None) or "TForce pickup request failed")[:240]
+		prefix = f"TForce pickup HTTP {getattr(response, 'status_code', '')}"
+		if code:
+			return f"{prefix} ({code}): {message}"
+		return f"{prefix}: {message}"
 
 	def _build_bol_payload(self, quote_data: dict) -> dict:
 		quote_ref = quote_data.get("quote_request")
@@ -348,30 +925,6 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 				"image": [
 					{"type": "20", "format": "01"},
 				]
-			},
-			"pickupRequest": {
-				"pickup": {
-					"date": pickup_date,
-					"time": "10:00:00",
-					"openTime": "08:00:00",
-					"closeTime": "16:00:00",
-				},
-				"requester": {
-					"companyName": str(
-						quote_data.get("shipper_name") or shipper.get("shipper_name") or "Shipper"
-					),
-					"contactName": str(
-						quote_data.get("contact_name") or shipper.get("contact_name") or "Shipper"
-					),
-					"email": str(
-						quote_data.get("origin_contact_email")
-						or quote_data.get("contact_email")
-						or "shipping@example.com"
-					),
-					"phone": origin_phone,
-					"thirdParty": False,
-				},
-				"pomIndicator": False,
 			},
 		}
 
@@ -484,11 +1037,14 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		}
 
 	@staticmethod
-	def _phone_object(raw) -> dict:
+	def _phone_object(raw, *, dashed: bool = False) -> dict:
 		digits = re.sub(r"\D", "", str(raw or ""))
 		if len(digits) < 10:
 			digits = "0000000000"
-		return {"number": digits[:10], "extension": digits[10:15] if len(digits) > 10 else ""}
+		number = digits[:10]
+		if dashed:
+			number = f"{number[:3]}-{number[3:6]}-{number[6:]}"
+		return {"number": number, "extension": digits[10:14] if len(digits) > 10 else ""}
 
 	def _resolve_bol_pickup_date(self, quote_data: dict) -> str:
 		raw = quote_data.get("pickup_date")
@@ -848,6 +1404,18 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 			error=message,
 			raw_response=raw_response or {},
 		)
+
+
+def _is_tforce_shipment(shipment) -> bool:
+	carrier = str(getattr(shipment, "carrier", None) or "").upper()
+	if carrier in {"TFORCE", "TFF"}:
+		return True
+	if carrier and frappe.db.exists("LTL Carrier", carrier):
+		connector = str(frappe.db.get_value("LTL Carrier", carrier, "connector_type") or "")
+		if connector == "TForce":
+			return True
+	carrier_name = str(getattr(shipment, "carrier_name", None) or "").lower()
+	return "tforce" in carrier_name
 
 
 def _extract_bol_pdf_base64(detail: dict) -> str:

@@ -319,17 +319,28 @@ def _attach_dayton_indexed_documents(payload: dict, carrier_code: str | None, pr
 
 
 def _attach_dayton_pickup(payload: dict, shipment_name: str | None, carrier_code: str | None) -> None:
-	"""Add pickup summary to shipment detail payloads for Dayton carriers."""
-	if str(carrier_code or "").upper() != "DAYTON" or not shipment_name:
+	"""Add pickup summary to shipment detail payloads for Dayton, TForce, and ArcBest."""
+	if not shipment_name:
 		return
 
 	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_ARCBEST,
+		CONNECTOR_DAYTON,
+		CONNECTOR_TFORCE,
+		shipment_connector,
+	)
 	from ltl_quote.carrier_network.pickup import PICKUP_TERMINAL_STATUSES, shipment_pickup_summary
 
 	doc = frappe.get_doc("LTL Shipment", shipment_name)
-	live = bool(doc.pickup_number) and str(doc.pickup_status or "") not in PICKUP_TERMINAL_STATUSES
-	adapter = DaytonCarrierAdapter() if live else None
-	payload["pickup"] = shipment_pickup_summary(doc, live=live, adapter=adapter)
+	connector = shipment_connector(doc)
+	if connector == CONNECTOR_DAYTON:
+		live = bool(doc.pickup_number) and str(doc.pickup_status or "") not in PICKUP_TERMINAL_STATUSES
+		adapter = DaytonCarrierAdapter() if live else None
+		payload["pickup"] = shipment_pickup_summary(doc, live=live, adapter=adapter)
+		return
+	if connector in {CONNECTOR_TFORCE, CONNECTOR_ARCBEST}:
+		payload["pickup"] = shipment_pickup_summary(doc)
 
 
 def _flowwolf_pickup_proxy(headers, body, request_kwargs, handler, log_fields=()):
@@ -463,6 +474,74 @@ def cancel_dayton_pickup(payload=None, shipment=None, shipment_name=None, number
 		from ltl_quote.api.shipping import cancel_dayton_pickup as _cancel_dayton_pickup
 
 		return _cancel_dayton_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			number=request.get("number") or number,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, "number": number, **kwargs},
+		handler,
+		("shipment", "number"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def create_tforce_pickup(payload=None, shipment=None, shipment_name=None, **kwargs):
+	"""FlowWolf gateway for TForce POST /pickup/request."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import create_tforce_pickup as _create_tforce_pickup
+
+		return _create_tforce_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, **kwargs},
+		handler,
+		("shipment", "shipment_name"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def get_tforce_pickup(payload=None, shipment=None, shipment_name=None, number=None, **kwargs):
+	"""FlowWolf gateway for stored TForce pickup confirmation."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import get_tforce_pickup as _get_tforce_pickup
+
+		return _get_tforce_pickup(
+			shipment=request.get("shipment") or shipment,
+			shipment_name=request.get("shipment_name") or shipment_name,
+			number=request.get("number") or number,
+		)
+
+	return _flowwolf_pickup_proxy(
+		headers,
+		body,
+		{"payload": payload, "shipment": shipment, "shipment_name": shipment_name, "number": number, **kwargs},
+		handler,
+		("shipment", "number"),
+	)
+
+
+@frappe.whitelist(allow_guest=False)
+def cancel_tforce_pickup(payload=None, shipment=None, shipment_name=None, number=None, **kwargs):
+	"""FlowWolf gateway for TForce DELETE /pickup/request/{confirmationNumber}."""
+	headers, body = _read_request_context()
+
+	def handler(request):
+		from ltl_quote.api.shipping import cancel_tforce_pickup as _cancel_tforce_pickup
+
+		return _cancel_tforce_pickup(
 			shipment=request.get("shipment") or shipment,
 			shipment_name=request.get("shipment_name") or shipment_name,
 			number=request.get("number") or number,
@@ -1091,16 +1170,28 @@ def track_by_number(payload=None, **kwargs):
 				),
 			}
 		else:
-			from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+			from ltl_quote.api.carrier_mapping import resolve_carrier_id
 
-			adapter = DaytonCarrierAdapter()
+			carrier_pref = resolve_carrier_id(
+				request.get("carrier_preference") or request.get("carrier") or request.get("carrier_code")
+			)
+			if carrier_pref == "TFORCE":
+				from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
+
+				adapter = TForceCarrierAdapter()
+				carrier_id = "TFORCE"
+			else:
+				from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+
+				adapter = DaytonCarrierAdapter()
+				carrier_id = "DAYTON"
 			events = adapter.get_tracking(pro)
 			response_payload = {
 				"status": "success",
 				"engine": FLOWWOLF_ENGINE,
 				"shipment": None,
 				"pro_number": pro,
-				"carrier_code": "DAYTON",
+				"carrier_code": carrier_id,
 				"events": events,
 				"message": (
 					"Live tracking events retrieved (no local shipment matched)."

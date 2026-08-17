@@ -306,11 +306,20 @@ def apply_pickup_response_to_shipment(shipment, pickup_data: dict, *, save: bool
 		shipment.pickup_status = str(status)
 	if pickup_data.get("ready") or raw.get("ready"):
 		shipment.pickup_ready = get_datetime(pickup_data.get("ready") or raw.get("ready"))
+		if not shipment.pickup_date:
+			shipment.pickup_date = getdate(shipment.pickup_ready)
 	if pickup_data.get("close") or raw.get("close"):
 		shipment.pickup_close = get_datetime(pickup_data.get("close") or raw.get("close"))
 	pro = pickup_data.get("pro_number")
 	if pro and not shipment.pro_number:
 		shipment.pro_number = str(pro)
+	alerts = pickup_data.get("alert_messages") or []
+	if alerts:
+		existing = str(getattr(shipment, "pickup_comments", None) or "").strip()
+		alert_text = " | ".join(str(msg) for msg in alerts if msg)
+		if alert_text:
+			combined = f"{existing} | {alert_text}" if existing else alert_text
+			shipment.pickup_comments = combined[:1000]
 	if save:
 		shipment.dispatch_status = map_pickup_status_to_dispatch_status(status, pickup_data.get("status"))
 		if shipment.dispatch_status == "Acknowledged" and shipment.status == "Booked":
@@ -323,7 +332,7 @@ def map_pickup_status_to_dispatch_status(pickup_status: str | None, adapter_stat
 	if adapter_status == "acknowledged":
 		return "Acknowledged"
 	value = str(pickup_status or "").strip()
-	if value in {"Assigned", "PartnerScheduling", "PartnerScheduled", "SeeDetails"}:
+	if value in {"Assigned", "PartnerScheduling", "PartnerScheduled", "SeeDetails", "Scheduled", "Success"}:
 		return "Acknowledged"
 	if value == "Cancelled":
 		return "Failed"
@@ -341,6 +350,8 @@ def shipment_pickup_summary(shipment, *, live: bool = False, adapter=None) -> di
 		"ready": getattr(shipment, "pickup_ready", None),
 		"close": getattr(shipment, "pickup_close", None),
 		"comments": getattr(shipment, "pickup_comments", None) or "",
+		"transaction_id": "",
+		"alerts": [],
 		"is_editable": None,
 		"items": [],
 	}

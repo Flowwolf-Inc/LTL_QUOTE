@@ -300,17 +300,29 @@ def get_shipment_detail(name: str) -> dict:
 
 	dayton_documents = None
 	pickup = None
-	if doc.carrier and str(doc.carrier).upper() == "DAYTON":
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_ARCBEST,
+		CONNECTOR_DAYTON,
+		CONNECTOR_TFORCE,
+		connector_ui_code,
+		shipment_connector,
+	)
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	connector = shipment_connector(doc)
+	if connector == CONNECTOR_DAYTON:
 		if doc.pro_number:
 			from ltl_quote.carrier_network.adapters.dayton import get_dayton_indexed_documents
 
 			dayton_documents = get_dayton_indexed_documents(doc.pro_number)
 		from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
-		from ltl_quote.carrier_network.pickup import PICKUP_TERMINAL_STATUSES, shipment_pickup_summary
+		from ltl_quote.carrier_network.pickup import PICKUP_TERMINAL_STATUSES
 
 		live = bool(doc.pickup_number) and str(doc.pickup_status or "") not in PICKUP_TERMINAL_STATUSES
 		adapter = DaytonCarrierAdapter() if live else None
 		pickup = shipment_pickup_summary(doc, live=live, adapter=adapter)
+	elif connector in {CONNECTOR_TFORCE, CONNECTOR_ARCBEST}:
+		pickup = shipment_pickup_summary(doc)
 
 	return {
 		"doc": doc.as_dict(),
@@ -319,6 +331,8 @@ def get_shipment_detail(name: str) -> dict:
 		"accessorials": accessorials,
 		"dayton_documents": dayton_documents,
 		"pickup": pickup,
+		"carrier": connector_ui_code(connector),
+		"connector": connector,
 	}
 
 
@@ -341,22 +355,50 @@ def refresh_shipment_bol(name: str) -> dict:
 
 @frappe.whitelist()
 def schedule_shipment_pickup(name: str) -> dict:
-	"""Schedule a Dayton pickup for a booked shipment."""
-	from ltl_quote.api.shipping import create_dayton_pickup
+	"""Schedule a carrier pickup for a booked shipment."""
+	from ltl_quote.api.shipping import create_arcbest_pickup, create_dayton_pickup, create_tforce_pickup
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_ARCBEST,
+		CONNECTOR_DAYTON,
+		CONNECTOR_TFORCE,
+		shipment_connector,
+	)
 
 	if not name:
 		frappe.throw("Shipment ID is required.")
-	return create_dayton_pickup(shipment=name)
+	doc = frappe.get_doc("LTL Shipment", name)
+	connector = shipment_connector(doc)
+	if connector == CONNECTOR_TFORCE:
+		return create_tforce_pickup(shipment=name)
+	if connector == CONNECTOR_DAYTON:
+		return create_dayton_pickup(shipment=name)
+	if connector == CONNECTOR_ARCBEST:
+		return create_arcbest_pickup(shipment=name)
+	frappe.throw("Pickup scheduling is only available for Dayton, TForce, and ArcBest shipments.")
 
 
 @frappe.whitelist()
 def get_shipment_pickup(name: str) -> dict:
-	"""Fetch live Dayton pickup details for a shipment."""
-	from ltl_quote.api.shipping import get_dayton_pickup
+	"""Fetch stored or live pickup details for a shipment."""
+	from ltl_quote.api.shipping import get_arcbest_pickup, get_dayton_pickup, get_tforce_pickup
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_ARCBEST,
+		CONNECTOR_DAYTON,
+		CONNECTOR_TFORCE,
+		shipment_connector,
+	)
 
 	if not name:
 		frappe.throw("Shipment ID is required.")
-	return get_dayton_pickup(shipment=name)
+	doc = frappe.get_doc("LTL Shipment", name)
+	connector = shipment_connector(doc)
+	if connector == CONNECTOR_TFORCE:
+		return get_tforce_pickup(shipment=name)
+	if connector == CONNECTOR_DAYTON:
+		return get_dayton_pickup(shipment=name)
+	if connector == CONNECTOR_ARCBEST:
+		return get_arcbest_pickup(shipment=name)
+	frappe.throw("Pickup lookup is only available for Dayton, TForce, and ArcBest shipments.")
 
 
 @frappe.whitelist()
@@ -374,32 +416,53 @@ def update_shipment_pickup(name: str, data: str | dict | None = None) -> dict:
 
 @frappe.whitelist()
 def cancel_shipment_pickup(name: str) -> dict:
-	"""Cancel a scheduled Dayton pickup."""
-	from ltl_quote.api.shipping import cancel_dayton_pickup
+	"""Cancel a scheduled pickup."""
+	from ltl_quote.api.shipping import cancel_arcbest_pickup, cancel_dayton_pickup, cancel_tforce_pickup
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_ARCBEST,
+		CONNECTOR_DAYTON,
+		CONNECTOR_TFORCE,
+		shipment_connector,
+	)
 
 	if not name:
 		frappe.throw("Shipment ID is required.")
-	return cancel_dayton_pickup(shipment=name)
+	doc = frappe.get_doc("LTL Shipment", name)
+	connector = shipment_connector(doc)
+	if connector == CONNECTOR_TFORCE:
+		return cancel_tforce_pickup(shipment=name)
+	if connector == CONNECTOR_DAYTON:
+		return cancel_dayton_pickup(shipment=name)
+	if connector == CONNECTOR_ARCBEST:
+		return cancel_arcbest_pickup(shipment=name)
+	frappe.throw("Pickup cancellation is only available for Dayton, TForce, and ArcBest shipments.")
 
 
 @frappe.whitelist()
 def get_pickup_page_data(name: str) -> dict:
-	"""Load shipment context and live Dayton pickup data for the pickup management page."""
+	"""Load shipment context and pickup data for the pickup management page."""
 	if not name or not frappe.db.exists("LTL Shipment", name):
 		frappe.throw(f"Shipment {name} not found.")
 
 	doc = frappe.get_doc("LTL Shipment", name)
 	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
 
-	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter, _is_dayton_shipment
+	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+	from ltl_quote.carrier_network.carrier_identity import (
+		CONNECTOR_DAYTON,
+		connector_ui_code,
+		shipment_connector,
+		supports_pickup,
+	)
 	from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment, shipment_pickup_summary
 
-	if not _is_dayton_shipment(doc):
-		frappe.throw("Pickup management is only available for Dayton Freight shipments.")
+	connector = shipment_connector(doc)
+	if not supports_pickup(doc):
+		frappe.throw("Pickup management is only available for Dayton, TForce, and ArcBest shipments.")
 
 	live_result = {}
 	raw_pickup = {}
-	if doc.pickup_number:
+	if connector == CONNECTOR_DAYTON and doc.pickup_number:
 		adapter = DaytonCarrierAdapter()
 		live_result = adapter.get_pickup(doc.pickup_number)
 		if live_result.get("ok"):
@@ -428,6 +491,8 @@ def get_pickup_page_data(name: str) -> dict:
 		"items": items,
 		"raw": raw_pickup,
 		"quote": quote_summary,
+		"carrier": connector_ui_code(connector),
+		"connector": connector,
 	}
 
 
@@ -482,14 +547,19 @@ def _parse_location_parts(location: str | None) -> dict:
 
 @frappe.whitelist()
 def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
-	"""Load shipment context and live Dayton tracking for the orange tracking dashboard."""
+	"""Load shipment context and live carrier tracking for the tracking dashboard."""
 	if not name or not frappe.db.exists("LTL Shipment", name):
 		frappe.throw(f"Shipment {name} not found.")
 
 	doc = frappe.get_doc("LTL Shipment", name)
 	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
 
-	from ltl_quote.carrier_network.adapters.dayton import _is_dayton_shipment
+	from ltl_quote.carrier_network.carrier_identity import (
+		connector_label,
+		connector_ui_code,
+		shipment_connector,
+		supports_tracking,
+	)
 	from ltl_quote.carrier_network.service_centers import attach_service_center_coordinates
 	from ltl_quote.carrier_network.tracking import (
 		activity_label,
@@ -499,10 +569,13 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 	)
 	from ltl_quote.utils.location import attach_zip_coordinates, resolve_us_location
 
-	if not _is_dayton_shipment(doc):
-		frappe.throw("Tracking dashboard is only available for Dayton Freight shipments.")
+	if not supports_tracking(doc):
+		frappe.throw("Tracking dashboard is only available for Dayton, TForce, and ArcBest shipments.")
 	if not str(doc.pro_number or "").strip():
 		frappe.throw("This shipment does not have a PRO / tracking number yet.")
+
+	connector = shipment_connector(doc)
+	carrier_label = connector_label(connector)
 
 	should_refresh = str(refresh if refresh is not None else "1").strip().lower() not in {
 		"0",
@@ -527,15 +600,15 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 			else:
 				refresh_result = {
 					"status": "info",
-					"message": "Waiting for Dayton to scan this PRO. Events appear after pickup is completed and scanned.",
+					"message": f"Waiting for {carrier_label} to scan this PRO. Events appear after pickup is completed and scanned.",
 					"events": 0,
 				}
 		except frappe.ValidationError as exc:
-			# Keep the tracking page usable (map + seed events) even when Dayton auth fails.
-			refresh_result = {"status": "error", "message": str(exc) or "Could not refresh tracking from Dayton."}
+			# Keep the tracking page usable (map + seed events) even when carrier auth fails.
+			refresh_result = {"status": "error", "message": str(exc) or f"Could not refresh tracking from {carrier_label}."}
 		except Exception:
 			frappe.log_error(title="Orange Tracking Refresh Failure", message=frappe.get_traceback())
-			refresh_result = {"status": "error", "message": "Could not refresh tracking from Dayton."}
+			refresh_result = {"status": "error", "message": f"Could not refresh tracking from {carrier_label}."}
 
 	quote_summary = {}
 	quote = None
@@ -625,6 +698,8 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 
 	return {
 		"doc": doc.as_dict(),
+		"carrier": connector_ui_code(connector),
+		"connector": connector,
 		"quote": quote_summary,
 		"tracking": {
 			"events": events,
@@ -659,12 +734,37 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 
 @frappe.whitelist()
 def refresh_shipment_tracking(name: str) -> dict:
-	"""Refresh Dayton tracking for a shipment and return updated tracking page payload."""
-	from ltl_quote.carrier_network.adapters.dayton import fetch_dayton_tracking_updates
+	"""Refresh carrier tracking for a shipment and return updated tracking page payload."""
+	from ltl_quote.carrier_network.carrier_identity import connector_label, shipment_connector, supports_tracking
+	from ltl_quote.visibility.tracker import ShipmentTracker
 
 	if not name:
 		frappe.throw("Shipment ID is required.")
-	result = fetch_dayton_tracking_updates(name)
+	doc = frappe.get_doc("LTL Shipment", name)
+	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
+
+	if not supports_tracking(doc):
+		frappe.throw("Tracking refresh is only available for Dayton, TForce, and ArcBest shipments.")
+
+	carrier_label = connector_label(shipment_connector(doc))
+	try:
+		raw = ShipmentTracker(doc).refresh()
+		result = {
+			"status": "success" if raw.get("events") else "info",
+			"message": (
+				"Tracking details synchronized successfully."
+				if raw.get("events")
+				else f"Waiting for {carrier_label} to scan this PRO. Events appear after pickup is completed and scanned."
+			),
+			"events": raw.get("events") or 0,
+			"has_exception": raw.get("has_exception"),
+		}
+	except frappe.ValidationError as exc:
+		result = {"status": "error", "message": str(exc)}
+	except Exception:
+		frappe.log_error(title=f"{carrier_label} Tracking Refresh Failure", message=frappe.get_traceback())
+		result = {"status": "error", "message": f"Could not refresh tracking from {carrier_label}."}
+
 	payload = get_tracking_page_data(name, refresh=0)
 	payload["refresh_result"] = result
 	return payload

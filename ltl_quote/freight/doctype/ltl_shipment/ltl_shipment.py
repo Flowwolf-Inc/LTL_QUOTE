@@ -32,11 +32,22 @@ class LTLShipment(Document):
 
 	@frappe.whitelist()
 	def cancel_pickup(self):
-		from ltl_quote.api.shipping import cancel_dayton_pickup
+		from ltl_quote.api.shipping import cancel_arcbest_pickup, cancel_dayton_pickup, cancel_tforce_pickup
+		from ltl_quote.carrier_network.carrier_identity import (
+			CONNECTOR_ARCBEST,
+			CONNECTOR_DAYTON,
+			CONNECTOR_TFORCE,
+			shipment_connector,
+		)
 
-		if str(self.carrier or "").upper() != "DAYTON":
-			frappe.throw("Pickup cancellation is only supported for Dayton shipments.")
-		return cancel_dayton_pickup(shipment=self.name)
+		connector = shipment_connector(self)
+		if connector == CONNECTOR_TFORCE:
+			return cancel_tforce_pickup(shipment=self.name)
+		if connector == CONNECTOR_DAYTON:
+			return cancel_dayton_pickup(shipment=self.name)
+		if connector == CONNECTOR_ARCBEST:
+			return cancel_arcbest_pickup(shipment=self.name)
+		frappe.throw("Pickup cancellation is only supported for Dayton, TForce, and ArcBest shipments.")
 
 	@frappe.whitelist()
 	def update_electronic_bol(self):

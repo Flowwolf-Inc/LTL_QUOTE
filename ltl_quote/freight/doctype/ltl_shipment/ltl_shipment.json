@@ -199,7 +199,7 @@
   {
    "fieldname": "pickup_section",
    "fieldtype": "Section Break",
-   "label": "Dayton Pickup"
+   "label": "Pickup"
   },
   {
    "fieldname": "pickup_number",
