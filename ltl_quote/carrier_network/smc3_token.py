@@ -252,6 +252,21 @@ def is_auth_error_text(value) -> bool:
 	)
 
 
+def is_tforce_connector_text(carrier_name=None, error_text=None) -> bool:
+	blob = f"{carrier_name or ''} {error_text or ''}".upper()
+	return any(token in blob for token in ("TFORCE", "TFFA"))
+
+
+TFORCE_AUTH_USER_MESSAGE = "TForce Freight: credentials missing or expired"
+
+
+def should_hide_auth_error(carrier_name=None, error_text=None) -> bool:
+	"""UI/API used to drop all 401s; TForce auth must still surface on get_ltl_rates."""
+	if not is_auth_error_text(error_text):
+		return False
+	return not is_tforce_connector_text(carrier_name, error_text)
+
+
 def _payload_is_auth_failure(payload: Any) -> bool:
 	if not isinstance(payload, dict):
 		return False

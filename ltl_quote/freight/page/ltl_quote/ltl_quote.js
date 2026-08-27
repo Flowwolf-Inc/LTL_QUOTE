@@ -1924,6 +1924,17 @@ ltl_quote.Dashboard = class Dashboard {
 		if (/requires assistance from customer service/i.test(raw) || /could not auto-rate this shipment/i.test(raw)) {
 			return "This shipment cannot be auto-rated and needs TForce customer service.";
 		}
+		if (/Invalid Commodity Classification/i.test(raw)) {
+			const rejected = (raw.match(/rejected\s+([0-9.]+)/i) || [])[1];
+			return rejected
+				? `SMC3 rejected freight class ${rejected}. Use a standard NMFC class such as 50, 55, 60, 70, 77.5, 85, or 100.`
+				: "SMC3 rejected the freight class. Use a standard NMFC class such as 50, 55, 60, 70, 77.5, 85, or 100.";
+		}
+		if (/SMC3 HTTP \d+/i.test(raw)) {
+			const msg = (raw.match(/Invalid Commodity Classification[^.]*\.?/i) || [])[0];
+			const code = (raw.match(/SMC3 HTTP \d+/) || ["SMC3 request failed"])[0];
+			return msg ? `${code}: ${msg}` : code;
+		}
 		return raw.replace(/\{[\s\S]*\}/, "").replace(/\s+\|\s*$/, "").trim().slice(0, 220) || raw.slice(0, 220);
 	}
 
@@ -3652,14 +3663,6 @@ ltl_quote.Dashboard = class Dashboard {
 		const preview_url = bol_image_url || bol_url;
 		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
 		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup, payload.carrier);
-		const can_track =
-			ltl_supports_tracking(payload.carrier || doc.carrier)
-			&& Boolean(String(doc.pro_number || "").trim());
-		const track_btn = can_track
-			? `<button type="button" class="ltl-btn ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
-					<i class="fa fa-map-marker"></i> ${__("Track Shipment")}
-				</button>`
-			: "";
 		const view_bol_btn = preview_url
 			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(preview_url)}">
 					<i class="fa fa-file-pdf-o"></i> View BOL
@@ -3671,19 +3674,9 @@ ltl_quote.Dashboard = class Dashboard {
 			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
 			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""))
 			&& Boolean(String(doc.pro_number || doc.bol_number || "").trim());
-		const fetch_bol_image_btn = can_cancel_bol
-			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(doc.name)}">
-					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
-				</button>`
-			: "";
 		const cancel_bol_btn = can_cancel_bol
 			? `<button type="button" class="ltl-btn ltl-detail-cancel-bol" data-shipment="${esc(doc.name)}">
 					<i class="fa fa-times"></i> ${__("Cancel BOL")}
-				</button>`
-			: "";
-		const view_bol_image_btn = bol_image_url
-			? `<button type="button" class="ltl-btn ltl-detail-view-bol-image" data-bol-image-url="${esc(bol_image_url)}">
-					<i class="fa fa-picture-o"></i> ${__("View BOL Image")}
 				</button>`
 			: "";
 		const bol_preview = this.render_bol_preview_card({
@@ -3708,12 +3701,7 @@ ltl_quote.Dashboard = class Dashboard {
 					</div>
 					<div class="ltl-detail-hero-right">
 						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
-						${dayton_pickup_ui.actions}
-						${track_btn}
-						${dayton_bol_ui.refresh_btn}
 						${view_bol_btn}
-						${view_bol_image_btn}
-						${fetch_bol_image_btn}
 						${cancel_bol_btn}
 					</div>
 				</div>

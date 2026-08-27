@@ -30,6 +30,11 @@ from ltl_quote.decision_engine.recommender import rank_quotes
 from ltl_quote.utils.booking import resolve_shipment_bol_url
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
+from ltl_quote.carrier_network.smc3_token import (
+	TFORCE_AUTH_USER_MESSAGE,
+	is_auth_error_text,
+	is_tforce_connector_text,
+)
 from ltl_quote.utils.transaction_log import log_api_transaction
 
 FLOWWOLF_RATES_ENDPOINT = "/api/method/ltl_quote.api.flowwolf.get_rates"
@@ -691,7 +696,10 @@ def create_bol(payload=None, **kwargs):
 	except Exception as e:
 		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf create_bol API Error")
 		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
-		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+		raw = str(e)
+		if is_auth_error_text(raw) and is_tforce_connector_text(carrier_id, raw):
+			raw = TFORCE_AUTH_USER_MESSAGE
+		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": raw}
 	finally:
 		log_body = {**(request or body or {}), "api_url": FLOWWOLF_BOL_ENDPOINT}
 		log_carrier_id = carrier_id or "Multi-Carrier"
@@ -735,7 +743,12 @@ def _book_quote_core(
 		carrier_quote_id=carrier_quote_id,
 	)
 	selected = quote_doc.carrier_quotes[row_idx]
-	carrier_id = resolve_carrier_id(carrier_code) if carrier_code else selected.carrier
+	# Book through the quote line's connector (SMC3 network SCACs stay on SMC3).
+	carrier_id = selected.carrier
+	if carrier_code:
+		resolved = resolve_carrier_id(carrier_code)
+		if resolved and resolved != "MOCK":
+			carrier_id = resolved
 	if not carrier_id:
 		carrier_id = selected.carrier
 
@@ -1482,7 +1495,14 @@ def _resolve_quote_row_index(
 		# Real id provided but no match — fail clearly instead of silently auto-picking.
 		frappe.throw(f"No quote line found for carrier_quote_id {wanted_quote_id}.")
 
-	if carrier_id:
+	wanted = str(carrier_code or "").strip().upper()
+	if wanted:
+		for idx, row in enumerate(quote_doc.carrier_quotes):
+			scac = str(getattr(row, "quoted_scac", None) or "").strip().upper()
+			if scac and scac == wanted:
+				return idx
+
+	if carrier_id and carrier_id != "MOCK":
 		for idx, row in enumerate(quote_doc.carrier_quotes):
 			if row.carrier == carrier_id:
 				if quote_row_idx is not None and int(quote_row_idx) != idx:

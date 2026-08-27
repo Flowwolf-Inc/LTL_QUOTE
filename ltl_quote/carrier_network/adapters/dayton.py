@@ -6,7 +6,12 @@ import requests
 from frappe.utils import add_days, cint, flt, get_datetime, now_datetime, today
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
+from ltl_quote.api.payload import (
+	apply_line_item_freight_class,
+	default_handling_dimensions,
+	format_freight_class_float,
+	line_item_freight_class,
+)
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_dayton_bol_accessorials_section,
@@ -92,12 +97,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 		clean_weight = self._clean_int(request.total_weight)
 		first_item = request.items[0] if request.items and isinstance(request.items[0], dict) else {}
-		clean_class = self._clean_float(
-			apply_line_item_freight_class(first_item, 1, request.freight_class),
-			0,
+		clean_class = format_freight_class_float(
+			apply_line_item_freight_class(first_item, 1, request.freight_class)
 		)
-		if not clean_class:
-			frappe.throw("Missing Freight Class for Row #1", frappe.ValidationError)
 		clean_pieces = self._clean_int(request.pieces, 1)
 		length, width, height = request.first_handling_dimensions()
 
@@ -115,9 +117,8 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			if row_weight <= 0:
 				continue
 			row_pieces = max(self._clean_int(row.get("qty") or row.get("quantity") or 1, 1), 1)
-			item_class = self._clean_float(
-				apply_line_item_freight_class(row, idx, request.freight_class),
-				0,
+			item_class = format_freight_class_float(
+				apply_line_item_freight_class(row, idx, request.freight_class)
 			)
 			payload_item = {
 				"weight": row_weight,
@@ -204,6 +205,8 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				service_level=parsed["movement_type"],
 				reliability_score=float(getattr(self.carrier, "reliability_score", None) or 90),
 				raw_response=raw_response,
+				rate_source="DAYTON",
+				quoted_scac=str(getattr(self.carrier, "scac", None) or "DAFG").upper(),
 			)
 
 		except (ValueError, TypeError, KeyError) as e:
@@ -714,16 +717,11 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			quote_data.get("freight_class") or quote_request.freight_class or "70"
 		)
 
-		# Only send HU dimensions when the shipper provided them. Defaulting to
-		# 48x40x48 makes Dayton print "HU Dims: ..." under the commodity description.
-		length = _optional_dayton_dimension(
-			quote_data.get("length") if quote_data.get("length") is not None else getattr(quote_request, "length", None)
-		)
-		width = _optional_dayton_dimension(
-			quote_data.get("width") if quote_data.get("width") is not None else getattr(quote_request, "width", None)
-		)
-		height = _optional_dayton_dimension(
-			quote_data.get("height") if quote_data.get("height") is not None else getattr(quote_request, "height", None)
+		# Default pallet 48x40x48 when the shipper omitted handling-unit inches.
+		length, width, height = default_handling_dimensions(
+			quote_data.get("length") if quote_data.get("length") is not None else getattr(quote_request, "length", None),
+			quote_data.get("width") if quote_data.get("width") is not None else getattr(quote_request, "width", None),
+			quote_data.get("height") if quote_data.get("height") is not None else getattr(quote_request, "height", None),
 		)
 		dimensions_unit = str(
 			quote_data.get("dimension_uom")
@@ -1822,14 +1820,13 @@ def _build_dayton_handling_units(
 		}
 		if include_hu_id:
 			hu["id"] = hu_id
-		length = _optional_dayton_dimension(fallback_length)
-		width = _optional_dayton_dimension(fallback_width)
-		height = _optional_dayton_dimension(fallback_height)
-		if length and width and height:
-			hu["dimensionsUnit"] = fallback_dimension_unit
-			hu["length"] = length
-			hu["width"] = width
-			hu["height"] = height
+		length, width, height = default_handling_dimensions(
+			fallback_length, fallback_width, fallback_height
+		)
+		hu["dimensionsUnit"] = fallback_dimension_unit
+		hu["length"] = _dayton_int_dimension(length, 48)
+		hu["width"] = _dayton_int_dimension(width, 40)
+		hu["height"] = _dayton_int_dimension(height, 48)
 		return [hu], fallback_weight_lbs, fallback_pieces
 
 	handling_units = []
@@ -1846,7 +1843,9 @@ def _build_dayton_handling_units(
 		if weight_lbs <= 0:
 			weight_lbs = max(1, fallback_weight_lbs // max(len(items), 1))
 
-		freight_class = line_item_freight_class(item, fallback_class) or fallback_class
+		freight_class = format_freight_class_float(
+			line_item_freight_class(item, fallback_class) or fallback_class or "70"
+		)
 		description = str(
 			item.get("description")
 			or item.get("commodity_description")
@@ -1867,9 +1866,11 @@ def _build_dayton_handling_units(
 		if dim_unit not in ("IN", "CM"):
 			dim_unit = fallback_dimension_unit
 
-		length = _optional_dayton_dimension(item.get("length") if item.get("length") not in (None, "") else fallback_length)
-		width = _optional_dayton_dimension(item.get("width") if item.get("width") not in (None, "") else fallback_width)
-		height = _optional_dayton_dimension(item.get("height") if item.get("height") not in (None, "") else fallback_height)
+		length, width, height = default_handling_dimensions(
+			item.get("length") if item.get("length") not in (None, "") else fallback_length,
+			item.get("width") if item.get("width") not in (None, "") else fallback_width,
+			item.get("height") if item.get("height") not in (None, "") else fallback_height,
+		)
 
 		hu = {
 			"count": pieces,
@@ -1894,11 +1895,10 @@ def _build_dayton_handling_units(
 		}
 		if include_hu_id:
 			hu["id"] = hu_id
-		if length and width and height:
-			hu["dimensionsUnit"] = dim_unit
-			hu["length"] = length
-			hu["width"] = width
-			hu["height"] = height
+		hu["dimensionsUnit"] = dim_unit
+		hu["length"] = _dayton_int_dimension(length, 48)
+		hu["width"] = _dayton_int_dimension(width, 40)
+		hu["height"] = _dayton_int_dimension(height, 48)
 
 		handling_units.append(hu)
 		total_weight += weight_lbs
@@ -1954,19 +1954,14 @@ def _sanitize_dayton_ebol_integers(payload: dict) -> dict:
 			if key in row and row[key] is not None:
 				row[key] = _dayton_int_weight(row[key])
 
-		# Only coerce dimensions that were explicitly provided — do not invent 48x40x48
-		# defaults (Dayton prints those as "HU Dims" under the commodity description).
-		has_explicit_dims = all(
-			row.get(key) not in (None, "", 0, "0") for key in ("length", "width", "height")
+		# Apply shared pallet defaults when L/W/H were omitted.
+		length, width, height = default_handling_dimensions(
+			row.get("length"), row.get("width"), row.get("height")
 		)
-		if has_explicit_dims:
-			row["length"] = _dayton_int_dimension(row.get("length"), 48)
-			row["width"] = _dayton_int_dimension(row.get("width"), 40)
-			row["height"] = _dayton_int_dimension(row.get("height"), 48)
-			row.setdefault("dimensionsUnit", "IN")
-		else:
-			for key in ("length", "width", "height", "dimensionsUnit"):
-				row.pop(key, None)
+		row["length"] = _dayton_int_dimension(length, 48)
+		row["width"] = _dayton_int_dimension(width, 40)
+		row["height"] = _dayton_int_dimension(height, 48)
+		row.setdefault("dimensionsUnit", "IN")
 
 		line_items = []
 		for line in row.get("lineItems") or []:

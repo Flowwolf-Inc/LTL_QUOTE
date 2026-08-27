@@ -34,6 +34,8 @@ class ShipmentRequest:
 
 	def first_handling_dimensions(self) -> tuple[float, float, float]:
 		"""Return the first usable L × W × H in inches from header or line items."""
+		from ltl_quote.api.payload import default_handling_dimensions
+
 		length = float(self.length or 0)
 		width = float(self.width or 0)
 		height = float(self.height or 0)
@@ -47,7 +49,7 @@ class ShipmentRequest:
 			height = float(item.get("height") or 0)
 			if length > 0 and width > 0 and height > 0:
 				return length, width, height
-		return 0.0, 0.0, 0.0
+		return default_handling_dimensions(self.length, self.width, self.height)
 
 	def cube_cubic_feet(self, pieces: int | None = None, length=None, width=None, height=None) -> float:
 		"""Handling-unit cube in cubic feet: (L × W × H × pieces) / 1728."""

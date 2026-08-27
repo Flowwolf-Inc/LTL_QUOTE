@@ -4,7 +4,7 @@ import frappe
 import requests
 from frappe.utils import cint, flt, getdate, nowdate
 
-from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class, default_handling_dimensions, format_freight_class_float, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
     arcbest_accessorial_params,
     build_accessorial_items_from_payload,
@@ -145,7 +145,20 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
 
     def _build_bol_params(self, quote_data: dict, quote_id: str, is_test: bool) -> dict:
         ship_date = getdate(quote_data.get("pickup_date") or nowdate())
-        return {
+        items = [item for item in (quote_data.get("items") or []) if isinstance(item, dict)]
+        first = items[0] if items else {}
+        pieces = max(cint(quote_data.get("pieces") or first.get("qty") or first.get("quantity") or 1), 1)
+        length, width, height = default_handling_dimensions(
+            first.get("length") or quote_data.get("length"),
+            first.get("width") or quote_data.get("width"),
+            first.get("height") or quote_data.get("height"),
+        )
+        freight_class = line_item_freight_class(first, quote_data.get("freight_class") or "65")
+        try:
+            class_value = format_freight_class_float(freight_class)
+        except ValueError:
+            class_value = str(freight_class or "65")
+        params = {
             "ID": self.api_id,
             "TEST": "Y" if is_test else "N",
             "RequesterType": "1",
@@ -171,13 +184,21 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "ConsState": quote_data.get("destination_state") or "KS",
             "ConsZip": str(quote_data.get("destination_zip") or "66044"),
             "ShipDate": ship_date.strftime("%m/%d/%Y"),
-            "HN1": str(cint(quote_data.get("pieces") or 100)),
+            "HN1": str(pieces),
             "HT1": "PLT",
-            "WT1": str(cint(quote_data.get("total_weight") or 1000)),
-            "CL1": str(quote_data.get("freight_class") or "65"),
-            "Desc1": quote_data.get("commodity_description") or "MISC AUTO PARTS",
+            "WT1": str(cint(quote_data.get("total_weight") or first.get("weight") or 1000)),
+            "CL1": class_value,
+            "Desc1": first.get("description")
+            or quote_data.get("commodity_description")
+            or "MISC AUTO PARTS",
             "QuoteID": quote_id,
         }
+        self._apply_dimension_params(
+            params,
+            1,
+            {"length": length, "width": width, "height": height, "pieces": pieces},
+        )
+        return params
 
     def _resolve_bol_quote_id(self, quote_data: dict) -> str:
         """Normalize QuoteID for ArcBest BOL; prefer live quote-request rate lines."""
@@ -636,7 +657,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         rows = self._commodity_rows(fields, request)
         for idx, row in enumerate(rows, start=1):
             params[f"Wgt{idx}"] = cint(self._clean_numeric(row["weight"], 400))
-            params[f"Class{idx}"] = flt(self._clean_numeric(row["freight_class"], "50.0"))
+            params[f"Class{idx}"] = format_freight_class_float(row["freight_class"])
             params[f"UnitNo{idx}"] = cint(self._clean_numeric(row["pieces"], 1))
             params[f"UnitType{idx}"] = row["unit_type"]
             self._apply_dimension_params(params, idx, row)
@@ -823,6 +844,8 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             carrier_quote_id=f"ABF-{quote_id}" if quote_id else "",
             service_level=root.findtext("SERVICETYPE") or "Standard LTL",
             reliability_score=float(getattr(self.carrier, "reliability_score", None) or 90),
+            rate_source="ARCBEST",
+            quoted_scac=str(getattr(self.carrier, "scac", None) or "ABFS").upper(),
             raw_response={
                 "quote_id": quote_id,
                 "delivery_date": delivery_date,

@@ -4,7 +4,7 @@
 import frappe
 from frappe.utils import now_datetime
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_default_handling_dimensions, line_item_freight_class
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.booking import resolve_shipper_context
@@ -62,6 +62,14 @@ class ShipmentExecutor:
 
 		items = self._serialize_line_items()
 		first_item = items[0] if items else {}
+		dims = apply_default_handling_dimensions(
+			{
+				"length": getattr(self.quote_request, "length", None),
+				"width": getattr(self.quote_request, "width", None),
+				"height": getattr(self.quote_request, "height", None),
+				"items": items,
+			}
+		)
 
 		self.booking_payload = {
 			"carrier_quote_id": selected.carrier_quote_id,
@@ -71,9 +79,9 @@ class ShipmentExecutor:
 			"destination_zip": self.quote_request.destination_zip,
 			"total_weight": self.quote_request.total_weight,
 			"pieces": self.quote_request.pieces or 1,
-			"length": getattr(self.quote_request, "length", None),
-			"width": getattr(self.quote_request, "width", None),
-			"height": getattr(self.quote_request, "height", None),
+			"length": dims.get("length"),
+			"width": dims.get("width"),
+			"height": dims.get("height"),
 			"dimension_uom": getattr(self.quote_request, "dimension_uom", None) or "IN",
 			"origin_city": origin_city,
 			"origin_state": origin_state,

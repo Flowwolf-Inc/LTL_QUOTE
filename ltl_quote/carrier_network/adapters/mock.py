@@ -6,6 +6,7 @@ from datetime import timedelta
 import frappe
 from frappe.utils import add_days, now_datetime
 
+from ltl_quote.api.payload import freight_class_lookup_key
 from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter, CarrierRateQuote, ShipmentRequest
 
 MOCK_CARRIER_PROFILES = {
@@ -15,6 +16,28 @@ MOCK_CARRIER_PROFILES = {
 	"ESTES": {"base_multiplier": 0.98, "transit_base": 4, "reliability": 90},
 	"FEDEX_FREIGHT": {"base_multiplier": 1.12, "transit_base": 3, "reliability": 91},
 	"UPS_FREIGHT": {"base_multiplier": 1.08, "transit_base": 4, "reliability": 93},
+}
+
+
+CLASS_MULTIPLIERS = {
+	"50": 0.7,
+	"55": 0.75,
+	"60": 0.78,
+	"65": 0.82,
+	"70": 0.85,
+	"77.5": 0.92,
+	"85": 1.0,
+	"92.5": 1.08,
+	"100": 1.15,
+	"110": 1.22,
+	"125": 1.3,
+	"150": 1.4,
+	"175": 1.5,
+	"200": 1.6,
+	"250": 1.75,
+	"300": 1.9,
+	"400": 2.1,
+	"500": 2.3,
 }
 
 
@@ -63,9 +86,8 @@ class MockCarrierAdapter(BaseCarrierAdapter):
 
 	def _calculate_base_rate(self, request: ShipmentRequest, rng: random.Random) -> float:
 		weight_factor = request.total_weight * 0.12
-		class_multiplier = {"50": 0.7, "70": 0.85, "85": 1.0, "100": 1.15, "125": 1.3}.get(
-			str(request.freight_class), 1.0
-		)
+		class_key = freight_class_lookup_key(request.freight_class)
+		class_multiplier = CLASS_MULTIPLIERS.get(class_key, 1.0)
 		distance_factor = 150 + rng.randint(50, 400)
 		return round((weight_factor * class_multiplier + distance_factor) * rng.uniform(0.95, 1.08), 2)
 

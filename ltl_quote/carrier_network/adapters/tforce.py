@@ -15,13 +15,19 @@ import requests
 from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
+from ltl_quote.api.payload import (
+	apply_default_handling_dimensions,
+	apply_line_item_freight_class,
+	default_handling_dimensions,
+	format_freight_class_float,
+	line_item_freight_class,
+)
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_accessorial_items_from_payload,
 	tforce_rate_service_options,
 )
-from ltl_quote.utils.location import resolve_us_location
+from ltl_quote.carrier_network.smc3_token import TFORCE_AUTH_USER_MESSAGE, is_auth_error_text
 from ltl_quote.carrier_network.adapters.base import (
 	AccessorialItem,
 	BaseCarrierAdapter,
@@ -29,6 +35,7 @@ from ltl_quote.carrier_network.adapters.base import (
 	ShipmentRequest,
 )
 from ltl_quote.utils.booking import resolve_shipper_context
+from ltl_quote.utils.location import resolve_us_location
 
 DEFAULT_BASE_URL = "https://api.tforcefreight.com"
 DEFAULT_API_VERSION = "cie-v1"
@@ -198,6 +205,8 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 				reliability_score=float(getattr(self.carrier, "reliability_score", None) or 90),
 				accessorial_breakdown=parsed.get("accessorial_breakdown") or {},
 				raw_response=data,
+				rate_source="TFORCE",
+				quoted_scac=str(getattr(self.carrier, "scac", None) or "TFFA").upper(),
 			)
 		except requests.exceptions.RequestException as e:
 			self._log("LTL Quote - TForce Connection Error", str(e))
@@ -232,6 +241,8 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		if response.status_code != 200:
 			error = self._format_http_error(response)
 			self._log("LTL Quote - TForce BOL Failure", error)
+			if is_auth_error_text(error):
+				frappe.throw(TFORCE_AUTH_USER_MESSAGE)
 			frappe.throw(error)
 
 		try:
@@ -820,6 +831,7 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		return f"{prefix}: {message}"
 
 	def _build_bol_payload(self, quote_data: dict) -> dict:
+		quote_data = apply_default_handling_dimensions(dict(quote_data or {}))
 		quote_ref = quote_data.get("quote_request")
 		quote_doc = None
 		if quote_ref and frappe.db.exists("LTL Quote Request", quote_ref):
@@ -974,8 +986,9 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 
 		commodities: list[dict] = []
 		if items:
-			for item in items:
+			for idx, item in enumerate(items, start=1):
 				if isinstance(item, dict):
+					apply_line_item_freight_class(item, idx, quote_data.get("freight_class") or "")
 					commodities.append(self._commodity_from_item(item, hazmat_default))
 		if not commodities:
 			commodities.append(
@@ -1225,7 +1238,9 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		weight_val = flt(item.get("weight") or 0)
 		pieces = max(cint(item.get("pieces") or item.get("qty") or item.get("quantity") or 1), 1)
 		freight_class = line_item_freight_class(item)
-		if not freight_class:
+		try:
+			freight_class = format_freight_class_float(freight_class)
+		except ValueError:
 			frappe.throw("Missing Freight Class for Row #1", frappe.ValidationError)
 		hazmat = bool(
 			item.get("dangerousGoods")
@@ -1254,16 +1269,15 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		if nmfc_block:
 			commodity["nmfc"] = nmfc_block
 
-		length = flt(item.get("length") or 0)
-		width = flt(item.get("width") or 0)
-		height = flt(item.get("height") or 0)
-		if length and width and height:
-			commodity["dimensions"] = {
-				"length": length,
-				"width": width,
-				"height": height,
-				"unit": str(item.get("dimension_unit") or item.get("unit") or "IN"),
-			}
+		length, width, height = default_handling_dimensions(
+			item.get("length"), item.get("width"), item.get("height")
+		)
+		commodity["dimensions"] = {
+			"length": length,
+			"width": width,
+			"height": height,
+			"unit": str(item.get("dimension_unit") or item.get("unit") or "IN"),
+		}
 		return commodity
 
 	@staticmethod

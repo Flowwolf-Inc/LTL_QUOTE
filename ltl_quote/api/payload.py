@@ -32,6 +32,11 @@ SKIP_KEYS = {
 	"ignore_permissions",
 }
 
+# Standard pallet handling unit when the client omits L × W × H (inches).
+DEFAULT_HANDLING_LENGTH_IN = 48.0
+DEFAULT_HANDLING_WIDTH_IN = 40.0
+DEFAULT_HANDLING_HEIGHT_IN = 48.0
+
 
 def parse_rating_payload(payload: dict | str | None = None, **kwargs) -> dict:
 	"""Parse and validate a unified rating request from REST clients or form data."""
@@ -104,11 +109,66 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 	return data
 
 
+STANDARD_FREIGHT_CLASSES = {
+	"50",
+	"55",
+	"60",
+	"65",
+	"70",
+	"77.5",
+	"85",
+	"92.5",
+	"100",
+	"110",
+	"125",
+	"150",
+	"175",
+	"200",
+	"250",
+	"300",
+	"400",
+	"500",
+}
+
+
 def _clean_freight_class(value) -> str:
 	text = str(value or "").replace(".0", "").strip()
 	if not text or text.lower() in {"none", "null"}:
 		return ""
 	return text
+
+
+def freight_class_lookup_key(value) -> str:
+	"""Canonical string key for class tables: '85' not 85, 85.0, or '085'."""
+	text = _clean_freight_class(value)
+	if not text:
+		return ""
+	if text in STANDARD_FREIGHT_CLASSES:
+		return text
+	if text.isdigit():
+		normalized = str(int(text))
+		if normalized in STANDARD_FREIGHT_CLASSES:
+			return normalized
+	stripped = text.lstrip("0") or "0"
+	if stripped in STANDARD_FREIGHT_CLASSES:
+		return stripped
+	return text
+
+
+def format_freight_class_float(value) -> float:
+	"""Dayton / TForce wire format: 85.0"""
+	key = freight_class_lookup_key(value) or _clean_freight_class(value)
+	if not key:
+		raise ValueError("Missing freight class")
+	return float(key)
+
+
+def format_freight_class_padded(value) -> str:
+	"""SMC3 / tariff wire format: '085' for two-digit classes, else '100'."""
+	key = freight_class_lookup_key(value) or _clean_freight_class(value)
+	if not key:
+		return ""
+	return key.zfill(3) if len(key) <= 2 else key
 
 
 def _item_class_raw(row):
@@ -138,9 +198,45 @@ def line_item_freight_class(row, fallback: str = "") -> str:
 	return _clean_freight_class(fallback)
 
 
+def default_handling_dimensions(length=0, width=0, height=0) -> tuple[float, float, float]:
+	"""Return L × W × H in inches, filling a 48 × 40 × 48 pallet when any side is missing."""
+	length = float(length or 0)
+	width = float(width or 0)
+	height = float(height or 0)
+	if length <= 0:
+		length = DEFAULT_HANDLING_LENGTH_IN
+	if width <= 0:
+		width = DEFAULT_HANDLING_WIDTH_IN
+	if height <= 0:
+		height = DEFAULT_HANDLING_HEIGHT_IN
+	return length, width, height
+
+
+def apply_default_handling_dimensions(data: dict) -> dict:
+	"""Copy default pallet inches onto the header and each items[] row when L/W/H is omitted."""
+	items = data.get("items") or []
+	for item in items:
+		if not isinstance(item, dict):
+			continue
+		length, width, height = default_handling_dimensions(
+			item.get("length"), item.get("width"), item.get("height")
+		)
+		item["length"] = length
+		item["width"] = width
+		item["height"] = height
+	length, width, height = default_handling_dimensions(
+		data.get("length"), data.get("width"), data.get("height")
+	)
+	data["length"] = length
+	data["width"] = width
+	data["height"] = height
+	return data
+
+
 def apply_line_item_freight_class(item: dict, idx: int, fallback: str = "") -> str:
 	"""Normalize class keys on a line item dict, or throw if the row has no class."""
-	clean_class = line_item_freight_class(item, fallback)
+	raw_class = line_item_freight_class(item, fallback)
+	clean_class = freight_class_lookup_key(raw_class) or raw_class
 	if not clean_class:
 		frappe.throw(f"Missing Freight Class for Row #{idx}", frappe.ValidationError)
 	item["freight_class"] = clean_class
@@ -202,6 +298,8 @@ def _expand_items_payload(data: dict) -> None:
 	if not data.get("pieces"):
 		data["pieces"] = sum(max(int(item.get("qty") or item.get("quantity") or 1), 1) for item in normalized)
 
+	apply_default_handling_dimensions(data)
+
 
 def _validate_required(data: dict) -> None:
 	required = ("origin_zip", "destination_zip", "freight_class")
@@ -235,6 +333,7 @@ def _normalize_fields(data: dict) -> dict:
 	items = data.get("items")
 	if isinstance(items, list):
 		data["items"] = [item for item in items if isinstance(item, dict)]
+	apply_default_handling_dimensions(data)
 	for field in ("origin_city", "origin_state", "destination_city", "destination_state"):
 		if data.get(field):
 			data[field] = str(data[field]).strip()

@@ -7,11 +7,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import frappe
 from frappe.utils import add_days, getdate, now_datetime
 
-from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
+from ltl_quote.api.payload import apply_default_handling_dimensions, freight_class_lookup_key, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
-from ltl_quote.carrier_network.smc3_token import is_auth_error_text
+from ltl_quote.carrier_network.smc3_token import should_hide_auth_error
 from ltl_quote.decision_engine.recommender import DecisionEngine
 from ltl_quote.utils.currency import get_quote_currency
 
@@ -74,7 +74,10 @@ class RateAggregator:
 									}
 								)
 							elif quote.error:
-								if is_auth_error_text(quote.error):
+								if should_hide_auth_error(
+									quote.carrier_name or carrier.carrier_name or carrier.name,
+									quote.error,
+								):
 									continue
 								errors.append(
 									{
@@ -92,10 +95,15 @@ class RateAggregator:
 							else:
 								quotes.append(quote)
 					except Exception as e:
+						item_class = freight_class_lookup_key(getattr(request, "freight_class", None))
+						frappe.logger().error(
+							f"Carrier {carrier.carrier_name} failed rating for class {item_class}: {e}"
+						)
 						frappe.log_error(title=f"LTL Rate Error: {carrier.carrier_code}")
-						if is_auth_error_text(e):
+						if should_hide_auth_error(carrier.carrier_name or carrier.name, e):
 							continue
 						errors.append({"carrier": carrier.carrier_name, "error": str(e)})
+						continue
 			except TimeoutError:
 				for future, carrier in futures.items():
 					if not future.done():
@@ -169,18 +177,34 @@ class RateAggregator:
 				"dimension_unit": getattr(row, "dimension_unit", None) or "IN",
 				"packaging_type": getattr(row, "packaging_units", None) or "",
 			}
-			apply_line_item_freight_class(item, idx, self.doc.freight_class)
+			item_class = freight_class_lookup_key(
+				line_item_freight_class(item, self.doc.freight_class)
+			)
+			if item_class:
+				item["freight_class"] = item_class
+				item["nmfc_class"] = item_class
+				item["classification"] = item_class
+				item["class"] = item_class
+			apply_default_handling_dimensions(item)
 			items.append(item)
 		header_class = line_item_freight_class(items[0] if items else {}, self.doc.freight_class)
 		frappe.logger().info(f"Payload Items: {[item.get('class') for item in items]}")
+		header = apply_default_handling_dimensions(
+			{
+				"length": self.doc.length,
+				"width": self.doc.width,
+				"height": self.doc.height,
+				"items": items,
+			}
+		)
 		return ShipmentRequest(
 			origin_zip=self.doc.origin_zip,
 			destination_zip=self.doc.destination_zip,
 			total_weight=float(str(self.doc.total_weight or 0).replace(",", "")),
 			freight_class=str(header_class or self.doc.freight_class or "").replace(",", ""),
-			length=float(self.doc.length or 0),
-			width=float(self.doc.width or 0),
-			height=float(self.doc.height or 0),
+			length=float(header["length"] or 0),
+			width=float(header["width"] or 0),
+			height=float(header["height"] or 0),
 			pieces=int(float(str(self.doc.pieces or 1).replace(",", ""))),
 			accessorials=build_accessorial_items(self.doc.accessorials),
 			origin_city=self.doc.origin_city or "",
@@ -202,7 +226,14 @@ class RateAggregator:
 
 			carrier = frappe.get_doc("LTL Carrier", carrier_name)
 			adapter = get_adapter(carrier)
-			quote = adapter.get_rates(request)
+			item_class = freight_class_lookup_key(getattr(request, "freight_class", None))
+			try:
+				quote = adapter.get_rates(request)
+			except Exception as e:
+				frappe.logger().error(
+					f"Carrier {carrier_name} failed rating for class {item_class}: {e}"
+				)
+				raise
 			if quote is None:
 				return None
 			items = _as_quote_list(quote)
@@ -219,7 +250,7 @@ class RateAggregator:
 			return items
 		except Exception as e:
 			frappe.log_error(message=str(e), title=f"LTL Rate Error: {carrier_name}")
-			if is_auth_error_text(e):
+			if should_hide_auth_error(carrier_name, e):
 				return None
 
 			carrier_name_label = carrier_name

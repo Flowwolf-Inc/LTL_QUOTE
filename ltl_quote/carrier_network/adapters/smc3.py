@@ -14,7 +14,12 @@ import requests
 from frappe.utils import cint, flt, getdate
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import apply_line_item_freight_class
+from ltl_quote.api.payload import (
+	apply_line_item_freight_class,
+	default_handling_dimensions,
+	freight_class_lookup_key,
+)
+from ltl_quote.carrier_network.accessorials import carrier_accessorial_map
 from ltl_quote.carrier_network.adapters.base import (
 	BaseCarrierAdapter,
 	CarrierRateQuote,
@@ -62,6 +67,12 @@ DEFAULT_DOCUMENT_BASE = "https://document.smc3.com/document/v1/app"
 DEFAULT_MINOR_VERSION = "1.2"
 DEFAULT_WAIT_SECONDS = 30
 MAX_CARRIERS_PER_REQUEST = 35
+
+SMC3_DEFAULT_ACCESSORIALS = {
+	"LIFTGATE": "LFTD",
+	"INSIDE_DELIVERY": "IDL",
+	"HAZMAT": "HAZ",
+}
 
 BOOKING_NOT_SUPPORTED = (
 	"SMC3 tracking and dispatch are not available for this quote yet."
@@ -228,6 +239,7 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			return [], None, None
 
 		if response.status_code not in (200, 207):
+			self._log_rate_call(payload, response, "API Error")
 			return [], self._format_http_error(response), None
 
 		try:
@@ -1043,11 +1055,7 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			now = datetime.utcnow()
 			pickup_date = now.strftime("%Y-%m-%d") if iso else now.strftime("%Y%m%d")
 
-		accessorial_codes = [
-			code
-			for code in (getattr(request, "accessorial_codes", None) or [])
-			if code
-		]
+		accessorial_codes = self._smc3_accessorial_codes(request)
 
 		return build_aggregate_payload(
 			origin={
@@ -1078,6 +1086,23 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			iso_pickup_date=iso,
 		)
 
+	def _smc3_accessorial_codes(self, request: ShipmentRequest) -> list[str]:
+		"""Map platform codes (LIFTGATE) to SMC3 codes (LFTD); never send unmapped aliases."""
+		code_map = carrier_accessorial_map(self.carrier)
+		mapped: list[str] = []
+		seen: set[str] = set()
+		for code in getattr(request, "accessorial_codes", None) or []:
+			internal = str(code or "").strip().upper()
+			if not internal:
+				continue
+			smc3_code = str(
+				code_map.get(internal) or SMC3_DEFAULT_ACCESSORIALS.get(internal) or internal
+			).strip().upper()
+			if smc3_code and smc3_code not in seen:
+				seen.add(smc3_code)
+				mapped.append(smc3_code)
+		return mapped
+
 	def _build_commodities(self, request: ShipmentRequest) -> list[dict]:
 		commodities = []
 		for idx, item in enumerate(request.items or [], start=1):
@@ -1086,29 +1111,35 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			weight = flt(item.get("weight") or 0)
 			if weight <= 0:
 				continue
-			item_class = apply_line_item_freight_class(item, idx, request.freight_class)
+			item_class = _smc3_classification(
+				apply_line_item_freight_class(item, idx, request.freight_class)
+			)
+			length, width, height = _smc3_commodity_dimensions(item, request)
 			commodities.append(
 				{
 					"classification": item_class,
 					"weight": _as_smc3_number(weight),
 					"description": str(item.get("description") or item.get("item_name") or "Freight"),
-					"length": _as_smc3_number(item.get("length") or request.length or 0),
-					"width": _as_smc3_number(item.get("width") or request.width or 0),
-					"height": _as_smc3_number(item.get("height") or request.height or 0),
+					"length": length,
+					"width": width,
+					"height": height,
 					"pieces": _as_smc3_number(item.get("qty") or request.pieces or 1),
 					"packagingType": _packaging_type(item.get("packaging_type")),
 				}
 			)
 		if not commodities:
-			item_class = apply_line_item_freight_class({}, 1, request.freight_class)
+			item_class = _smc3_classification(
+				apply_line_item_freight_class({}, 1, request.freight_class)
+			)
+			length, width, height = _smc3_commodity_dimensions({}, request)
 			commodities = [
 				{
 					"classification": item_class,
 					"weight": _as_smc3_number(request.total_weight or 0),
 					"description": "Freight",
-					"length": _as_smc3_number(request.length or 0),
-					"width": _as_smc3_number(request.width or 0),
-					"height": _as_smc3_number(request.height or 0),
+					"length": length,
+					"width": width,
+					"height": height,
 					"pieces": _as_smc3_number(request.pieces or 1),
 					"packagingType": "PAT",
 				}
@@ -1173,8 +1204,41 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 	def _format_http_error(self, response) -> str:
 		if is_invalid_access_token(response):
 			return AUTH_USER_MESSAGE
+		data = None
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = None
+		if isinstance(data, dict):
+			status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+			message = str(status.get("message") or "").strip()
+			rejected = [
+				str(info.get("message") or "").strip()
+				for info in (status.get("information") or [])
+				if isinstance(info, dict) and str(info.get("type") or "") == "Rejected Value"
+			]
+			if message:
+				extra = f" (rejected {', '.join(rejected)})" if rejected else ""
+				return f"SMC3 HTTP {response.status_code}: {message}{extra}"
 		body = (response.text or "")[:500]
 		return f"SMC3 HTTP {response.status_code}: {body or response.reason}"
+
+	def _log_rate_call(self, payload: dict, response, status: str) -> None:
+		origin = payload.get("origin") if isinstance(payload, dict) else {}
+		dest = payload.get("destination") if isinstance(payload, dict) else {}
+		try:
+			body = response.json() if getattr(response, "content", None) else (response.text or "")
+		except ValueError:
+			body = (response.text or "")[:2000]
+		self._log_apa(
+			getattr(self, "endpoint", "") or "",
+			self.get_headers(),
+			payload,
+			body,
+			status,
+			origin if isinstance(origin, dict) else {},
+			(dest or {}).get("postalCode") if isinstance(dest, dict) else "",
+		)
 
 	def _log(self, title: str, message: str) -> None:
 		frappe.log_error(message=message, title=title)
@@ -1482,6 +1546,31 @@ def cancel_smc3_shipment_bol(shipment_name: str) -> dict:
 		"scac": result.get("scac") or "",
 		"pro_number": result.get("pro_number") or doc.pro_number or "",
 	}
+
+
+def _smc3_classification(value) -> str:
+	"""SMC3 aggregate expects '70' / '85', never zero-padded '070' / '085'."""
+	key = freight_class_lookup_key(value)
+	if not key:
+		return ""
+	if key.isdigit():
+		return str(int(key))
+	return key
+
+
+def _smc3_commodity_dimensions(item: dict, request: ShipmentRequest) -> tuple[str, str, str]:
+	"""Never send length/width/height 0 — SMC3 rejects `Invalid Commodity Length`."""
+	row = item if isinstance(item, dict) else {}
+	length, width, height = default_handling_dimensions(
+		row.get("length") or getattr(request, "length", 0),
+		row.get("width") or getattr(request, "width", 0),
+		row.get("height") or getattr(request, "height", 0),
+	)
+	return (
+		_as_smc3_number(length),
+		_as_smc3_number(width),
+		_as_smc3_number(height),
+	)
 
 
 def _as_smc3_number(value) -> str:

@@ -12,12 +12,16 @@ import frappe
 from frappe.utils import cint, flt, now_datetime
 
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
-from ltl_quote.api.payload import line_item_freight_class, parse_rating_payload
+from ltl_quote.api.payload import apply_default_handling_dimensions, default_handling_dimensions, line_item_freight_class, parse_rating_payload
 from ltl_quote.carrier_network.accessorials import build_accessorial_items_from_payload
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest
 from ltl_quote.decision_engine.recommender import rank_quotes
 from ltl_quote.carrier_network.registry import get_adapter
-from ltl_quote.carrier_network.smc3_token import is_auth_error_text
+from ltl_quote.carrier_network.smc3_token import (
+	TFORCE_AUTH_USER_MESSAGE,
+	is_auth_error_text,
+	is_tforce_connector_text,
+)
 from ltl_quote.rate_engine.aggregator import RateAggregator
 from ltl_quote.utils.booking import resolve_shipper_context, resolve_shipment_bol_image_url, resolve_shipment_bol_url
 from ltl_quote.utils.currency import get_quote_currency
@@ -90,14 +94,7 @@ def get_ltl_rates(payload=None, **kwargs):
 		aggregation = aggregator.aggregate(timeout=request.get("timeout") or None)
 		ranked_quotes = rank_quotes(aggregation.get("raw_quotes") or [])
 
-		errors = aggregation.get("errors") or []
-		if errors and not isinstance(errors[0], dict):
-			errors = [{"carrier": "unknown", "error": err} for err in errors]
-		errors = [
-			err
-			for err in errors
-			if not is_auth_error_text(err.get("error") if isinstance(err, dict) else err)
-		]
+		errors = _public_rate_errors(aggregation.get("errors") or [])
 
 		_enrich_ranked_quotes_from_doc(quote_request, ranked_quotes)
 
@@ -162,6 +159,8 @@ def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 			[{"code": code} for code in codes] if codes else []
 		)
 
+	apply_default_handling_dimensions(request)
+	items = [item for item in (request.get("items") or []) if isinstance(item, dict)]
 	return ShipmentRequest(
 		origin_zip=request["origin_zip"],
 		origin_city=request.get("origin_city") or "",
@@ -176,10 +175,34 @@ def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 		height=float(request.get("height") or 0),
 		pieces=int(request.get("pieces") or 1),
 		accessorials=accessorials,
-		items=[item for item in (request.get("items") or []) if isinstance(item, dict)],
+		items=items,
 		payment_terms=str(request.get("payment_terms") or request.get("terms") or "Prepaid"),
 		payment_payer=str(request.get("payment_payer") or request.get("payer") or "Shipper"),
 	)
+
+
+def _public_rate_errors(errors: list) -> list[dict]:
+	"""Keep TForce auth failures visible; hide other connectors' credential noise."""
+	if errors and not isinstance(errors[0], dict):
+		errors = [{"carrier": "unknown", "error": err} for err in errors]
+	visible = []
+	for err in errors:
+		if not isinstance(err, dict):
+			err = {"carrier": "unknown", "error": str(err)}
+		carrier = err.get("carrier") or ""
+		message = err.get("error") or ""
+		if is_auth_error_text(message) and not is_tforce_connector_text(carrier, message):
+			continue
+		if is_auth_error_text(message) and is_tforce_connector_text(carrier, message):
+			visible.append(
+				{
+					**err,
+					"error": TFORCE_AUTH_USER_MESSAGE,
+				}
+			)
+			continue
+		visible.append(err)
+	return visible
 
 
 def _create_quote_request(request: dict):
@@ -247,6 +270,9 @@ def _map_request_line_items(items: list) -> list[dict]:
 		hazmat_raw = item.get("hazmat")
 		if hazmat_raw in (None, ""):
 			hazmat_raw = item.get("hazardous")
+		length, width, height = default_handling_dimensions(
+			item.get("length"), item.get("width"), item.get("height")
+		)
 		rows.append(
 			{
 				"item_number": item.get("item_number") or "",
@@ -263,9 +289,9 @@ def _map_request_line_items(items: list) -> list[dict]:
 				"hazmat": 1 if hazmat_raw in (True, 1, "1", "true", "True", "yes", "Y") else 0,
 				"weight": flt(item.get("weight") or 0) or None,
 				"weight_unit": item.get("weight_unit") or item.get("weight_units") or "LBS",
-				"length": flt(item.get("length") or 0) or None,
-				"width": flt(item.get("width") or 0) or None,
-				"height": flt(item.get("height") or 0) or None,
+				"length": length,
+				"width": width,
+				"height": height,
 				"dimension_unit": item.get("dimension_unit") or item.get("dimension_units") or "IN",
 				"volume": flt(item.get("volume") or 0) or None,
 				"volume_units": item.get("volume_units") or "",
@@ -488,6 +514,10 @@ def _upsert_quote_request_line_items(doc, items) -> None:
 	first = mapped[0]
 	if first.get("freight_class"):
 		doc.freight_class = first["freight_class"]
+	if first.get("length") and first.get("width") and first.get("height"):
+		doc.length = first["length"]
+		doc.width = first["width"]
+		doc.height = first["height"]
 	weights = [flt(r.get("weight") or 0) * max(cint(r.get("quantity") or 1), 1) for r in mapped]
 	total_weight = sum(weights)
 	if total_weight > 0:

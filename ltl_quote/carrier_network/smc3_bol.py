@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from frappe.utils import cint, flt
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import default_handling_dimensions, freight_class_lookup_key, line_item_freight_class
 
 DEFAULT_BOL_BASE = "https://bill-of-lading.smc3.com/bill-of-lading/v1/app"
 DEFAULT_BOL_VERSION = "2.1.0"
@@ -231,15 +231,27 @@ def _handling_unit(item: dict, quote_data: dict) -> dict:
 	weight = max(flt(item.get("weight") or quote_data.get("total_weight") or 1), 1)
 	pieces = max(cint(item.get("qty") or item.get("quantity") or item.get("pieces") or 1), 1)
 	count = max(cint(item.get("packaging_unit_count") or pieces), 1)
-	classification = line_item_freight_class(item, quote_data.get("freight_class") or "70") or "70"
+	key = freight_class_lookup_key(
+		line_item_freight_class(item, quote_data.get("freight_class") or "70") or "70"
+	) or "70"
+	classification = str(int(key)) if key.isdigit() else key
 	description = str(
 		item.get("description") or item.get("item_name") or quote_data.get("commodity_description") or "Freight"
 	).strip() or "Freight"
+	length, width, height = default_handling_dimensions(
+		item.get("length") or quote_data.get("length"),
+		item.get("width") or quote_data.get("width"),
+		item.get("height") or quote_data.get("height"),
+	)
 	return {
 		"count": count,
 		"type": _handling_type(item.get("packaging_units") or item.get("units") or "SKD"),
 		"weight": _as_number(weight),
 		"weightUnit": "Pounds",
+		"length": _as_number(length),
+		"width": _as_number(width),
+		"height": _as_number(height),
+		"dimensionsUnit": "IN",
 		"lineItems": [
 			{
 				"description": description,
@@ -326,6 +338,9 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 					"packaging_unit_count": getattr(row, "packaging_unit_count", None),
 					"units": getattr(row, "units", None) or "BOX",
 					"hazmat": getattr(row, "hazmat", None),
+					"length": getattr(row, "length", None),
+					"width": getattr(row, "width", None),
+					"height": getattr(row, "height", None),
 				}
 			)
 	return {
@@ -360,6 +375,9 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 		"total_weight": getattr(qr, "total_weight", None) if qr else getattr(shipment, "bol_grand_total_weight", None),
 		"pieces": getattr(qr, "pieces", None) if qr else getattr(shipment, "bol_total_quantity", None),
 		"freight_class": getattr(qr, "freight_class", None) if qr else None,
+		"length": getattr(qr, "length", None) if qr else None,
+		"width": getattr(qr, "width", None) if qr else None,
+		"height": getattr(qr, "height", None) if qr else None,
 		"commodity_description": (items[0].get("description") if items else "") or "Freight",
 		"items": items,
 		"payment_terms": getattr(shipment, "bol_payment_terms", None) or "Prepaid",
