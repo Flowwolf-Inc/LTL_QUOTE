@@ -6,7 +6,6 @@ import frappe
 
 def refresh_active_shipment_tracking():
 	"""Scheduled job: poll carrier APIs for in-transit shipments."""
-	from ltl_quote.carrier_network.registry import get_adapter
 	from ltl_quote.visibility.tracker import ShipmentTracker
 
 	active = frappe.get_all(
@@ -24,3 +23,10 @@ def refresh_active_shipment_tracking():
 				ShipmentTracker(shipment).refresh()
 		except Exception:
 			frappe.log_error(title=f"LTL Tracking poll failed: {name}")
+
+
+def sync_all_active_shipments():
+	"""Hourly Dayton tracking poll — import dayton only when the job runs."""
+	from ltl_quote.carrier_network.adapters.dayton import sync_all_active_shipments as _run
+
+	return _run()

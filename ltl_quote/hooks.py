@@ -165,8 +165,8 @@ scheduler_events = {
 	"hourly": [
 		# Generic tasks ignore Dayton shipments to prevent double-polling API consumption.
 		"ltl_quote.tasks.refresh_active_shipment_tracking",
-		# Targeted Dayton tracking extraction.
-		"ltl_quote.carrier_network.adapters.dayton.sync_all_active_shipments",
+		# Targeted Dayton tracking extraction (kept off dayton.py to avoid import cycles).
+		"ltl_quote.tasks.sync_all_active_shipments",
 	],
 }
 

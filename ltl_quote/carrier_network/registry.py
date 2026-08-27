@@ -1,22 +1,32 @@
 # Copyright (c) 2026, LTL Quote and contributors
 # For license information, please see license.txt
 
+from __future__ import annotations
+
+import importlib
+
 import frappe
 
 from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter
-from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
-from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
-from ltl_quote.carrier_network.adapters.mock import MockCarrierAdapter
-from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
-from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
 
-CONNECTOR_MAP: dict[str, type[BaseCarrierAdapter]] = {
-	"Mock": MockCarrierAdapter,
-	"Dayton": DaytonCarrierAdapter,
-	"ArcBest API": ArcBestCarrierAdapter,
-	"TForce": TForceCarrierAdapter,
-	"SMC3": SMC3CarrierAdapter,
+# Lazy module paths — never import adapter modules at registry import time.
+# (hooks/migrate loading dayton.py while registry imports DaytonCarrierAdapter is a cycle.)
+CONNECTOR_MAP: dict[str, tuple[str, str]] = {
+	"Mock": ("ltl_quote.carrier_network.adapters.mock", "MockCarrierAdapter"),
+	"Dayton": ("ltl_quote.carrier_network.adapters.dayton", "DaytonCarrierAdapter"),
+	"ArcBest API": ("ltl_quote.carrier_network.adapters.arcbest", "ArcBestCarrierAdapter"),
+	"TForce": ("ltl_quote.carrier_network.adapters.tforce", "TForceCarrierAdapter"),
+	"SMC3": ("ltl_quote.carrier_network.adapters.smc3", "SMC3CarrierAdapter"),
 }
+
+
+def _load_adapter_cls(connector: str) -> type[BaseCarrierAdapter] | None:
+	spec = CONNECTOR_MAP.get(connector)
+	if not spec:
+		return None
+	module_path, class_name = spec
+	module = importlib.import_module(module_path)
+	return getattr(module, class_name)
 
 
 def get_adapter(carrier_doc) -> BaseCarrierAdapter:
@@ -26,7 +36,7 @@ def get_adapter(carrier_doc) -> BaseCarrierAdapter:
 			carrier_doc = frappe.get_doc("LTL Carrier", carrier_name)
 
 	connector = (carrier_doc.connector_type or "Mock").strip()
-	adapter_cls = CONNECTOR_MAP.get(connector)
+	adapter_cls = _load_adapter_cls(connector)
 
 	if not adapter_cls:
 		frappe.log_error(
@@ -37,7 +47,7 @@ def get_adapter(carrier_doc) -> BaseCarrierAdapter:
 			),
 			title="LTL Carrier Registry Mismatch",
 		)
-		adapter_cls = MockCarrierAdapter
+		adapter_cls = _load_adapter_cls("Mock")
 
 	return adapter_cls(carrier_doc)
 
