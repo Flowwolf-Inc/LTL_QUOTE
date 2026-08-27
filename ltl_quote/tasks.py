@@ -3,11 +3,12 @@
 
 import frappe
 
-from ltl_quote.visibility.tracker import ShipmentTracker
-
 
 def refresh_active_shipment_tracking():
 	"""Scheduled job: poll carrier APIs for in-transit shipments."""
+	from ltl_quote.carrier_network.registry import get_adapter
+	from ltl_quote.visibility.tracker import ShipmentTracker
+
 	active = frappe.get_all(
 		"LTL Shipment",
 		filters={
