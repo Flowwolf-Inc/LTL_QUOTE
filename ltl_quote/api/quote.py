@@ -13,6 +13,7 @@ from frappe.utils import cint, flt, now_datetime
 
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
 from ltl_quote.api.payload import apply_default_handling_dimensions, default_handling_dimensions, line_item_freight_class, parse_rating_payload
+from ltl_quote.api.shipping import ensure_shipping_class
 from ltl_quote.carrier_network.accessorials import build_accessorial_items_from_payload
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest
 from ltl_quote.decision_engine.recommender import rank_quotes
@@ -207,6 +208,10 @@ def _public_rate_errors(errors: list) -> list[dict]:
 
 def _create_quote_request(request: dict):
 	line_items = _map_request_line_items(request.get("items") or [])
+	header_class = ensure_shipping_class(request.get("freight_class") or "")
+	for row in line_items:
+		if row.get("freight_class"):
+			row["freight_class"] = ensure_shipping_class(row["freight_class"])
 	doc = frappe.get_doc(
 		{
 			"doctype": "LTL Quote Request",
@@ -234,7 +239,7 @@ def _create_quote_request(request: dict):
 			or "",
 			"destination_contact_email": request.get("destination_contact_email") or "",
 			"total_weight": request["total_weight"],
-			"freight_class": request["freight_class"],
+			"freight_class": header_class or request["freight_class"],
 			"length": request.get("length") or 0,
 			"width": request.get("width") or 0,
 			"height": request.get("height") or 0,

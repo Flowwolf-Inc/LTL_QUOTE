@@ -178,7 +178,7 @@ class ShipmentExecutor:
 					"rate": getattr(row, "rate", None),
 					"freight_class": freight_class,
 					"classification": freight_class,
-					"nmfc_class": freight_class,
+					"nmfc_class": getattr(row, "nmfc_class", None) or "",
 					"nmfc": nmfc,
 					"nmfc_number": nmfc,
 					"hazmat": 1 if getattr(row, "hazmat", None) else 0,

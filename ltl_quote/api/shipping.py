@@ -53,6 +53,44 @@ def _normalize_class_code(value) -> str | None:
 	return text or None
 
 
+def ensure_shipping_class(code) -> str:
+	"""Return a Dayton Shipping Class name, seeding the row if the catalog is missing it.
+
+	LTL Quote Request.freight_class is a Link. Rating APIs must not fail when the
+	sandbox/site never synced Dayton classes, or when the stored name is 70.0 vs 70.
+	"""
+	normalized = _normalize_class_code(code) or str(code or "").strip()
+	if not normalized:
+		return str(code or "")
+
+	if not frappe.db.count("Dayton Shipping Class"):
+		for default_code in DEFAULT_SHIPPING_CLASSES:
+			if frappe.db.exists("Dayton Shipping Class", default_code):
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "Dayton Shipping Class",
+					"class_code": default_code,
+					"description": f"Freight Class {default_code}",
+				}
+			).insert(ignore_permissions=True)
+
+	for candidate in (normalized, f"{normalized}.0"):
+		existing = frappe.db.exists("Dayton Shipping Class", candidate)
+		if existing:
+			return existing
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "Dayton Shipping Class",
+			"class_code": normalized,
+			"description": f"Freight Class {normalized}",
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
 @frappe.whitelist(allow_guest=False)
 def sync_packaging_types():
 	"""

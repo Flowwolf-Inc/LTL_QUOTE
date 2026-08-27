@@ -1711,7 +1711,7 @@ def _item_as_dict(item) -> dict:
 		"item_name": getattr(item, "item_name", None) or "",
 		"item_number": getattr(item, "item_number", None) or "",
 		"freight_class": getattr(item, "freight_class", None) or "",
-		"nmfc_class": getattr(item, "nmfc_class", None) or getattr(item, "freight_class", None) or "",
+		"nmfc_class": getattr(item, "nmfc_class", None) or "",
 		"classification": getattr(item, "freight_class", None) or "",
 		"nmfc": getattr(item, "nmfc", None) or "",
 		"nmfc_number": getattr(item, "nmfc", None) or "",

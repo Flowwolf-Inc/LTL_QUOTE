@@ -1203,8 +1203,8 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 
 		commodity = self._commodity_from_item(
 			{
-				"nmfc_class": request.freight_class,
 				"classification": request.freight_class,
+				"freight_class": request.freight_class,
 				"qty": request.pieces,
 				"weight": request.total_weight,
 				"length": request.length,

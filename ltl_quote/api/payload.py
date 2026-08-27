@@ -234,16 +234,43 @@ def apply_default_handling_dimensions(data: dict) -> dict:
 
 
 def apply_line_item_freight_class(item: dict, idx: int, fallback: str = "") -> str:
-	"""Normalize class keys on a line item dict, or throw if the row has no class."""
+	"""Normalize class keys on a line item dict, or throw if the row has no class.
+
+	``nmfc_class`` / ``nmfc`` are NMFC catalog item numbers (e.g. 151100, 103300-2),
+	not freight class. Carriers look those up in the NMFC catalog and reject "70".
+	"""
 	raw_class = line_item_freight_class(item, fallback)
 	clean_class = freight_class_lookup_key(raw_class) or raw_class
 	if not clean_class:
 		frappe.throw(f"Missing Freight Class for Row #{idx}", frappe.ValidationError)
+
 	item["freight_class"] = clean_class
-	item["nmfc_class"] = clean_class
 	item["classification"] = clean_class
 	item["class"] = clean_class
+
+	# Do not set nmfc_class = clean_class. Blank it unless it is a real catalog code.
+	nmfc_class = str(item.get("nmfc_class") or "").strip()
+	item["nmfc_class"] = nmfc_class if is_nmfc_catalog_code(nmfc_class) else ""
+
+	nmfc = str(item.get("nmfc") or item.get("nmfc_number") or "").strip()
+	if nmfc and not is_nmfc_catalog_code(nmfc):
+		item["nmfc"] = ""
+		if "nmfc_number" in item:
+			item["nmfc_number"] = ""
+
 	return clean_class
+
+
+def is_nmfc_catalog_code(value) -> bool:
+	"""True for catalog numbers like 151100 or 103300-2, not freight class 70/85."""
+	text = str(value or "").strip()
+	if not text:
+		return False
+	key = freight_class_lookup_key(text)
+	if key and key in STANDARD_FREIGHT_CLASSES:
+		return False
+	digits = "".join(ch for ch in text if ch.isdigit())
+	return len(digits) >= 4
 
 
 def _expand_items_payload(data: dict) -> None:

@@ -7,7 +7,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import frappe
 from frappe.utils import add_days, getdate, now_datetime
 
-from ltl_quote.api.payload import apply_default_handling_dimensions, freight_class_lookup_key, line_item_freight_class
+from ltl_quote.api.payload import (
+	apply_default_handling_dimensions,
+	apply_line_item_freight_class,
+	freight_class_lookup_key,
+	line_item_freight_class,
+)
 from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
@@ -177,14 +182,7 @@ class RateAggregator:
 				"dimension_unit": getattr(row, "dimension_unit", None) or "IN",
 				"packaging_type": getattr(row, "packaging_units", None) or "",
 			}
-			item_class = freight_class_lookup_key(
-				line_item_freight_class(item, self.doc.freight_class)
-			)
-			if item_class:
-				item["freight_class"] = item_class
-				item["nmfc_class"] = item_class
-				item["classification"] = item_class
-				item["class"] = item_class
+			apply_line_item_freight_class(item, idx, self.doc.freight_class)
 			apply_default_handling_dimensions(item)
 			items.append(item)
 		header_class = line_item_freight_class(items[0] if items else {}, self.doc.freight_class)
