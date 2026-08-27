@@ -81,7 +81,7 @@ class ShipmentExecutor:
 			"destination_state": destination_state,
 			"quote_request": self.quote_request.name,
 			"freight_class": line_item_freight_class(
-				(getattr(self.quote_request, "line_items", None) or [None])[0],
+				next(iter(getattr(self.quote_request, "line_items", None) or []), {}),
 				self.quote_request.freight_class,
 			)
 			or self.quote_request.freight_class,

@@ -125,7 +125,7 @@ def line_item_freight_class(row, fallback: str = "") -> str:
 		data.get("nmfc_class"),
 		data.get("freight_class"),
 		data.get("classification"),
-		data.get("class") if isinstance(row, dict) else None,
+		data.get("class") if isinstance(row, dict) and not callable(data.get("class")) else None,
 		fallback,
 	)
 	for value in candidates:
