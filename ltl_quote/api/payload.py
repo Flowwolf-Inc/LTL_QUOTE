@@ -111,28 +111,43 @@ def _clean_freight_class(value) -> str:
 	return text
 
 
-def line_item_freight_class(row, fallback: str = "") -> str:
-	"""NMFC class from a UI line item. Prefers `nmfc_class` over header defaults like 70."""
+def _item_class_raw(row):
+	"""Return the first freight-class value from frontend/API key variants."""
 	if isinstance(row, dict):
-		data = row
-	else:
-		data = {
-			"nmfc_class": getattr(row, "nmfc_class", None),
-			"freight_class": getattr(row, "freight_class", None),
-			"classification": getattr(row, "classification", None),
-		}
-	candidates = (
-		data.get("nmfc_class"),
-		data.get("freight_class"),
-		data.get("classification"),
-		data.get("class") if isinstance(row, dict) and not callable(data.get("class")) else None,
-		fallback,
+		class_val = row.get("class")
+		if callable(class_val):
+			class_val = None
+		return (
+			row.get("classification")
+			or row.get("nmfc_class")
+			or row.get("freight_class")
+			or class_val
+		)
+	return (
+		getattr(row, "classification", None)
+		or getattr(row, "nmfc_class", None)
+		or getattr(row, "freight_class", None)
 	)
-	for value in candidates:
-		cleaned = _clean_freight_class(value)
-		if cleaned:
-			return cleaned
-	return ""
+
+
+def line_item_freight_class(row, fallback: str = "") -> str:
+	"""NMFC class from a UI/API line item, cleaned to a string without trailing .0."""
+	cleaned = _clean_freight_class(_item_class_raw(row))
+	if cleaned:
+		return cleaned
+	return _clean_freight_class(fallback)
+
+
+def apply_line_item_freight_class(item: dict, idx: int, fallback: str = "") -> str:
+	"""Normalize class keys on a line item dict, or throw if the row has no class."""
+	clean_class = line_item_freight_class(item, fallback)
+	if not clean_class:
+		frappe.throw(f"Missing Freight Class for Row #{idx}", frappe.ValidationError)
+	item["freight_class"] = clean_class
+	item["nmfc_class"] = clean_class
+	item["classification"] = clean_class
+	item["class"] = clean_class
+	return clean_class
 
 
 def _expand_items_payload(data: dict) -> None:
@@ -150,16 +165,11 @@ def _expand_items_payload(data: dict) -> None:
 	if not normalized:
 		return
 
-	for item in normalized:
-		item_class = line_item_freight_class(item)
-		if item_class:
-			item["nmfc_class"] = item_class
-			item["freight_class"] = item_class
-			item["classification"] = item_class
-			item["class"] = item_class
+	for idx, item in enumerate(normalized, start=1):
+		apply_line_item_freight_class(item, idx, data.get("freight_class") or "")
 
 	first = normalized[0]
-	item_class = line_item_freight_class(first)
+	item_class = first.get("freight_class") or ""
 	if item_class:
 		data["freight_class"] = item_class
 

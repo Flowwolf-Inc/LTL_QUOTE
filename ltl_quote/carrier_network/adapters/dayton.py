@@ -6,7 +6,7 @@ import requests
 from frappe.utils import add_days, cint, flt, get_datetime, now_datetime, today
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_dayton_bol_accessorials_section,
@@ -91,10 +91,13 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		dayton_accessorials = dayton_rate_accessorials(request.accessorials, self.carrier_doc)
 
 		clean_weight = self._clean_int(request.total_weight)
+		first_item = request.items[0] if request.items and isinstance(request.items[0], dict) else {}
 		clean_class = self._clean_float(
-			line_item_freight_class((request.items or [{}])[0] if request.items else {}, request.freight_class),
-			70,
+			apply_line_item_freight_class(first_item, 1, request.freight_class),
+			0,
 		)
+		if not clean_class:
+			frappe.throw("Missing Freight Class for Row #1", frappe.ValidationError)
 		clean_pieces = self._clean_int(request.pieces, 1)
 		length, width, height = request.first_handling_dimensions()
 
@@ -105,14 +108,17 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			)
 
 		payload_items = []
-		for row in request.items or []:
+		for idx, row in enumerate(request.items or [], start=1):
 			if not isinstance(row, dict):
 				continue
 			row_weight = self._clean_int(row.get("weight") or 0)
 			if row_weight <= 0:
 				continue
 			row_pieces = max(self._clean_int(row.get("qty") or row.get("quantity") or 1, 1), 1)
-			item_class = self._clean_float(line_item_freight_class(row, request.freight_class), 70)
+			item_class = self._clean_float(
+				apply_line_item_freight_class(row, idx, request.freight_class),
+				0,
+			)
 			payload_item = {
 				"weight": row_weight,
 				"class": item_class,

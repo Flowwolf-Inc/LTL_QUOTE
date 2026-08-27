@@ -4,7 +4,7 @@ import frappe
 import requests
 from frappe.utils import cint, flt, getdate, nowdate
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
     arcbest_accessorial_params,
     build_accessorial_items_from_payload,
@@ -585,9 +585,11 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "destination_state": dest_state,
             "destination_country": request.get("destination_country") or "US",
             "total_weight": request.get("total_weight") or first_item.get("weight") or 400,
-            "freight_class": line_item_freight_class(first_item, request.get("freight_class"))
-            or request.get("freight_class")
-            or "70",
+            "freight_class": apply_line_item_freight_class(
+                first_item if isinstance(first_item, dict) else {},
+                1,
+                request.get("freight_class"),
+            ),
             "pieces": request.get("pieces") or request.get("total_qty") or first_item.get("qty") or 1,
             "length": length,
             "width": width,
@@ -621,7 +623,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "ShipDay": f"{ship_date.day:02d}",
             "ShipYear": str(ship_date.year),
         }
-		self._apply_commodity_params(params, fields, request)
+        self._apply_commodity_params(params, fields, request)
         params.update(arcbest_accessorial_params(accessorial_items, self.carrier_doc))
         frappe.logger().info(
             f"Payload Items: {[params.get(key) for key in params if str(key).startswith('Class')]}"
@@ -648,7 +650,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             fallback_length, fallback_width, fallback_height = request.first_handling_dimensions()
 
         rows = []
-        for item in items:
+        for idx, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 continue
             weight = flt(item.get("weight") or 0)
@@ -661,7 +663,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             rows.append(
                 {
                     "weight": weight * pieces if self._weight_is_per_piece(items, fields.get("total_weight")) else weight,
-                    "freight_class": line_item_freight_class(item, fields.get("freight_class")) or "50.0",
+                    "freight_class": apply_line_item_freight_class(item, idx, fields.get("freight_class")),
                     "pieces": pieces,
                     "length": length,
                     "width": width,
@@ -674,10 +676,11 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         if rows:
             return rows
         pieces = max(cint(self._clean_numeric(fields.get("pieces") or 1, 1)), 1)
+        header_class = apply_line_item_freight_class({}, 1, fields.get("freight_class"))
         return [
             {
                 "weight": fields.get("total_weight") or 400,
-                "freight_class": fields.get("freight_class") or "50.0",
+                "freight_class": header_class,
                 "pieces": pieces,
                 "length": fallback_length,
                 "width": fallback_width,

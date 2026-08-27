@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import frappe
 from frappe.utils import add_days, getdate, now_datetime
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
@@ -152,27 +152,25 @@ class RateAggregator:
 
 	def _build_shipment_request(self) -> ShipmentRequest:
 		items = []
-		for row in getattr(self.doc, "line_items", None) or []:
-			item_class = line_item_freight_class(row, self.doc.freight_class)
-			items.append(
-				{
-					"description": getattr(row, "description", None) or getattr(row, "item_name", None) or "",
-					"nmfc_class": item_class,
-					"freight_class": item_class,
-					"classification": item_class,
-					"class": item_class,
-					"nmfc": getattr(row, "nmfc", None) or "",
-					"qty": getattr(row, "quantity", None) or 1,
-					"weight": getattr(row, "weight", None) or 0,
-					"hazmat": 1 if getattr(row, "hazmat", None) else 0,
-					"length": getattr(row, "length", None),
-					"width": getattr(row, "width", None),
-					"height": getattr(row, "height", None),
-					"weight_unit": getattr(row, "weight_unit", None) or "LBS",
-					"dimension_unit": getattr(row, "dimension_unit", None) or "IN",
-					"packaging_type": getattr(row, "packaging_units", None) or "",
-				}
-			)
+		for idx, row in enumerate(getattr(self.doc, "line_items", None) or [], start=1):
+			item = {
+				"description": getattr(row, "description", None) or getattr(row, "item_name", None) or "",
+				"classification": getattr(row, "classification", None),
+				"nmfc_class": getattr(row, "nmfc_class", None),
+				"freight_class": getattr(row, "freight_class", None),
+				"nmfc": getattr(row, "nmfc", None) or "",
+				"qty": getattr(row, "quantity", None) or 1,
+				"weight": getattr(row, "weight", None) or 0,
+				"hazmat": 1 if getattr(row, "hazmat", None) else 0,
+				"length": getattr(row, "length", None),
+				"width": getattr(row, "width", None),
+				"height": getattr(row, "height", None),
+				"weight_unit": getattr(row, "weight_unit", None) or "LBS",
+				"dimension_unit": getattr(row, "dimension_unit", None) or "IN",
+				"packaging_type": getattr(row, "packaging_units", None) or "",
+			}
+			apply_line_item_freight_class(item, idx, self.doc.freight_class)
+			items.append(item)
 		header_class = line_item_freight_class(items[0] if items else {}, self.doc.freight_class)
 		frappe.logger().info(f"Payload Items: {[item.get('class') for item in items]}")
 		return ShipmentRequest(

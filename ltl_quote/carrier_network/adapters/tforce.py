@@ -15,7 +15,7 @@ import requests
 from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class, line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_accessorial_items_from_payload,
@@ -1180,8 +1180,9 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		hazmat_default = "HAZMAT" in (request.accessorial_codes or [])
 		commodities: list[dict] = []
 		if isinstance(items, list) and items:
-			for item in items:
+			for idx, item in enumerate(items, start=1):
 				if isinstance(item, dict):
+					apply_line_item_freight_class(item, idx, request.freight_class)
 					commodities.append(self._commodity_from_item(item, hazmat_default))
 		if commodities:
 			frappe.logger().info(f"Payload Items: {[item.get('class') for item in commodities]}")
@@ -1223,7 +1224,9 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 
 		weight_val = flt(item.get("weight") or 0)
 		pieces = max(cint(item.get("pieces") or item.get("qty") or item.get("quantity") or 1), 1)
-		freight_class = line_item_freight_class(item, "70") or "70"
+		freight_class = line_item_freight_class(item)
+		if not freight_class:
+			frappe.throw("Missing Freight Class for Row #1", frappe.ValidationError)
 		hazmat = bool(
 			item.get("dangerousGoods")
 			if item.get("dangerousGoods") is not None

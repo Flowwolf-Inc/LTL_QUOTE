@@ -14,7 +14,7 @@ import requests
 from frappe.utils import cint, flt, getdate
 from frappe.utils.file_manager import save_file
 
-from ltl_quote.api.payload import line_item_freight_class
+from ltl_quote.api.payload import apply_line_item_freight_class
 from ltl_quote.carrier_network.adapters.base import (
 	BaseCarrierAdapter,
 	CarrierRateQuote,
@@ -1080,13 +1080,13 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 
 	def _build_commodities(self, request: ShipmentRequest) -> list[dict]:
 		commodities = []
-		for item in request.items or []:
+		for idx, item in enumerate(request.items or [], start=1):
 			if not isinstance(item, dict):
 				continue
 			weight = flt(item.get("weight") or 0)
 			if weight <= 0:
 				continue
-			item_class = line_item_freight_class(item, request.freight_class)
+			item_class = apply_line_item_freight_class(item, idx, request.freight_class)
 			commodities.append(
 				{
 					"classification": item_class,
@@ -1100,7 +1100,7 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 				}
 			)
 		if not commodities:
-			item_class = str(request.freight_class or "")
+			item_class = apply_line_item_freight_class({}, 1, request.freight_class)
 			commodities = [
 				{
 					"classification": item_class,
