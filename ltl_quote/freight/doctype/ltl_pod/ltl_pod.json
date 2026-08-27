@@ -1,0 +1,146 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-08-12 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "source",
+  "column_break_status",
+  "shipment",
+  "carrier",
+  "carrier_name",
+  "references_section",
+  "bol_number",
+  "pro_number",
+  "column_break_refs",
+  "external_reference",
+  "documents_section",
+  "pod_document",
+  "carrier_invoice",
+  "notes"
+ ],
+ "fields": [
+  {
+   "default": "LTL-POD-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "LTL-POD-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nPOD Received"
+  },
+  {
+   "default": "Manual",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Manual\nCarrier"
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipment",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Shipment",
+   "options": "LTL Shipment"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Link",
+   "label": "Carrier",
+   "options": "LTL Carrier"
+  },
+  {
+   "fetch_from": "carrier.carrier_name",
+   "fieldname": "carrier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Carrier Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "references_section",
+   "fieldtype": "Section Break",
+   "label": "References"
+  },
+  {
+   "fieldname": "bol_number",
+   "fieldtype": "Data",
+   "label": "BOL Number"
+  },
+  {
+   "fieldname": "pro_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "PRO / Tracking Number"
+  },
+  {
+   "fieldname": "column_break_refs",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "external_reference",
+   "fieldtype": "Data",
+   "label": "External Reference"
+  },
+  {
+   "fieldname": "documents_section",
+   "fieldtype": "Section Break",
+   "label": "Documents"
+  },
+  {
+   "fieldname": "pod_document",
+   "fieldtype": "Attach",
+   "label": "POD Document"
+  },
+  {
+   "fieldname": "carrier_invoice",
+   "fieldtype": "Attach",
+   "label": "Carrier Invoice"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-25 19:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL POD",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -20,6 +20,7 @@ def after_install():
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
 	_ensure_tforce_carrier()
+	_ensure_smc3_carrier()
 	_seed_carrier_accessorials()
 	_disable_mock_carriers()
 	_migrate_quote_currency()
@@ -30,6 +31,7 @@ def after_migrate():
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
 	_ensure_tforce_carrier()
+	_ensure_smc3_carrier()
 	_seed_carrier_accessorials()
 	_migrate_quote_currency()
 	frappe.db.commit()
@@ -171,6 +173,101 @@ def _ensure_tforce_carrier():
 		frappe.get_doc(carrier_data).insert(ignore_permissions=True)
 
 
+def _ensure_smc3_carrier():
+	"""Seed SMC3 Pricing Aggregate connector. Do not overwrite stored credentials."""
+	from ltl_quote.carrier_network.adapters.smc3 import DEFAULT_ENDPOINT, LEGACY_V1_ENDPOINT
+	from ltl_quote.carrier_network.smc3_onboarded import DEFAULT_ENABLED_SCACS
+
+	notes = (
+		'{"minor_version":"1.2","willing_to_wait_seconds":30,"demo_instructions":"PASS",'
+		'"pricing_types":["Contract","Dynamic"],"service_levels":["All"],'
+		'"eva_access_id":"SANDBOX-TEST-01",'
+		'"payment":{"terms":"Prepaid","payer":"Shipper"}}'
+	)
+	if frappe.db.exists("LTL Carrier", "SMC3"):
+		doc = frappe.get_doc("LTL Carrier", "SMC3")
+		doc.carrier_name = "SMC3"
+		doc.enabled = 1
+		doc.connector_type = "SMC3"
+		current_url = (doc.api_base_url or "").strip().rstrip("/")
+		legacy = LEGACY_V1_ENDPOINT.rstrip("/")
+		if not current_url or current_url in {legacy, f"{legacy}/"}:
+			doc.api_base_url = DEFAULT_ENDPOINT
+		doc.api_version = doc.api_version or "v3"
+		doc.auth_type = doc.auth_type or "API Key"
+		if not (doc.notes or "").strip():
+			doc.notes = notes
+		_seed_smc3_network_carriers(doc)
+		doc.save(ignore_permissions=True)
+		return
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "LTL Carrier",
+			"carrier_code": "SMC3",
+			"carrier_name": "SMC3",
+			"enabled": 1,
+			"connector_type": "SMC3",
+			"reliability_score": 80,
+			"api_base_url": DEFAULT_ENDPOINT,
+			"api_version": "v3",
+			"auth_type": "API Key",
+			"notes": notes,
+		}
+	)
+	_seed_smc3_network_carriers(doc, enabled_scacs=DEFAULT_ENABLED_SCACS)
+	doc.insert(ignore_permissions=True)
+
+
+def _seed_smc3_network_carriers(doc, enabled_scacs=None):
+	from ltl_quote.carrier_network.smc3_onboarded import (
+		DEFAULT_ENABLED_SCACS,
+		EVA_ONBOARDED_CARRIERS,
+	)
+
+	preferred_labels = {
+		"ODFL": "Old Dominion Freight Line",
+		"SAIA": "Saia LTL Freight",
+		"EXLA": "Estes Express Lines",
+		"DAFG": "Dayton Freight Lines",
+		"ABFS": "ABF Freight",
+		"PYLE": "A. Duie Pyle",
+		"SMCA": "SMC3 Demo Carrier",
+	}
+
+	existing = {
+		str(getattr(row, "scac", "") or "").strip().upper(): row
+		for row in (doc.get("smc3_network_carriers") or [])
+	}
+	on_by_default = enabled_scacs or DEFAULT_ENABLED_SCACS
+	default_eva = "SANDBOX-TEST-01"
+	for carrier in EVA_ONBOARDED_CARRIERS:
+		scac = carrier["scac"]
+		if scac in existing:
+			row = existing[scac]
+			matrix_name = preferred_labels.get(scac) or carrier["name"]
+			current_label = str(getattr(row, "carrier_label", "") or "").strip()
+			if scac in preferred_labels or not current_label or current_label == scac:
+				row.carrier_label = matrix_name
+			if getattr(row, "contract_pricing", None) in (None, ""):
+				row.contract_pricing = 1 if carrier["contract"] else 0
+			if getattr(row, "dynamic_pricing", None) in (None, ""):
+				row.dynamic_pricing = 1 if carrier["dynamic"] else 0
+			continue
+		doc.append(
+			"smc3_network_carriers",
+			{
+				"scac": scac,
+				"carrier_label": carrier["name"],
+				"eva_access_id": default_eva,
+				"account": "1234567890" if scac == "SMCA" else "",
+				"enabled": 1 if scac in on_by_default else 0,
+				"contract_pricing": 1 if carrier["contract"] else 0,
+				"dynamic_pricing": 1 if carrier["dynamic"] else 0,
+			},
+		)
+
+
 def _seed_carrier_accessorials():
 	"""Backfill accessorial mappings for real carriers so rating keeps working.
 
@@ -179,7 +276,7 @@ def _seed_carrier_accessorials():
 	"""
 	from ltl_quote.carrier_network.accessorial_sync import sync_carrier_accessorials
 
-	for carrier_code in ("DAYTON", "ARCB", "TFORCE"):
+	for carrier_code in ("DAYTON", "ARCB", "TFORCE", "SMC3"):
 		if not frappe.db.exists("LTL Carrier", carrier_code):
 			continue
 		carrier_doc = frappe.get_doc("LTL Carrier", carrier_code)

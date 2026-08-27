@@ -10,6 +10,7 @@ from frappe.utils import add_days, getdate, now_datetime
 from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
+from ltl_quote.carrier_network.smc3_token import is_auth_error_text
 from ltl_quote.decision_engine.recommender import DecisionEngine
 from ltl_quote.utils.currency import get_quote_currency
 
@@ -60,27 +61,39 @@ class RateAggregator:
 				for future in completed:
 					carrier = futures[future]
 					try:
-						quote = future.result()
-						if not quote or not hasattr(quote, "total_charge"):
-							errors.append(
-								{
-									"carrier": carrier.carrier_name,
-									"error": "Carrier returned no quote object",
-								}
-							)
-						elif quote.error:
-							errors.append({"carrier": carrier.carrier_name, "error": quote.error})
-						elif quote.total_charge is None:
-							errors.append(
-								{
-									"carrier": carrier.carrier_name,
-									"error": "Carrier quote missing total_charge",
-								}
-							)
-						else:
-							quotes.append(quote)
+						result = future.result()
+						if result is None:
+							continue
+						for quote in _as_quote_list(result):
+							if not quote or not hasattr(quote, "total_charge"):
+								errors.append(
+									{
+										"carrier": carrier.carrier_name,
+										"error": "Carrier returned no quote object",
+									}
+								)
+							elif quote.error:
+								if is_auth_error_text(quote.error):
+									continue
+								errors.append(
+									{
+										"carrier": quote.carrier_name or carrier.carrier_name,
+										"error": quote.error,
+									}
+								)
+							elif quote.total_charge is None:
+								errors.append(
+									{
+										"carrier": quote.carrier_name or carrier.carrier_name,
+										"error": "Carrier quote missing total_charge",
+									}
+								)
+							else:
+								quotes.append(quote)
 					except Exception as e:
 						frappe.log_error(title=f"LTL Rate Error: {carrier.carrier_code}")
+						if is_auth_error_text(e):
+							continue
 						errors.append({"carrier": carrier.carrier_name, "error": str(e)})
 			except TimeoutError:
 				for future, carrier in futures.items():
@@ -171,6 +184,8 @@ class RateAggregator:
 			destination_city=self.doc.destination_city or "",
 			destination_state=self.doc.destination_state or "",
 			items=items,
+			payment_terms=str(getattr(self.doc, "payment_terms", None) or "Prepaid"),
+			payment_payer=str(getattr(self.doc, "payment_payer", None) or "Shipper"),
 		)
 
 	def _fetch_carrier_rate(self, carrier_name: str, request: ShipmentRequest, site: str, user: str):
@@ -184,17 +199,24 @@ class RateAggregator:
 			carrier = frappe.get_doc("LTL Carrier", carrier_name)
 			adapter = get_adapter(carrier)
 			quote = adapter.get_rates(request)
-			if not quote:
-				return CarrierRateQuote(
-					carrier_code=carrier.carrier_code,
-					carrier_name=carrier.carrier_name,
-					total_charge=0,
-					transit_days=0,
-					error="Carrier returned no quote object",
-				)
-			return quote
+			if quote is None:
+				return None
+			items = _as_quote_list(quote)
+			if not items:
+				return [
+					CarrierRateQuote(
+						carrier_code=carrier.carrier_code,
+						carrier_name=carrier.carrier_name,
+						total_charge=0,
+						transit_days=0,
+						error="Carrier returned no quote object",
+					)
+				]
+			return items
 		except Exception as e:
 			frappe.log_error(message=str(e), title=f"LTL Rate Error: {carrier_name}")
+			if is_auth_error_text(e):
+				return None
 
 			carrier_name_label = carrier_name
 			carrier_code = carrier_name
@@ -202,13 +224,15 @@ class RateAggregator:
 				carrier_name_label = frappe.db.get_value("LTL Carrier", carrier_name, "carrier_name")
 				carrier_code = frappe.db.get_value("LTL Carrier", carrier_name, "carrier_code")
 
-			return CarrierRateQuote(
-				carrier_code=carrier_code or carrier_name,
-				carrier_name=carrier_name_label or carrier_name,
-				total_charge=0,
-				transit_days=0,
-				error=str(e),
-			)
+			return [
+				CarrierRateQuote(
+					carrier_code=carrier_code or carrier_name,
+					carrier_name=carrier_name_label or carrier_name,
+					total_charge=0,
+					transit_days=0,
+					error=str(e),
+				)
+			]
 		finally:
 			frappe.destroy()
 
@@ -216,11 +240,13 @@ class RateAggregator:
 		quote_currency = get_quote_currency()
 		self.doc.carrier_quotes = []
 		for q in sorted(quotes, key=lambda x: x.total_charge):
-			est_delivery = add_days(getdate(), q.transit_days) if q.transit_days else None
+			est_delivery = q.estimated_delivery_date or (
+				add_days(getdate(), q.transit_days) if q.transit_days else None
+			)
 			self.doc.append(
 				"carrier_quotes",
 				{
-					"carrier": q.carrier_code,
+					"carrier": q.connector_carrier or q.carrier_code,
 					"carrier_name": q.carrier_name,
 					"carrier_quote_id": q.carrier_quote_id,
 					"status": "Received",
@@ -233,6 +259,8 @@ class RateAggregator:
 					"accessorial_charge": q.accessorial_charge,
 					"reliability_score": q.reliability_score,
 					"service_level": q.service_level,
+					"rate_source": q.rate_source or "",
+					"quoted_scac": q.quoted_scac or "",
 					"accessorial_breakdown": json.dumps(q.accessorial_breakdown) if q.accessorial_breakdown else None,
 					"raw_response": json.dumps(q.raw_response, indent=2) if q.raw_response else None,
 				},
@@ -242,3 +270,11 @@ class RateAggregator:
 		self.doc.recommended_cheapest = recommendations.get("cheapest_label", "")
 		self.doc.recommended_fastest = recommendations.get("fastest_label", "")
 		self.doc.recommended_best_value = recommendations.get("best_value_label", "")
+
+
+def _as_quote_list(result) -> list:
+	if result is None:
+		return []
+	if isinstance(result, list):
+		return [item for item in result if item is not None]
+	return [result]

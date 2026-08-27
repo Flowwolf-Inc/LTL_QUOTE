@@ -17,8 +17,9 @@ from ltl_quote.carrier_network.accessorials import build_accessorial_items_from_
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest
 from ltl_quote.decision_engine.recommender import rank_quotes
 from ltl_quote.carrier_network.registry import get_adapter
+from ltl_quote.carrier_network.smc3_token import is_auth_error_text
 from ltl_quote.rate_engine.aggregator import RateAggregator
-from ltl_quote.utils.booking import resolve_shipper_context, resolve_shipment_bol_url
+from ltl_quote.utils.booking import resolve_shipper_context, resolve_shipment_bol_image_url, resolve_shipment_bol_url
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
@@ -92,6 +93,11 @@ def get_ltl_rates(payload=None, **kwargs):
 		errors = aggregation.get("errors") or []
 		if errors and not isinstance(errors[0], dict):
 			errors = [{"carrier": "unknown", "error": err} for err in errors]
+		errors = [
+			err
+			for err in errors
+			if not is_auth_error_text(err.get("error") if isinstance(err, dict) else err)
+		]
 
 		_enrich_ranked_quotes_from_doc(quote_request, ranked_quotes)
 
@@ -136,7 +142,10 @@ def get_ltl_rates(payload=None, **kwargs):
 	except Exception as e:
 		frappe.log_error(message=frappe.get_traceback(), title="LTL get_ltl_rates API Error")
 		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
-		response_payload = {"status": "error", "error": str(e), "carrier_id": carrier_id}
+		raw = str(e)
+		if is_auth_error_text(raw):
+			raw = "Could not refresh carrier rates. Please try again."
+		response_payload = {"status": "error", "error": raw, "carrier_id": carrier_id}
 	finally:
 		log_carrier_id = carrier_id or ("DAYTON" if "Dayton" in body.get("carrier_preference", "") else "Multi-Carrier")
 		log_api_transaction(headers, body, response_payload, status, log_carrier_id)
@@ -168,6 +177,8 @@ def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 		pieces=int(request.get("pieces") or 1),
 		accessorials=accessorials,
 		items=[item for item in (request.get("items") or []) if isinstance(item, dict)],
+		payment_terms=str(request.get("payment_terms") or request.get("terms") or "Prepaid"),
+		payment_payer=str(request.get("payment_payer") or request.get("payer") or "Shipper"),
 	)
 
 
@@ -333,6 +344,7 @@ def get_quote_booking_context(quote_request_id: str) -> dict:
 	is_booked = bool(shipment) or doc.status == "Booked"
 
 	bol_url = resolve_shipment_bol_url(shipment_name=shipment, quote_request=quote_request_id)
+	bol_image = resolve_shipment_bol_image_url(shipment_name=shipment)
 	booked_carrier = doc.final_carrier or ""
 	if not booked_carrier and shipment:
 		booked_carrier = frappe.db.get_value("LTL Shipment", shipment, "carrier") or ""
@@ -343,6 +355,7 @@ def get_quote_booking_context(quote_request_id: str) -> dict:
 		"shipment": shipment,
 		"booked_carrier": booked_carrier,
 		"bol_url": bol_url,
+		"bol_image": bol_image,
 		"bol_number": doc.bol_number or "",
 	}
 
@@ -374,6 +387,7 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 				"bol_number": doc.bol_number or "",
 				"pro_number": doc.pro_number or "",
 				"bol_document_url": bol_url,
+				"bol_image": resolve_shipment_bol_image_url(shipment_name=shipment_name),
 				"data": {"shipment": shipment_name} if shipment_name else {},
 			}
 
@@ -388,7 +402,7 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 		enrich_location_fields(doc, "origin")
 		enrich_location_fields(doc, "destination")
 
-		automated = carrier_key in ("ARCB", "ARCBEST", "DAYTON", "TFORCE", "MOCK") or str(
+		automated = carrier_key in ("ARCB", "ARCBEST", "DAYTON", "TFORCE", "MOCK", "SMC3") or str(
 			carrier_code
 		).upper() in (
 			"ARCB",
@@ -397,7 +411,8 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 			"TFORCE",
 			"TFF",
 			"MOCK",
-		)
+			"SMC3",
+		) or str(carrier_code or "").upper().startswith("SMC3-")
 		shipment_name = None
 
 		if automated:
@@ -444,6 +459,7 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 			"bol_number": doc.bol_number if getattr(doc, "bol_number", None) else "Pending",
 			"pro_number": doc.pro_number if getattr(doc, "pro_number", None) else "Auto-Assigned",
 			"bol_document_url": bol_url or (doc.bol_document_url if getattr(doc, "bol_document_url", None) else ""),
+			"bol_image": resolve_shipment_bol_image_url(shipment_name=shipment_name),
 		}
 
 	except Exception as e:

@@ -63,6 +63,12 @@ TFORCE_DELIVERY_SEED: dict[str, tuple[str, str]] = {
 	"APPOINTMENT": ("NTFY", "Notify Before Delivery"),
 }
 
+SMC3_DELIVERY_SEED: dict[str, tuple[str, str]] = {
+	"LIFTGATE": ("LFTD", "Lift gate required at delivery"),
+	"INSIDE_DELIVERY": ("IDL", "Inside delivery"),
+	"HAZMAT": ("HAZ", "Hazardous material"),
+}
+
 # keywords used to match a live carrier catalog description to an internal code
 _MATCH_KEYWORDS: dict[str, str] = {
 	"LIFTGATE": "liftgate",
@@ -127,6 +133,18 @@ def sync_carrier_accessorials(carrier_doc, seed_only: bool = False) -> dict:
 			source="Seeded",
 			label="TForce",
 			extra_note="TForce service-option codes seeded from rating/BOL docs (pickup vs delivery).",
+		)
+
+	if connector == "SMC3":
+		desired = {}
+		for internal, (carrier_code, name) in SMC3_DELIVERY_SEED.items():
+			desired[f"{internal}|delivery"] = (carrier_code, name, "delivery")
+		return _apply_map(
+			carrier_doc,
+			desired,
+			source="Seeded",
+			label="SMC3",
+			extra_note="SMC3 accessorial codes seeded from Pricing Aggregate response samples.",
 		)
 
 	return {

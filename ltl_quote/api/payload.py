@@ -137,6 +137,16 @@ def _expand_items_payload(data: dict) -> None:
 			for item in normalized
 		)
 
+	if not data.get("length"):
+		for item in normalized:
+			if item.get("length") and item.get("width") and item.get("height"):
+				data["length"] = item.get("length")
+				data["width"] = item.get("width")
+				data["height"] = item.get("height")
+				if item.get("dimension_unit") or item.get("dimension_units"):
+					data["dimension_uom"] = item.get("dimension_unit") or item.get("dimension_units")
+				break
+
 	if not data.get("pieces"):
 		data["pieces"] = sum(max(int(item.get("qty") or item.get("quantity") or 1), 1) for item in normalized)
 

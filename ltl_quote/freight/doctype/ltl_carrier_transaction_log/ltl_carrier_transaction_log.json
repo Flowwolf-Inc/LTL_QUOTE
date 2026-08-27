@@ -44,7 +44,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Carrier Name",
-   "options": "Dayton Freight\nArcBest\nTForce Freight\nMulti-Carrier\nMock Carriers",
+   "options": "Dayton Freight\nArcBest\nTForce Freight\nSMC3\nMulti-Carrier\nMock Carriers",
    "reqd": 1
   },
   {
@@ -142,7 +142,7 @@
  "is_submittable": 0,
  "istable": 0,
  "links": [],
- "modified": "2026-06-11 10:00:00.000000",
+ "modified": "2026-08-25 18:10:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL Carrier Transaction Log",

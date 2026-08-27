@@ -22,6 +22,7 @@ class ShipmentExecutor:
 		self.is_dayton_carrier = False
 		self.is_arcbest_carrier = False
 		self.is_tforce_carrier = False
+		self.is_smc3_carrier = False
 
 	def book(self, is_test: bool = False) -> dict:
 		"""Orchestrates the platform booking execution path."""
@@ -108,6 +109,7 @@ class ShipmentExecutor:
 			"commodity_description": first_item.get("description") or first_item.get("item_name") or "",
 			"nmfc": first_item.get("nmfc") or "",
 			"is_hazardous": bool(first_item.get("hazmat")),
+			"payment_terms": getattr(self.quote_request, "payment_terms", None) or "Prepaid",
 			"is_test": is_test,
 		}
 
@@ -116,6 +118,11 @@ class ShipmentExecutor:
 		self.is_dayton_carrier = self.carrier_code == "DAYTON" or connector_type == "Dayton"
 		self.is_arcbest_carrier = self.carrier_code in ("ARCB", "ARCBEST") or connector_type == "ArcBest API"
 		self.is_tforce_carrier = self.carrier_code in ("TFORCE", "TFF") or connector_type == "TForce"
+		self.is_smc3_carrier = self.carrier_code == "SMC3" or connector_type == "SMC3"
+
+		self.booking_payload["quoted_scac"] = str(getattr(selected, "quoted_scac", None) or "").strip()
+		self.booking_payload["scac"] = self.booking_payload["quoted_scac"]
+		self.booking_payload["rate_source"] = str(getattr(selected, "rate_source", None) or "").strip()
 
 		booking_result = self.adapter.book_shipment(self.booking_payload)
 		shipment = self._create_shipment(selected, booking_result)
@@ -130,6 +137,7 @@ class ShipmentExecutor:
 			"bol_number": shipment.bol_number,
 			"pro_number": shipment.pro_number,
 			"bol_document_url": shipment.bol_document_url or shipment.bol_document or "",
+			"bol_image": getattr(shipment, "bol_image", None) or "",
 			"dayton_bol_id": getattr(shipment, "dayton_bol_id", None),
 			"tforce_bol_id": getattr(shipment, "tforce_bol_id", None),
 		}
@@ -268,6 +276,30 @@ class ShipmentExecutor:
 			shipment.status = "Booked"
 			shipment.dispatch_status = "Pending"
 			shipment.save(ignore_permissions=True)
+		elif self.is_smc3_carrier:
+			from ltl_quote.carrier_network.adapters.smc3 import (
+				attach_smc3_bol_images_to_shipment,
+				attach_smc3_bol_to_shipment,
+			)
+
+			res = attach_smc3_bol_to_shipment(shipment, bol_result=booking_result)
+			shipment.reload()
+			shipment.bol_number = res.get("bol_number") or shipment.bol_number
+			shipment.pro_number = res.get("pro_number") or shipment.pro_number
+			shipment.status = "Booked"
+			shipment.dispatch_status = "Pending"
+			shipment.save(ignore_permissions=True)
+
+			png_result = {}
+			try:
+				png_result = self.adapter.get_bol_document_image(shipment, raise_on_empty=False)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "LTL Quote - SMC3 BOL PNG Fetch Failure")
+				png_result = {}
+			if png_result.get("images"):
+				img_res = attach_smc3_bol_images_to_shipment(shipment, document_result=png_result)
+				if img_res.get("status") == "success":
+					shipment.reload()
 		elif not shipment.bol_number:
 			# Mock / carriers without a real BOL id still need a placeholder reference.
 			shipment.bol_number = f"BOL-{shipment.name}"
@@ -280,7 +312,8 @@ class ShipmentExecutor:
 		self.quote_request.bol_number = shipment.bol_number or booking_result.get("bol_number")
 		self.quote_request.pro_number = shipment.pro_number or booking_result.get("pro_number")
 		bol_url = (
-			shipment.bol_document_url
+			getattr(shipment, "bol_image", None)
+			or shipment.bol_document_url
 			or shipment.bol_document
 			or booking_result.get("bol_document_url")
 			or ""
@@ -329,6 +362,23 @@ class ShipmentExecutor:
 				text=(
 					f"<b>ArcBest BOL Generated!</b><br>"
 					f"<a href='{bol_url}' target='_blank'>Download PDF</a>"
+				)
+			)
+		elif self.is_smc3_carrier:
+			txn = booking_result.get("carrier_confirmation") or ""
+			self.quote_request.add_comment(
+				text=(
+					f"<b>SMC3 BOL Generated</b><br>"
+					f"PRO #: {self.quote_request.pro_number}<br>"
+					f"BOL #: {self.quote_request.bol_number}"
+					+ (f"<br>Transaction ID: {txn}" if txn else "")
+					+ (
+						f"<br><a href='{bol_url}' target='_blank' "
+						f"class='btn btn-xs btn-primary' style='margin-top: 5px; color: #fff;'>"
+						f"Download BOL PDF</a>"
+						if bol_url
+						else ""
+					)
 				)
 			)
 		elif carrier_label:

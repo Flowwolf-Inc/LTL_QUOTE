@@ -37,6 +37,7 @@ DAYTON_BOL_NOT_READY_MESSAGE = (
 )
 
 MIN_DAYTON_DOCUMENT_BYTES = 100
+DAYTON_MAX_AUTO_RATE_LBS = 12000
 
 
 class DaytonCarrierAdapter(BaseCarrierAdapter):
@@ -91,6 +92,24 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		clean_weight = self._clean_int(request.total_weight)
 		clean_class = self._clean_float(request.freight_class, 70)
 		clean_pieces = self._clean_int(request.pieces, 1)
+		length, width, height = request.first_handling_dimensions()
+
+		if clean_weight > DAYTON_MAX_AUTO_RATE_LBS:
+			return self._rate_error(
+				"Dayton does not auto-rate shipments over 12,000 lbs. "
+				"Contact pricing@daytonfreight.com for a manual quote."
+			)
+
+		item = {
+			"weight": clean_weight,
+			"class": clean_class,
+			"pieces": clean_pieces,
+			"description": "LTL Quote Freight Line",
+		}
+		if length > 0 and width > 0 and height > 0:
+			item["length"] = length
+			item["width"] = width
+			item["height"] = height
 
 		dayton_payload = {
 			"accessorials": dayton_accessorials,
@@ -98,14 +117,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			"destination": str(request.destination_zip),
 			"directOnly": False,
 			"handlingUnits": [],
-			"items": [
-				{
-					"weight": clean_weight,
-					"class": clean_class,
-					"pieces": clean_pieces,
-					"description": "LTL Quote Freight Line",
-				}
-			],
+			"items": [item],
 			"origin": str(request.origin_zip),
 			"serviceOptions": service_option,
 			"shipmentDate": now_datetime().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -124,16 +136,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			)
 
 			if response.status_code != 200:
-				error_details = f"Status Code: {response.status_code} | Response: {response.text}"
-				frappe.msgprint(msg=error_details, title="Dayton API Raw Rejection", indicator="red")
+				error_message = self._format_rate_error(response)
 				frappe.log_error(f"Dayton API Error: {response.text}", "LTL Quote - Dayton Rate Failure")
-				return CarrierRateQuote(
-					carrier_code=self.carrier_code,
-					carrier_name=self.carrier.carrier_name,
-					total_charge=0,
-					transit_days=0,
-					error=f"Dayton API error: {error_details}",
-				)
+				return self._rate_error(error_message)
 
 			data = response.json()
 			parsed = self._parse_rate_response(data)
@@ -165,27 +170,43 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 
 		except (ValueError, TypeError, KeyError) as e:
 			error_details = f"Dayton response parsing error: {e}"
-			frappe.msgprint(msg=error_details, title="Dayton API Parse Failure", indicator="red")
 			frappe.log_error(error_details, "LTL Quote - Dayton Parse Failure")
-			return CarrierRateQuote(
-				carrier_code=self.carrier_code,
-				carrier_name=self.carrier.carrier_name,
-				total_charge=0,
-				transit_days=0,
-				error=error_details,
-			)
+			return self._rate_error(error_details)
 
 		except requests.exceptions.RequestException as e:
-			error_details = f"Connection Error: {e}"
-			frappe.msgprint(msg=error_details, title="Dayton API Connection Failure", indicator="red")
 			frappe.log_error(str(e), "LTL Quote - Dayton Connection Error")
-			return CarrierRateQuote(
-				carrier_code=self.carrier_code,
-				carrier_name=self.carrier.carrier_name,
-				total_charge=0,
-				transit_days=0,
-				error=f"Dayton connection error: {e}",
-			)
+			return self._rate_error(f"Dayton connection error: {e}")
+
+	def _rate_error(self, message: str) -> CarrierRateQuote:
+		return CarrierRateQuote(
+			carrier_code=self.carrier_code,
+			carrier_name=self.carrier.carrier_name,
+			total_charge=0,
+			transit_days=0,
+			error=message,
+		)
+
+	@staticmethod
+	def _format_rate_error(response) -> str:
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = {}
+		errors = data.get("errors") if isinstance(data, dict) else None
+		if isinstance(errors, list) and errors:
+			first = errors[0] if isinstance(errors[0], dict) else {}
+			message = str(first.get("message") or "").strip()
+			if "12000" in message or "pricing@daytonfreight.com" in message.lower():
+				return (
+					"Dayton does not auto-rate shipments over 12,000 lbs. "
+					"Contact pricing@daytonfreight.com for a manual quote."
+				)
+			if message:
+				return message
+		body = (getattr(response, "text", None) or "").strip()
+		if body:
+			return f"Dayton could not return a rate (HTTP {response.status_code})."
+		return f"Dayton API error: HTTP {getattr(response, 'status_code', '')}"
 
 	def generate_bill_of_lading(self, quote_data: dict) -> dict:
 		"""Create a Dayton eBOL from platform quote_data or a pre-built dayton_payload."""

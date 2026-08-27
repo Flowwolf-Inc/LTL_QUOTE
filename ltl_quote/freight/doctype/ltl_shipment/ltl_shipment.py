@@ -50,6 +50,18 @@ class LTLShipment(Document):
 		frappe.throw("Pickup cancellation is only supported for Dayton, TForce, and ArcBest shipments.")
 
 	@frappe.whitelist()
+	def cancel_bol(self):
+		from ltl_quote.carrier_network.adapters.smc3 import cancel_smc3_shipment_bol
+
+		return cancel_smc3_shipment_bol(self.name)
+
+	@frappe.whitelist()
+	def fetch_bol_image(self):
+		from ltl_quote.carrier_network.adapters.smc3 import fetch_smc3_bol_image
+
+		return fetch_smc3_bol_image(self.name)
+
+	@frappe.whitelist()
 	def update_electronic_bol(self):
 		from ltl_quote.carrier_network.adapters.dayton import update_electronic_bol
 

@@ -7,6 +7,7 @@ from ltl_quote.carrier_network.adapters.base import BaseCarrierAdapter
 from ltl_quote.carrier_network.adapters.arcbest import ArcBestCarrierAdapter
 from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
 from ltl_quote.carrier_network.adapters.mock import MockCarrierAdapter
+from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
 from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
 
 CONNECTOR_MAP: dict[str, type[BaseCarrierAdapter]] = {
@@ -14,6 +15,7 @@ CONNECTOR_MAP: dict[str, type[BaseCarrierAdapter]] = {
 	"Dayton": DaytonCarrierAdapter,
 	"ArcBest API": ArcBestCarrierAdapter,
 	"TForce": TForceCarrierAdapter,
+	"SMC3": SMC3CarrierAdapter,
 }
 
 

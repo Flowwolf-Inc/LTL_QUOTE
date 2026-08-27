@@ -21,6 +21,11 @@ DEFAULT_API_ID = "H0TTC3W3"
 BOL_URL = "https://www.abfs.com/xml/bolxml.asp"
 TRACE_URL = "https://www.abfs.com/xml/tracexml.asp"
 SANDBOX_QUOTE_ID = "1234567890"
+ARCBEST_MAX_AUTO_RATE_LBS = 10000
+ARCBEST_OVERWEIGHT_MESSAGE = (
+    "ArcBest does not auto-rate shipments over 10,000 lbs on the standard LTL API. "
+    "Request a volume or truckload quote from ArcBest."
+)
 
 
 class ArcBestCarrierAdapter(BaseCarrierAdapter):
@@ -62,6 +67,10 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         """Map ShipmentRequest -> ArcBest GET params -> parse ABF XML -> CarrierRateQuote."""
         params = {}
         try:
+            total_weight = flt(getattr(request, "total_weight", None) or 0)
+            if total_weight > ARCBEST_MAX_AUTO_RATE_LBS:
+                return self._error_quote(ARCBEST_OVERWEIGHT_MESSAGE)
+
             settings = frappe.get_single("LTL Platform Settings")
             timeout = cint(settings.rate_request_timeout_seconds) or 30
             params = self._build_rate_params(request)
@@ -528,6 +537,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
                 field(request.destination_city, "destination_city"),
                 field(request.destination_state, "destination_state"),
             )
+            length, width, height = request.first_handling_dimensions()
             return {
                 "origin_zip": request.origin_zip,
                 "origin_city": origin_city,
@@ -540,6 +550,10 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
                 "total_weight": request.total_weight,
                 "freight_class": request.freight_class,
                 "pieces": request.pieces,
+                "length": length,
+                "width": width,
+                "height": height,
+                "items": request.items or [],
                 "unit_type": "PLT",
                 "accessorials": request.accessorials or [],
             }
@@ -557,6 +571,9 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             field(request.get("destination_state"), "destination_state"),
         )
 
+        length = flt(request.get("length") or first_item.get("length") or 0)
+        width = flt(request.get("width") or first_item.get("width") or 0)
+        height = flt(request.get("height") or first_item.get("height") or 0)
         return {
             "origin_zip": request.get("origin_zip"),
             "origin_city": origin_city,
@@ -569,7 +586,11 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "total_weight": request.get("total_weight") or first_item.get("weight") or 400,
             "freight_class": request.get("freight_class") or first_item.get("classification") or first_item.get("freight_class") or "70",
             "pieces": request.get("pieces") or request.get("total_qty") or first_item.get("qty") or 1,
-            "unit_type": first_item.get("unit_type") or "PLT",
+            "length": length,
+            "width": width,
+            "height": height,
+            "items": items if isinstance(items, list) else [],
+            "unit_type": first_item.get("unit_type") or first_item.get("packaging_type") or "PLT",
             "accessorials": request.get("accessorials") or request.get("accessorial_codes") or [],
         }
 
@@ -580,9 +601,6 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
 
         origin_zip = str(fields.get("origin_zip") or "")
         destination_zip = str(fields.get("destination_zip") or "")
-        weight = fields.get("total_weight") or 400
-        freight_class = fields.get("freight_class") or "50.0"
-        pieces = fields.get("pieces") or 1
 
         params = {
             "DL": "2",
@@ -595,18 +613,129 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "ConsState": fields.get("destination_state") or "",
             "ConsZip": destination_zip,
             "ConsCountry": fields.get("destination_country") or "US",
-            "Wgt1": cint(self._clean_numeric(weight, 400)),
-            "Class1": flt(self._clean_numeric(freight_class, "50.0")),
-            "UnitNo1": cint(self._clean_numeric(pieces, 1)),
-            "UnitType1": fields.get("unit_type") or "PLT",
             "ShipAff": "Y",
             "ShipMonth": f"{ship_date.month:02d}",
             "ShipDay": f"{ship_date.day:02d}",
             "ShipYear": str(ship_date.year),
         }
+        self._apply_commodity_params(params, fields, request)
         params.update(arcbest_accessorial_params(accessorial_items, self.carrier_doc))
 
         return params
+
+    def _apply_commodity_params(self, params: dict, fields: dict, request) -> None:
+        """Attach Wgt/Class/Unit + L×W×H/Cube. ArcBest error 30 requires dimensions or cube."""
+        rows = self._commodity_rows(fields, request)
+        for idx, row in enumerate(rows, start=1):
+            params[f"Wgt{idx}"] = cint(self._clean_numeric(row["weight"], 400))
+            params[f"Class{idx}"] = flt(self._clean_numeric(row["freight_class"], "50.0"))
+            params[f"UnitNo{idx}"] = cint(self._clean_numeric(row["pieces"], 1))
+            params[f"UnitType{idx}"] = row["unit_type"]
+            self._apply_dimension_params(params, idx, row)
+
+    def _commodity_rows(self, fields: dict, request) -> list[dict]:
+        items = fields.get("items") or []
+        fallback_length = flt(fields.get("length") or 0)
+        fallback_width = flt(fields.get("width") or 0)
+        fallback_height = flt(fields.get("height") or 0)
+        if isinstance(request, ShipmentRequest) and not (fallback_length and fallback_width and fallback_height):
+            fallback_length, fallback_width, fallback_height = request.first_handling_dimensions()
+
+        rows = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            weight = flt(item.get("weight") or 0)
+            if weight <= 0:
+                continue
+            pieces = max(cint(item.get("qty") or item.get("quantity") or item.get("pieces") or 1), 1)
+            length = flt(item.get("length") or fallback_length or 0)
+            width = flt(item.get("width") or fallback_width or 0)
+            height = flt(item.get("height") or fallback_height or 0)
+            rows.append(
+                {
+                    "weight": weight * pieces if self._weight_is_per_piece(items, fields.get("total_weight")) else weight,
+                    "freight_class": item.get("classification")
+                    or item.get("freight_class")
+                    or fields.get("freight_class")
+                    or "50.0",
+                    "pieces": pieces,
+                    "length": length,
+                    "width": width,
+                    "height": height,
+                    "unit_type": self._arcbest_unit_type(
+                        item.get("unit_type") or item.get("packaging_type") or item.get("packaging_units")
+                    ),
+                }
+            )
+        if rows:
+            return rows
+        pieces = max(cint(self._clean_numeric(fields.get("pieces") or 1, 1)), 1)
+        return [
+            {
+                "weight": fields.get("total_weight") or 400,
+                "freight_class": fields.get("freight_class") or "50.0",
+                "pieces": pieces,
+                "length": fallback_length,
+                "width": fallback_width,
+                "height": fallback_height,
+                "unit_type": self._arcbest_unit_type(fields.get("unit_type")),
+            }
+        ]
+
+    @staticmethod
+    def _weight_is_per_piece(items: list, total_weight) -> bool:
+        """UI line weight is per piece; API payloads often send line-total weight."""
+        shipment_total = flt(total_weight or 0)
+        if shipment_total <= 0 or not items:
+            return False
+        summed = 0.0
+        multiplied = 0.0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            weight = flt(item.get("weight") or 0)
+            qty = max(cint(item.get("qty") or item.get("quantity") or item.get("pieces") or 1), 1)
+            summed += weight
+            multiplied += weight * qty
+        return abs(multiplied - shipment_total) < abs(summed - shipment_total)
+
+    def _apply_dimension_params(self, params: dict, idx: int, row: dict) -> None:
+        length = flt(row.get("length") or 0)
+        width = flt(row.get("width") or 0)
+        height = flt(row.get("height") or 0)
+        pieces = max(cint(row.get("pieces") or 1), 1)
+        if length <= 0 or width <= 0 or height <= 0:
+            return
+        length_in = cint(round(length)) or length
+        width_in = cint(round(width)) or width
+        height_in = cint(round(height)) or height
+        # ABF AQuote accepts FrtLngth# / Length# plus Cube# (cubic feet).
+        params[f"FrtLngth{idx}"] = length_in
+        params[f"Length{idx}"] = length_in
+        params[f"Width{idx}"] = width_in
+        params[f"Height{idx}"] = height_in
+        cube = round((float(length) * float(width) * float(height) * pieces) / 1728.0, 2)
+        if cube > 0:
+            params[f"Cube{idx}"] = cube
+
+    @staticmethod
+    def _arcbest_unit_type(value) -> str:
+        raw = str(value or "").strip().upper()
+        aliases = {
+            "PALLET": "PLT",
+            "PALLETS": "PLT",
+            "SKID": "SKD",
+            "CARTON": "CTN",
+            "BOX": "BOX",
+            "BOXES": "BOX",
+            "CRATE": "CRT",
+            "DRUM": "DRM",
+            "PIECE": "PCS",
+            "PIECES": "PCS",
+        }
+        mapped = aliases.get(raw, raw)
+        return mapped if mapped else "PLT"
 
     @staticmethod
     def _coerce_accessorial_items(accessorials) -> list[AccessorialItem]:
@@ -643,6 +772,14 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             if not error_msg:
                 error_msg = root.findtext(".//ERRORMESSAGE", "Unknown Location Validation Error")
 
+            error_msg = error_msg.strip(" |")
+            if "Dimensions or Cube is required" in error_msg:
+                weight = flt((params or {}).get("Wgt1") or 0)
+                if weight > ARCBEST_MAX_AUTO_RATE_LBS:
+                    error_msg = ARCBEST_OVERWEIGHT_MESSAGE
+                else:
+                    error_msg = "Shipment dimensions (length, width, height) or cube are required."
+
             frappe.log_error(
                 message=f"Params Sent: {params} \n\nResponse: {error_msg}\n\nRaw XML: {raw_text}",
                 title="ArcBest API Error",
@@ -652,7 +789,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
                 carrier_name=self._carrier_name(),
                 total_charge=0,
                 transit_days=0,
-                error=f"ArcBest API error: {error_msg.strip(' |')}",
+                error=f"ArcBest API error: {error_msg}",
             )
 
         quote_id = root.findtext("QUOTEID") or ""

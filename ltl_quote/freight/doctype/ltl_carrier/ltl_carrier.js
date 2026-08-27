@@ -1,7 +1,7 @@
 // Copyright (c) 2026, LTL Quote and contributors
 // For license information, please see license.txt
 
-const SYNC_CONNECTORS = ["Dayton", "ArcBest API"];
+const SYNC_CONNECTORS = ["Dayton", "ArcBest API", "TForce", "SMC3"];
 
 frappe.ui.form.on("LTL Carrier", {
 	refresh(frm) {

@@ -23,6 +23,8 @@
   "api_secret",
   "account_number",
   "notes",
+  "smc3_section",
+  "smc3_network_carriers",
   "accessorial_mapping_section",
   "accessorial_mappings"
  ],
@@ -80,7 +82,7 @@
    "fieldname": "connector_type",
    "fieldtype": "Select",
    "label": "Connector Type",
-   "options": "Mock\nDayton\nArcBest API\nTForce\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
+   "options": "Mock\nDayton\nArcBest API\nTForce\nSMC3\nREST API\nSOAP\nEDI\nproject44\nBlueGrace",
    "default": "Mock"
   },
   {
@@ -124,6 +126,19 @@
    "label": "Notes"
   },
   {
+   "depends_on": "eval:doc.connector_type=='SMC3'",
+   "fieldname": "smc3_section",
+   "fieldtype": "Section Break",
+   "label": "SMC3 Network Carriers"
+  },
+  {
+   "description": "SCACs quoted through SMC3 Aggregate Pricing. Each enabled Contract/Dynamic row becomes its own Available Carrier Rates line with SOURCE: SMC3 and the network carrier name.",
+   "fieldname": "smc3_network_carriers",
+   "fieldtype": "Table",
+   "label": "SMC3 Network Carriers",
+   "options": "LTL SMC3 Network Carrier"
+  },
+  {
    "fieldname": "accessorial_mapping_section",
    "fieldtype": "Section Break",
    "label": "Accessorial Mapping"
@@ -136,7 +151,7 @@
   }
  ],
  "links": [],
- "modified": "2026-06-01 10:00:00.000000",
+ "modified": "2026-08-25 19:50:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL Carrier",

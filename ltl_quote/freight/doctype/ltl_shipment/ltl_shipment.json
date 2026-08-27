@@ -46,6 +46,7 @@
   "bol_section",
   "bol_document",
   "bol_document_url",
+  "bol_image",
   "dayton_bol_details_section",
   "bol_document_type",
   "bol_scac",
@@ -326,6 +327,11 @@
    "read_only": 1
   },
   {
+   "fieldname": "bol_image",
+   "fieldtype": "Attach",
+   "label": "BOL Image"
+  },
+  {
    "collapsible": 1,
    "fieldname": "dayton_bol_details_section",
    "fieldtype": "Section Break",
@@ -560,7 +566,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-10 14:16:00.000000",
+ "modified": "2026-08-27 12:20:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL Shipment",

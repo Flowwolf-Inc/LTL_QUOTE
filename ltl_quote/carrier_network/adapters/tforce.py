@@ -1117,6 +1117,7 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		)
 		service_options = tforce_rate_service_options(request.accessorials, self.carrier_doc)
 		commodities = self._build_commodities(request)
+		length, width, height = request.first_handling_dimensions()
 		for commodity in commodities:
 			if not isinstance(commodity, dict):
 				continue
@@ -1125,6 +1126,13 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 				(nmfc or {}).get("prime") if isinstance(nmfc, dict) else nmfc
 			):
 				commodity.pop("nmfc", None)
+			if not commodity.get("dimensions") and length and width and height:
+				commodity["dimensions"] = {
+					"length": length,
+					"width": width,
+					"height": height,
+					"unit": "IN",
+				}
 
 		payload = {
 			"requestOptions": {
@@ -1302,6 +1310,8 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 			message = ""
 		if not message:
 			message = (getattr(response, "text", None) or "TForce request failed")[:240]
+		if code == "502" or "assistance from customer service" in message.lower():
+			return "TForce could not auto-rate this shipment. Customer service assistance is required."
 		prefix = f"TForce HTTP {getattr(response, 'status_code', '')}"
 		if code:
 			return f"{prefix} ({code}): {message}"

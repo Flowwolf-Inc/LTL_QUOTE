@@ -20,6 +20,10 @@ function ltl_supports_pickup(carrier) {
 	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
 }
 
+function ltl_supports_smc3_bol(carrier) {
+	return ltl_connector_key(carrier) === "SMC3";
+}
+
 function ltl_supports_tracking(carrier) {
 	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
 }
@@ -63,7 +67,15 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 			dash.open_quote_detail(name);
 			return;
 		}
-		if (view === "quote" || view === "quotes" || view === "shipments" || view === "carriers" || view === "accessorials") {
+		if (
+			view === "quote" ||
+			view === "quotes" ||
+			view === "invoices" ||
+			view === "pods" ||
+			view === "shipments" ||
+			view === "carriers" ||
+			view === "accessorials"
+		) {
 			dash.body.find(".ltl-nav-item").removeClass("active");
 			dash.body.find(`.ltl-nav-item[data-view="${view}"]`).addClass("active");
 			dash.show_view(view);
@@ -152,6 +164,31 @@ function new_line_item(overrides = {}) {
 	);
 }
 
+const SMC3_SCAC_NAMES = {
+	SMCA: "SMC3 Demo Carrier",
+	ODFL: "Old Dominion Freight Line",
+	SAIA: "Saia LTL Freight",
+	EXLA: "Estes Express Lines",
+	DAFG: "Dayton Freight Lines",
+	ABFS: "ABF Freight",
+	PYLE: "A. Duie Pyle",
+	AACT: "AAA Cooper Transportation",
+	DPHE: "AAA Cooper Transportation",
+	MIDW: "AAA Cooper Transportation",
+	AVRT: "Averitt Express",
+	CTII: "Central Transport LLC",
+	FXFE: "FedEx Freight",
+	FXNL: "FedEx Freight",
+	FWDN: "Forward Air, Inc",
+	RDFS: "R+L Carriers",
+	PITD: "Pitt Ohio",
+	SEFL: "Southeastern Freight Lines",
+	TFF: "TForce Freight",
+	TFFA: "TForce Freight",
+	CNWY: "XPO Logistics",
+	XPOL: "XPO Logistics",
+};
+
 const NAV_SECTIONS = [
 	{
 		title: "RATE & BOOKING",
@@ -159,14 +196,15 @@ const NAV_SECTIONS = [
 			{ label: "New Carrier Quote", icon: "fa fa-file-text-o", view: "quote", badge: "+", active: true },
 			{ label: "LTL Quote List", icon: "fa fa-list-alt", view: "quotes" },
 			{ label: "LTL Shipment", icon: "fa fa-truck", view: "shipments" },
-			{ label: "LTL Carrier", icon: "fa fa-users", view: "carriers" },
+			{ label: "LTL CI", icon: "fa fa-file-text", view: "invoices" },
+			{ label: "LTL POD", icon: "fa fa-check-square-o", view: "pods" },
 		],
 	},
 	{
 		title: "SETTINGS",
 		items: [
-			{ label: "Carrier", icon: "fa fa-building-o", view: "carriers" },
-			{ label: "Accessorial", icon: "fa fa-tags", view: "accessorials" },
+			{ label: "LTL Carrier", icon: "fa fa-users", view: "carriers" },
+			{ label: "Accessorials", icon: "fa fa-tags", view: "accessorials" },
 		],
 	},
 ];
@@ -197,7 +235,7 @@ const LIST_VIEWS = {
 		title: "LTL Shipment",
 		sub: "Booked shipments and their tracking status.",
 		icon: "fa fa-truck",
-		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation", "bol_document", "bol_document_url"],
+		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation", "bol_document", "bol_document_url", "bol_image"],
 		order_by: "creation desc",
 		search: ["name", "carrier_name", "bol_number", "pro_number", "status"],
 		columns: [
@@ -227,9 +265,75 @@ const LIST_VIEWS = {
 			{ label: "Enabled", type: "bool", key: "enabled" },
 		],
 	},
+	invoices: {
+		doctype: "LTL Carrier Invoice",
+		title: "LTL CI",
+		sub: "Carrier invoices received against booked shipments.",
+		icon: "fa fa-file-text",
+		fields: [
+			"name",
+			"shipment",
+			"quote_request",
+			"carrier_name",
+			"carrier",
+			"invoice_number",
+			"invoice_date",
+			"bol_number",
+			"pro_number",
+			"quoted_amount",
+			"billed_amount",
+			"currency",
+			"status",
+			"source",
+			"carrier_invoice",
+			"creation",
+		],
+		order_by: "creation desc",
+		search: ["name", "shipment", "invoice_number", "bol_number", "pro_number", "carrier_name", "status"],
+		columns: [
+			{ label: "Invoice ID", type: "mono", key: "name" },
+			{ label: "Shipment", type: "mono", key: "shipment" },
+			{ label: "Carrier", type: "text", key: "carrier_name", fallback: "carrier" },
+			{ label: "Invoice #", key: "invoice_number" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "Quoted Amount", type: "money", key: "quoted_amount" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Invoice Date", type: "datetime", key: "invoice_date" },
+		],
+	},
+	pods: {
+		doctype: "LTL POD",
+		title: "LTL POD",
+		sub: "Proof of delivery documents for booked shipments.",
+		icon: "fa fa-check-square-o",
+		fields: [
+			"name",
+			"shipment",
+			"carrier_name",
+			"carrier",
+			"pro_number",
+			"bol_number",
+			"status",
+			"source",
+			"pod_document",
+			"creation",
+		],
+		order_by: "creation desc",
+		search: ["name", "shipment", "pro_number", "bol_number", "carrier_name", "status"],
+		columns: [
+			{ label: "POD ID", type: "mono", key: "name" },
+			{ label: "Shipment", type: "mono", key: "shipment" },
+			{ label: "Carrier", type: "text", key: "carrier_name", fallback: "carrier" },
+			{ label: "PRO #", key: "pro_number" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Source", key: "source" },
+			{ label: "Created On", type: "datetime", key: "creation" },
+		],
+	},
 	accessorials: {
 		doctype: "LTL Accessorial",
-		title: "Accessorial",
+		title: "Accessorials",
 		sub: "Accessorial service catalog.",
 		icon: "fa fa-tags",
 		fields: ["name", "accessorial_code", "accessorial_name", "charge_type", "default_amount", "currency"],
@@ -244,14 +348,28 @@ const LIST_VIEWS = {
 	},
 };
 
+function resolve_file_url(value) {
+	const attach = String(value || "").trim();
+	if (!attach) return "";
+	if (attach.startsWith("http")) return attach;
+	return window.location.origin + (attach.startsWith("/") ? attach : `/${attach}`);
+}
+
 function resolve_bol_url(row) {
 	if (!row) return "";
 	const url = String(row.bol_document_url || "").trim();
-	if (url) return url;
-	const attach = String(row.bol_document || "").trim();
-	if (!attach) return "";
-	if (attach.startsWith("http")) return attach;
-	return window.location.origin + attach;
+	if (url) return resolve_file_url(url);
+	return resolve_file_url(row.bol_document);
+}
+
+function resolve_bol_image_url(row) {
+	if (!row) return "";
+	return resolve_file_url(row.bol_image);
+}
+
+function is_bol_image_url(url) {
+	const path = String(url || "").split("?")[0].toLowerCase();
+	return [".png", ".jpg", ".jpeg", ".gif", ".webp"].some((ext) => path.endsWith(ext));
 }
 
 ltl_quote.Dashboard = class Dashboard {
@@ -1095,9 +1213,9 @@ ltl_quote.Dashboard = class Dashboard {
 			frappe.set_route("Form", this.current_list.doctype, name);
 		});
 
-		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled), .ltl-view-bol-btn", (e) => {
+		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled), .ltl-view-bol-btn, .ltl-detail-view-bol-image:not(:disabled)", (e) => {
 			e.stopPropagation();
-			const url = $(e.currentTarget).attr("data-bol-url");
+			const url = $(e.currentTarget).attr("data-bol-url") || $(e.currentTarget).attr("data-bol-image-url");
 			if (url) window.open(url, "_blank");
 		});
 
@@ -1295,6 +1413,58 @@ ltl_quote.Dashboard = class Dashboard {
 			e.stopPropagation();
 			const shipment = $(e.currentTarget).attr("data-shipment");
 			if (shipment) this.open_tracking_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-detail-cancel-bol", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			frappe.confirm(__("Cancel this SMC3 bill of lading?"), () => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.cancel_smc3_bol",
+					args: { name: shipment },
+					freeze: true,
+					freeze_message: __("Cancelling BOL…"),
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({ message: __("BOL cancelled"), indicator: "green" });
+							this.open_shipment_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("BOL Cancel Failed"),
+							indicator: "red",
+							message: result.message || __("Could not cancel the bill of lading."),
+						});
+					},
+				});
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-fetch-bol-image", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.fetch_smc3_bol_image",
+				args: { name: shipment },
+				freeze: true,
+				freeze_message: __("Fetching BOL image…"),
+				callback: (r) => {
+					const result = r.message || {};
+					if (result.status === "success") {
+						frappe.show_alert({ message: __("BOL image saved"), indicator: "green" });
+						this.open_shipment_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("BOL Image Failed"),
+						indicator: "red",
+						message: result.message || __("Could not fetch the BOL image."),
+					});
+				},
+			});
 		});
 
 		this.body.on("click", ".ltl-tracking-back, .ltl-tracking-view-details", (e) => {
@@ -1615,24 +1785,28 @@ ltl_quote.Dashboard = class Dashboard {
 		frappe.call({
 			method: "ltl_quote.api.quote.get_ltl_rates",
 			args: { payload: JSON.stringify(payload) },
+			silent: true,
 			callback: (r) => {
 				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
 				const res = r.message || {};
 				if (res.status !== "success" || !res.data || !(res.data.quotes || []).length) {
 					const err = (res.errors && res.errors.length && (res.errors[0].error || res.errors[0])) || res.error;
 					this.quotes = [];
-					this.rate_errors = res.errors || [];
+					this.rate_errors = this.sanitize_rate_errors(res.errors || []);
 					this.quote_request_id = res.quote_request_id || null;
 					this.render_rates();
 					frappe.show_alert(
-						{ message: err ? __("No quotes: {0}", [err]) : __("No carrier quotes were returned"), indicator: "orange" },
+						{
+							message: this.friendly_fetch_error(err) || __("No carrier quotes were returned"),
+							indicator: "orange",
+						},
 						7
 					);
 					return;
 				}
 				this.quote_request_id = res.quote_request_id;
 				this.quotes = res.data.quotes;
-				this.rate_errors = res.errors || [];
+				this.rate_errors = this.sanitize_rate_errors(res.errors || []);
 				this.booking_context = null;
 				this.load_booking_context(this.quote_request_id, () => {
 					this.render_rates();
@@ -1644,6 +1818,13 @@ ltl_quote.Dashboard = class Dashboard {
 			},
 			error: () => {
 				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
+				this.quotes = [];
+				this.rate_errors = [];
+				this.render_rates();
+				frappe.show_alert(
+					{ message: __("Could not refresh carrier rates. Please try again."), indicator: "orange" },
+					7
+				);
 			},
 		});
 	}
@@ -1662,7 +1843,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const rows = this.quotes
 			.map((q, idx) => {
 				const currency = q.currency || "USD";
-				const total = format_currency(q.total_cost, currency);
+				const total = format_currency(q.total_charge != null ? q.total_charge : q.total_cost, currency);
 				const base = format_currency(q.linehaul_charge || 0, currency);
 				const acc = format_currency(q.accessorial_charge || 0, currency);
 				const transit = q.transit_days ? `${q.transit_days} Business Days` : "—";
@@ -1676,8 +1857,7 @@ ltl_quote.Dashboard = class Dashboard {
 				const recommended = tags.length ? "ltl-row-recommended" : "";
 				return `
 					<tr class="${recommended}">
-						<td><div class="ltl-carrier-cell"><span class="ltl-carrier-badge">${frappe.utils.escape_html((q.carrier || "?").slice(0, 3).toUpperCase())}</span>
-							<span>${frappe.utils.escape_html(q.carrier || q.carrier_code)}</span></div></td>
+						<td>${this.render_carrier_cell(q)}</td>
 						<td><div class="ltl-tag-wrap">${tag_cells}</div></td>
 						<td>${service}</td>
 						<td>
@@ -1695,10 +1875,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 		const error_rows = (this.rate_errors || [])
 			.map((err) => {
+				const message = this.format_rate_error(err);
+				if (!message) {
+					return "";
+				}
 				const carrier = frappe.utils.escape_html(err.carrier || "Carrier");
-				const message = frappe.utils.escape_html(String(err.error || err).slice(0, 280));
-				return `<div class="ltl-rate-error"><strong>${carrier}</strong> did not return a rate: ${message}</div>`;
+				return `<div class="ltl-rate-error"><strong>${carrier}</strong> did not return a rate: ${frappe.utils.escape_html(message)}</div>`;
 			})
+			.filter(Boolean)
 			.join("");
 
 		container.html(`
@@ -1720,6 +1904,116 @@ ltl_quote.Dashboard = class Dashboard {
 			</table>
 			${error_rows ? `<div class="ltl-rate-errors">${error_rows}</div>` : ""}`);
 		card.show();
+	}
+
+	format_rate_error(err) {
+		const raw = String((err && err.error) || err || "").replace(/\s+/g, " ").trim();
+		if (this.is_auth_rate_error(raw)) {
+			return "";
+		}
+		if (/12000\s*lbs/i.test(raw) || /pricing@daytonfreight\.com/i.test(raw)) {
+			return "Shipments over 12,000 lbs cannot be auto-rated. Contact Dayton Pricing at pricing@daytonfreight.com.";
+		}
+		if (/over 10,000 lbs/i.test(raw) && /arcbest/i.test(raw)) {
+			return "Shipments over 10,000 lbs cannot be auto-rated on ArcBest standard LTL. Request a volume/truckload quote.";
+		}
+		if (/Dimensions or Cube is required/i.test(raw)) {
+			return "Shipment is too large for ArcBest standard LTL auto-rating, or dimensions/cube are required.";
+		}
+		if (/requires assistance from customer service/i.test(raw) || /could not auto-rate this shipment/i.test(raw)) {
+			return "This shipment cannot be auto-rated and needs TForce customer service.";
+		}
+		return raw.replace(/\{[\s\S]*\}/, "").replace(/\s+\|\s*$/, "").trim().slice(0, 220) || raw.slice(0, 220);
+	}
+
+	is_auth_rate_error(err) {
+		const raw = String((err && err.error) || err || "");
+		return /invalid access token|access token expired|session expired|unauthorized|\b401\b/i.test(raw);
+	}
+
+	friendly_fetch_error(err) {
+		if (!err) return "";
+		if (this.is_auth_rate_error(err)) {
+			return __("Could not refresh carrier rates. Please try again.");
+		}
+		const cleaned = this.format_rate_error(err);
+		if (/<!DOCTYPE|<html|Forbidden/i.test(String(cleaned))) {
+			return __("A carrier connection failed. Please try Fetch Rates again.");
+		}
+		return __("No quotes: {0}", [cleaned]);
+	}
+
+	sanitize_rate_errors(errors) {
+		return (errors || [])
+			.filter((err) => !this.is_auth_rate_error(err))
+			.map((err) => {
+				if (typeof err === "string") {
+					return { carrier: "Carrier", error: this.format_rate_error(err) };
+				}
+				return {
+					carrier: err.carrier || "Carrier",
+					error: this.format_rate_error(err),
+				};
+			})
+			.filter((err) => String(err.error || "").trim());
+	}
+
+	carrier_badge_text(quote) {
+		const scac = this.quote_scac(quote);
+		if (scac) return scac.slice(0, 4).toUpperCase();
+		const raw = String(quote?.carrier_name || quote?.carrier || quote?.carrier_code || "?").trim();
+		if (/^SMC3$/i.test(raw) || /^SMC3-/.test(raw.toUpperCase())) return "SMC3";
+		return raw.slice(0, 3).toUpperCase();
+	}
+
+	quote_scac(quote) {
+		const direct = String(quote?.scac || quote?.quoted_scac || "").trim().toUpperCase();
+		if (direct && direct !== "SMC3" && direct !== "SMC" && direct !== "SMCA") return direct;
+		const code = String(quote?.carrier_code || "").toUpperCase();
+		const match = code.match(/^SMC3-([A-Z0-9]{2,5})-/);
+		if (match && match[1] && !["SMC3", "SMC", "SMCA"].includes(match[1])) return match[1];
+		return "";
+	}
+
+	quote_source(quote) {
+		const source = String(quote?.source || quote?.rate_source || "").trim().toUpperCase();
+		if (source === "SMC3") return "SMC3";
+		const code = String(quote?.carrier_code || "").toUpperCase();
+		if (code.startsWith("SMC3-")) return "SMC3";
+		return "";
+	}
+
+	quote_carrier_name(quote) {
+		const scac = this.quote_scac(quote);
+		const source = this.quote_source(quote);
+		let name = String(quote?.carrier_name || quote?.carrier || "").trim();
+		const is_demo = /demo carrier/i.test(name) || /^SMC3$/i.test(name) || /^SMC3-/.test(name.toUpperCase());
+		if (source === "SMC3" || scac) {
+			if (!name || is_demo) {
+				name = (scac && SMC3_SCAC_NAMES[scac] && scac !== "SMCA") || scac || name;
+			}
+		}
+		if (/demo carrier/i.test(name) || /^SMCA$/i.test(name)) {
+			name = (scac && SMC3_SCAC_NAMES[scac] && scac !== "SMCA") || scac || "Network Carrier";
+		}
+		return name || String(quote?.carrier_code || "—");
+	}
+
+	render_carrier_cell(quote) {
+		const esc = frappe.utils.escape_html;
+		const name = this.quote_carrier_name(quote);
+		const source = this.quote_source(quote);
+		const source_line =
+			source === "SMC3"
+				? `<div class="ltl-carrier-source">${esc(__("SOURCE: {0}", [source]))}</div>`
+				: "";
+		return `<div class="ltl-carrier-cell">
+			<span class="ltl-carrier-badge">${esc(this.carrier_badge_text(quote))}</span>
+			<div class="ltl-carrier-text">
+				<span class="ltl-carrier-name">${esc(name)}</span>
+				${source_line}
+			</div>
+		</div>`;
 	}
 
 	tag_icon(tag) {
@@ -1757,9 +2051,11 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	normalize_carrier_code(code) {
-		return String(code || "")
+		const raw = String(code || "")
 			.toUpperCase()
 			.replace(/[^A-Z0-9]/g, "");
+		if (raw.startsWith("SMC3")) return "SMC3";
+		return raw;
 	}
 
 	render_rate_action(q, idx) {
@@ -1771,12 +2067,22 @@ ltl_quote.Dashboard = class Dashboard {
 
 		if (ctx?.shipment && booked_norm && code === booked_norm) {
 			const bol_url = ctx.bol_url || "";
-			const bol_btn = bol_url
+			const bol_image_url = ctx.bol_image || "";
+			const image_btn = bol_image_url
+				? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-view-bol-image" data-bol-image-url="${frappe.utils.escape_html(
+						bol_image_url
+					)}"><i class="fa fa-picture-o"></i> ${__("View BOL Image")}</button>`
+				: "";
+			const bol_btn = bol_url && !bol_image_url
 				? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
 						bol_url
 					)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
-				: "";
-			return `<span class="ltl-rate-actions">${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__(
+				: bol_url && bol_image_url
+					? `<button type="button" class="ltl-btn ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
+							bol_url
+						)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
+					: "";
+			return `<span class="ltl-rate-actions">${image_btn}${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__(
 				"View Shipment"
 			)}</button></span>`;
 		}
@@ -1803,6 +2109,7 @@ ltl_quote.Dashboard = class Dashboard {
 						shipment: ctx.shipment,
 						booked_carrier: ctx.booked_carrier,
 						bol_document_url: ctx.bol_url,
+						bol_image: ctx.bol_image,
 						bol_number: ctx.bol_number,
 					});
 					this.quote_request_status = ctx.quote_status;
@@ -1823,8 +2130,9 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!shipment) return false;
 		this.booking_context = {
 			shipment,
-			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
+			booked_carrier_code: res.booked_carrier or res.booked_carrier_code || "",
 			bol_url: res.bol_document_url || res.bol_url || (res.data && res.data.bol_document_url) || "",
+			bol_image: res.bol_image || res.bol_image_url || (res.data && res.data.bol_image) || "",
 			bol_number: res.bol_number || "",
 		};
 		this.quote_request_status = "Booked";
@@ -1893,8 +2201,13 @@ ltl_quote.Dashboard = class Dashboard {
 	render_booking_modal_html(quote, shipment) {
 		const esc = frappe.utils.escape_html;
 		const currency = quote.currency || "USD";
-		const carrier_name = quote.carrier || quote.carrier_code || "—";
-		const carrier_code = (quote.carrier_code || carrier_name).slice(0, 3).toUpperCase();
+		const carrier_name = this.quote_carrier_name(quote);
+		const carrier_code = this.carrier_badge_text(quote);
+		const source = this.quote_source(quote);
+		const source_line =
+			source === "SMC3"
+				? `<div class="ltl-carrier-source">${esc(__("SOURCE: {0}", [source]))}</div>`
+				: "";
 		const service = esc(quote.service_level || "Standard LTL");
 		const rating = quote.reliability_score ? (quote.reliability_score / 20).toFixed(1) : null;
 		const tags = quote.tags || (quote.tag ? [quote.tag] : []);
@@ -1956,6 +2269,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<span class="ltl-carrier-badge">${esc(carrier_code)}</span>
 						<div>
 							<div class="ltl-book-carrier-name">${esc(carrier_name)}</div>
+							${source_line}
 							<div class="ltl-book-meta">
 								<span>${service}</span>
 								${rating ? `<span class="ltl-rating">${rating} <i class="fa fa-star"></i></span>` : ""}
@@ -1981,7 +2295,7 @@ ltl_quote.Dashboard = class Dashboard {
 							${cost_row(__("Base Linehaul"), format_currency(quote.linehaul_charge || 0, currency))}
 							${fuel_row}
 							${cost_row(__("Accessorials"), accessorial_display)}
-							${cost_row(__("Total Rate"), format_currency(quote.total_cost, currency), "ltl-book-total")}
+							${cost_row(__("Total Rate"), format_currency(quote.total_charge != null ? quote.total_charge : quote.total_cost, currency), "ltl-book-total")}
 						</div>
 					</div>
 				</div>
@@ -2001,14 +2315,14 @@ ltl_quote.Dashboard = class Dashboard {
 			args: {
 				quote_request_id: this.quote_request_id,
 				carrier_code: quote.carrier_code,
-				total_charge: quote.total_cost,
+				total_charge: quote.total_charge != null ? quote.total_charge : quote.total_cost,
 				carrier_quote_id: quote.carrier_quote_id || "",
 				items: JSON.stringify(line_items),
 				commodity_description: first.description || first.item_name || "",
 				nmfc: first.nmfc || first.nmfc_number || "",
 			},
 			freeze: true,
-			freeze_message: __("Booking shipment…"),
+			freeze_message: __("Reserving PRO, generating BOL, and fetching BOL image…"),
 			callback: (r) => {
 				const res = r.message || {};
 				if (res.status === "success" || res.status === "already_booked") {
@@ -2018,20 +2332,16 @@ ltl_quote.Dashboard = class Dashboard {
 						const msg =
 							res.status === "already_booked"
 								? __("Shipment already booked — opening details")
-								: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]);
+								: __("Shipment booked — PRO {0}", [res.pro_number || res.bol_number || "Pending"]);
 						frappe.show_alert({ message: msg, indicator: "green" }, 8);
 						this.load_recent_requests();
-						if (this.booking_context.bol_url) {
-							this.open_quote_detail(this.quote_request_id);
-						} else {
-							this.open_shipment_detail(this.booking_context.shipment);
-						}
+						this.open_shipment_detail(this.booking_context.shipment);
 						return;
 					}
 				}
 				if (res.status === "success") {
 					frappe.show_alert(
-						{ message: __("Shipment booked — BOL {0}", [res.bol_number || "Pending"]), indicator: "green" },
+						{ message: __("Shipment booked — PRO {0}", [res.pro_number || res.bol_number || "Pending"]), indicator: "green" },
 						8
 					);
 					this.load_recent_requests();
@@ -2474,25 +2784,32 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!bol_url && !bol_number && !pro_number) {
 			return "";
 		}
+		const is_image = is_bol_image_url(bol_url);
+		const open_label = is_image ? __("Open BOL") : __("Open PDF");
 		const open_btn = bol_url
 			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${esc(
 					bol_url
-				)}"><i class="fa fa-external-link"></i> ${__("Open PDF")}</button>`
+				)}"><i class="fa fa-external-link"></i> ${open_label}</button>`
 			: "";
-		const iframe = bol_url
-			? `<iframe class="ltl-bol-iframe" src="${esc(bol_url)}" title="${__("Bill of Lading")}"></iframe>`
-			: `<div class="ltl-empty">${__("BOL PDF is not attached yet.")}</div>`;
+		let preview;
+		if (!bol_url) {
+			preview = `<div class="ltl-empty">${__("BOL is not attached yet.")}</div>`;
+		} else if (is_image) {
+			preview = `<img class="ltl-bol-iframe ltl-bol-image" src="${esc(bol_url)}" alt="${__("Bill of Lading")}" />`;
+		} else {
+			preview = `<iframe class="ltl-bol-iframe" src="${esc(bol_url)}" title="${__("Bill of Lading")}"></iframe>`;
+		}
 		return `
 			<section class="ltl-detail-card ltl-bol-preview-card">
 				<div class="ltl-detail-card-head">
-					<span><i class="fa fa-file-pdf-o"></i> ${__("Bill of Lading")}</span>
+					<span><i class="fa ${is_image ? "fa-file-image-o" : "fa-file-pdf-o"}"></i> ${__("Bill of Lading")}</span>
 					<div class="ltl-bol-preview-meta">
 						${bol_number ? `<span>${__("BOL")} #${esc(bol_number)}</span>` : ""}
 						${pro_number ? `<span>${__("PRO")} #${esc(pro_number)}</span>` : ""}
 						${open_btn}
 					</div>
 				</div>
-				${iframe}
+				${preview}
 			</section>`;
 	}
 
@@ -2506,7 +2823,12 @@ ltl_quote.Dashboard = class Dashboard {
 		const ro = readonly ? "readonly" : "";
 		const dis = readonly ? "disabled" : "";
 		const linked = shipments[0] || {};
-		const bol_url = payload.bol_url || resolve_bol_url(doc) || resolve_bol_url(linked);
+		const bol_url =
+			payload.bol_image
+			|| resolve_bol_image_url(linked)
+			|| payload.bol_url
+			|| resolve_bol_url(doc)
+			|| resolve_bol_url(linked);
 		const view_bol_btn = bol_url
 			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
 					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
@@ -3325,6 +3647,8 @@ ltl_quote.Dashboard = class Dashboard {
 		const acc_rows = this.render_accessorial_detail_rows(accessorials);
 
 		const bol_url = resolve_bol_url(doc);
+		const bol_image_url = resolve_bol_image_url(doc);
+		const preview_url = bol_image_url || bol_url;
 		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
 		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup, payload.carrier);
 		const can_track =
@@ -3335,15 +3659,34 @@ ltl_quote.Dashboard = class Dashboard {
 					<i class="fa fa-map-marker"></i> ${__("Track Shipment")}
 				</button>`
 			: "";
-		const view_bol_btn = bol_url
-			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
+		const view_bol_btn = preview_url
+			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(preview_url)}">
 					<i class="fa fa-file-pdf-o"></i> View BOL
 				</button>`
 			: `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__("No BOL attached")}">
 					<i class="fa fa-file-pdf-o"></i> View BOL
 				</button>`;
+		const can_cancel_bol =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""))
+			&& Boolean(String(doc.pro_number || doc.bol_number || "").trim());
+		const fetch_bol_image_btn = can_cancel_bol
+			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
+				</button>`
+			: "";
+		const cancel_bol_btn = can_cancel_bol
+			? `<button type="button" class="ltl-btn ltl-detail-cancel-bol" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-times"></i> ${__("Cancel BOL")}
+				</button>`
+			: "";
+		const view_bol_image_btn = bol_image_url
+			? `<button type="button" class="ltl-btn ltl-detail-view-bol-image" data-bol-image-url="${esc(bol_image_url)}">
+					<i class="fa fa-picture-o"></i> ${__("View BOL Image")}
+				</button>`
+			: "";
 		const bol_preview = this.render_bol_preview_card({
-			bol_url,
+			bol_url: preview_url,
 			bol_number: doc.bol_number,
 			pro_number: doc.pro_number,
 		});
@@ -3368,6 +3711,9 @@ ltl_quote.Dashboard = class Dashboard {
 						${track_btn}
 						${dayton_bol_ui.refresh_btn}
 						${view_bol_btn}
+						${view_bol_image_btn}
+						${fetch_bol_image_btn}
+						${cancel_bol_btn}
 					</div>
 				</div>
 
@@ -3685,6 +4031,26 @@ ltl_quote.Dashboard = class Dashboard {
 				${bol_icon}
 			</td>`;
 		}
+		if (cfg.doctype === "LTL Carrier Invoice") {
+			const url = resolve_file_url(row.carrier_invoice);
+			const attach = url
+				? `<span class="ltl-bol-attach" title="${__("View Invoice")}" data-bol-url="${frappe.utils.escape_html(url)}"><i class="fa fa-paperclip"></i></span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No invoice attached")}"><i class="fa fa-paperclip"></i></span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				${attach}
+			</td>`;
+		}
+		if (cfg.doctype === "LTL POD") {
+			const url = resolve_file_url(row.pod_document);
+			const attach = url
+				? `<span class="ltl-bol-attach" title="${__("View POD")}" data-bol-url="${frappe.utils.escape_html(url)}"><i class="fa fa-paperclip"></i></span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No POD attached")}"><i class="fa fa-paperclip"></i></span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				${attach}
+			</td>`;
+		}
 		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span></td>`;
 	}
 
@@ -3728,6 +4094,8 @@ ltl_quote.Dashboard = class Dashboard {
 				Booked: "blue",
 				Accepted: "blue",
 				Delivered: "green",
+				Received: "green",
+				"POD Received": "green",
 				Draft: "grey",
 				Pending: "orange",
 				"In Transit": "orange",

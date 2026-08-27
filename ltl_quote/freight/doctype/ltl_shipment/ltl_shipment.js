@@ -65,9 +65,15 @@ frappe.ui.form.on("LTL Shipment", {
 			frm.remove_custom_button(__("Update Electronic BOL"));
 			frm.remove_custom_button(__("Track Location"));
 			frm.remove_custom_button(__("Generate BOL"));
+			frm.remove_custom_button(__("Cancel BOL"));
+			frm.remove_custom_button(__("Get BOL Image"));
+			frm.remove_custom_button(__("View BOL Image"));
 			frm.remove_custom_button(__("Dispatch to Carrier"), __("Actions"));
 			frm.remove_custom_button(__("Update Electronic BOL"), __("Actions"));
 			frm.remove_custom_button(__("Track Location"), __("Actions"));
+			frm.remove_custom_button(__("Cancel BOL"), __("SMC3 Actions"));
+			frm.remove_custom_button(__("Get BOL Image"), __("SMC3 Actions"));
+			frm.remove_custom_button(__("View BOL Image"), __("SMC3 Actions"));
 
 			frm.add_custom_button(__("Refresh Tracking"), () => {
 				frappe.call({
@@ -166,6 +172,59 @@ frappe.ui.form.on("LTL Shipment", {
 				frm.add_custom_button(__("Generate BOL"), () => {
 					frappe.core.utils.update_dayton_carrier_bol(frm);
 				}).addClass("btn-primary");
+			}
+
+			if (
+				is_smc3_carrier(frm.doc.carrier)
+				&& frm.doc.status !== "Cancelled"
+				&& frm.doc.status !== "Delivered"
+				&& (frm.doc.pro_number || frm.doc.bol_number)
+			) {
+				frm.add_custom_button(__("Get BOL Image"), () => {
+					frappe.call({
+						method: "fetch_bol_image",
+						doc: frm.doc,
+						freeze: true,
+						freeze_message: __("Fetching BOL image…"),
+						callback(r) {
+							if (r.message?.status === "success") {
+								frappe.show_alert({
+									message: __("BOL image saved."),
+									indicator: "green",
+								});
+							}
+							frm.reload_doc();
+						},
+					});
+				}, __("SMC3 Actions"));
+				frm.add_custom_button(__("Cancel BOL"), () => {
+					frappe.confirm(__("Cancel this SMC3 bill of lading?"), () => {
+						frappe.call({
+							method: "cancel_bol",
+							doc: frm.doc,
+							freeze: true,
+							freeze_message: __("Cancelling BOL…"),
+							callback(r) {
+								if (r.message?.status === "success") {
+									frappe.show_alert({
+										message: __("BOL cancelled."),
+										indicator: "green",
+									});
+								}
+								frm.reload_doc();
+							},
+						});
+					});
+				}, __("SMC3 Actions"));
+			}
+
+			if (is_smc3_carrier(frm.doc.carrier) && frm.doc.bol_image) {
+				frm.add_custom_button(__("View BOL Image"), () => {
+					const image_url = resolve_bol_url({ bol_document: frm.doc.bol_image });
+					if (image_url) {
+						window.open(image_url, "_blank", "noopener,noreferrer");
+					}
+				}, __("SMC3 Actions"));
 			}
 
 			if (is_pickup_tracking_carrier(frm.doc.carrier) && frm.doc.pro_number) {
@@ -415,6 +474,11 @@ function is_arcbest_carrier(carrier_code) {
 
 function is_pickup_tracking_carrier(carrier_code) {
 	return ["DAYTON", "TFORCE", "ARCB"].includes(pickup_connector_key(carrier_code));
+}
+
+function is_smc3_carrier(carrier_code) {
+	const code = String(carrier_code || "").toUpperCase();
+	return code === "SMC3" || code.includes("SMC3");
 }
 
 function pickup_carrier_label(carrier_code) {

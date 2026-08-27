@@ -16,6 +16,7 @@ CARRIER_DOC_IDS = {
 	"ABFS": "ARCB",
 	"TFORCE": "TFORCE",
 	"TFF": "TFORCE",
+	"SMC3": "SMC3",
 	"MOCK": "MOCK",
 }
 
@@ -45,6 +46,9 @@ def resolve_carrier_id(raw_preference: str | None) -> str | None:
 
 	if any(token in upper for token in ("ARCBEST", "ARCB", "ABF", "ABFS")):
 		return "ARCB"
+
+	if "SMC3" in upper:
+		return "SMC3"
 
 	if "MOCK" in upper:
 		return "MOCK"
@@ -97,6 +101,8 @@ def log_carrier_label(carrier_id: str | None, carrier_doc_name: str | None = Non
 			return "TForce Freight"
 		if "arc" in name or "abf" in name:
 			return "ArcBest"
+		if "smc3" in name:
+			return "SMC3"
 
 	if carrier_id == "DAYTON":
 		return "Dayton Freight"
@@ -104,6 +110,8 @@ def log_carrier_label(carrier_id: str | None, carrier_doc_name: str | None = Non
 		return "TForce Freight"
 	if carrier_id == "ARCB":
 		return "ArcBest"
+	if carrier_id == "SMC3":
+		return "SMC3"
 	if carrier_id == "MOCK":
 		return "Mock Carriers"
 	return "Multi-Carrier"

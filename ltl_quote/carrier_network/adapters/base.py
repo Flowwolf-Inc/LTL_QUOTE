@@ -29,6 +29,37 @@ class ShipmentRequest:
 	destination_city: str = ""
 	destination_state: str = ""
 	items: list[dict] = field(default_factory=list)
+	payment_terms: str = "Prepaid"
+	payment_payer: str = "Shipper"
+
+	def first_handling_dimensions(self) -> tuple[float, float, float]:
+		"""Return the first usable L × W × H in inches from header or line items."""
+		length = float(self.length or 0)
+		width = float(self.width or 0)
+		height = float(self.height or 0)
+		if length > 0 and width > 0 and height > 0:
+			return length, width, height
+		for item in self.items or []:
+			if not isinstance(item, dict):
+				continue
+			length = float(item.get("length") or 0)
+			width = float(item.get("width") or 0)
+			height = float(item.get("height") or 0)
+			if length > 0 and width > 0 and height > 0:
+				return length, width, height
+		return 0.0, 0.0, 0.0
+
+	def cube_cubic_feet(self, pieces: int | None = None, length=None, width=None, height=None) -> float:
+		"""Handling-unit cube in cubic feet: (L × W × H × pieces) / 1728."""
+		if length is None or width is None or height is None:
+			length, width, height = self.first_handling_dimensions()
+		count = max(int(pieces if pieces is not None else self.pieces or 1), 1)
+		length = float(length or 0)
+		width = float(width or 0)
+		height = float(height or 0)
+		if length <= 0 or width <= 0 or height <= 0:
+			return 0.0
+		return (length * width * height * count) / 1728.0
 
 	@property
 	def accessorial_codes(self) -> list[str]:
@@ -69,6 +100,10 @@ class CarrierRateQuote:
 	accessorial_breakdown: dict[str, float] = field(default_factory=dict)
 	raw_response: dict[str, Any] = field(default_factory=dict)
 	error: str | None = None
+	rate_source: str = ""
+	quoted_scac: str = ""
+	connector_carrier: str = ""
+	estimated_delivery_date: str | None = None
 
 
 class BaseCarrierAdapter(ABC):

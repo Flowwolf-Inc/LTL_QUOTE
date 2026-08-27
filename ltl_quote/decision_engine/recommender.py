@@ -55,7 +55,8 @@ class DecisionEngine:
 	def _format_label(quote: CarrierRateQuote, tag: str) -> str:
 		currency = quote.currency or get_quote_currency()
 		amount = fmt_money(quote.total_charge, currency=currency)
-		return f"[{tag}] {quote.carrier_name} — {amount} | {quote.transit_days} days | Rel: {quote.reliability_score}%"
+		source = f" · {quote.rate_source}" if getattr(quote, "rate_source", None) else ""
+		return f"[{tag}] {quote.carrier_name} — {amount} | {quote.transit_days} days{source}"
 
 
 def rank_quotes(quotes: list, settings=None) -> list[dict]:
@@ -77,12 +78,12 @@ def rank_quotes(quotes: list, settings=None) -> list[dict]:
 		selected = recommendations.get(tag_key)
 		if not selected:
 			continue
-		code = selected.carrier_code
+		code = _quote_tag_key(selected)
 		tag_map.setdefault(code, []).append(label)
 
 	ranked = sorted(normalized, key=lambda quote: quote["total_cost"])
 	for quote in ranked:
-		tags = tag_map.get(quote["carrier_code"], [])
+		tags = tag_map.get(_quote_tag_key(quote), [])
 		quote["tags"] = tags
 		quote["tag"] = tags[0] if tags else None
 		if not quote.get("error"):
@@ -96,8 +97,10 @@ def _normalize_quote(quote) -> dict:
 		service_eligibility = (quote.raw_response or {}).get("serviceEligibilityLookup")
 		return {
 			"carrier": quote.carrier_name,
+			"carrier_name": quote.carrier_name,
 			"carrier_code": quote.carrier_code,
 			"total_cost": float(quote.total_charge),
+			"total_charge": float(quote.total_charge),
 			"transit_days": quote.transit_days,
 			"currency": quote.currency or get_quote_currency(),
 			"linehaul_charge": quote.linehaul_charge,
@@ -106,15 +109,21 @@ def _normalize_quote(quote) -> dict:
 			"reliability_score": quote.reliability_score,
 			"service_level": quote.service_level,
 			"carrier_quote_id": quote.carrier_quote_id,
-			"estimated_delivery_date": None,
+			"estimated_delivery_date": quote.estimated_delivery_date,
 			"service_eligibility": service_eligibility,
+			"source": quote.rate_source or None,
+			"scac": quote.quoted_scac or None,
 			"error": quote.error,
 		}
 
+	carrier_name = quote.get("carrier_name") or quote.get("carrier")
+	total_charge = float(quote.get("total_charge") or quote.get("total_cost") or 0)
 	return {
-		"carrier": quote.get("carrier") or quote.get("carrier_name"),
-		"carrier_code": quote.get("carrier_code") or quote.get("carrier"),
-		"total_cost": float(quote.get("total_cost") or quote.get("total_charge") or 0),
+		"carrier": carrier_name,
+		"carrier_name": carrier_name,
+		"carrier_code": quote.get("carrier_code") or quote.get("carrier") or quote.get("scac"),
+		"total_cost": total_charge,
+		"total_charge": total_charge,
 		"transit_days": quote.get("transit_days"),
 		"currency": quote.get("currency") or get_quote_currency(),
 		"linehaul_charge": quote.get("linehaul_charge"),
@@ -125,6 +134,8 @@ def _normalize_quote(quote) -> dict:
 		"carrier_quote_id": quote.get("carrier_quote_id"),
 		"estimated_delivery_date": quote.get("estimated_delivery_date"),
 		"service_eligibility": quote.get("service_eligibility"),
+		"source": quote.get("source") or quote.get("rate_source"),
+		"scac": quote.get("scac") or quote.get("quoted_scac"),
 		"error": quote.get("error"),
 	}
 
@@ -142,4 +153,13 @@ def _to_carrier_rate_quote(quote: dict) -> CarrierRateQuote:
 		carrier_quote_id=quote.get("carrier_quote_id") or "",
 		service_level=quote.get("service_level") or "",
 		reliability_score=quote.get("reliability_score") or 0,
+		rate_source=quote.get("source") or quote.get("rate_source") or "",
+		quoted_scac=quote.get("scac") or quote.get("quoted_scac") or "",
+		estimated_delivery_date=quote.get("estimated_delivery_date"),
 	)
+
+
+def _quote_tag_key(quote) -> str:
+	if isinstance(quote, CarrierRateQuote):
+		return quote.carrier_quote_id or quote.carrier_code
+	return quote.get("carrier_quote_id") or quote.get("carrier_code") or ""

@@ -1,0 +1,195 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-08-17 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "source",
+  "column_break_status",
+  "shipment",
+  "quote_request",
+  "carrier",
+  "carrier_name",
+  "invoice_section",
+  "invoice_number",
+  "invoice_date",
+  "column_break_invoice",
+  "bol_number",
+  "pro_number",
+  "charges_section",
+  "currency",
+  "quoted_amount",
+  "column_break_charges",
+  "billed_amount",
+  "documents_section",
+  "carrier_invoice",
+  "external_reference",
+  "notes"
+ ],
+ "fields": [
+  {
+   "default": "LTL-INV-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "LTL-INV-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nReceived\nDisputed\nPaid"
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Generated\nCarrier\nManual"
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipment",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Shipment",
+   "options": "LTL Shipment",
+   "unique": 1
+  },
+  {
+   "fieldname": "quote_request",
+   "fieldtype": "Link",
+   "label": "Quote Request",
+   "options": "LTL Quote Request"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Link",
+   "label": "Carrier",
+   "options": "LTL Carrier"
+  },
+  {
+   "fetch_from": "carrier.carrier_name",
+   "fieldname": "carrier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Carrier Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "invoice_section",
+   "fieldtype": "Section Break",
+   "label": "Invoice"
+  },
+  {
+   "fieldname": "invoice_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Invoice Number"
+  },
+  {
+   "fieldname": "invoice_date",
+   "fieldtype": "Date",
+   "label": "Invoice Date"
+  },
+  {
+   "fieldname": "column_break_invoice",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bol_number",
+   "fieldtype": "Data",
+   "label": "BOL Number"
+  },
+  {
+   "fieldname": "pro_number",
+   "fieldtype": "Data",
+   "label": "PRO / Tracking Number"
+  },
+  {
+   "fieldname": "charges_section",
+   "fieldtype": "Section Break",
+   "label": "Charges"
+  },
+  {
+   "default": "USD",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "quoted_amount",
+   "fieldtype": "Currency",
+   "label": "Quoted Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "column_break_charges",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "billed_amount",
+   "fieldtype": "Currency",
+   "label": "Billed Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "documents_section",
+   "fieldtype": "Section Break",
+   "label": "Documents"
+  },
+  {
+   "fieldname": "carrier_invoice",
+   "fieldtype": "Attach",
+   "label": "Carrier Invoice"
+  },
+  {
+   "fieldname": "external_reference",
+   "fieldtype": "Data",
+   "label": "External Reference"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-25 19:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Carrier Invoice",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

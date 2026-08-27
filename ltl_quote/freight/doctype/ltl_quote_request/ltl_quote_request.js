@@ -104,12 +104,13 @@ function book_quote(frm) {
 	}
 
 	const options = quotes.map((q, i) => ({
-		label: `${q.carrier_name} — ${format_currency(q.total_charge, q.currency || "USD")} (${q.transit_days} days)`,
+		label: `${q.carrier_name} — ${format_currency(q.total_charge, q.currency || "USD")} (${q.transit_days || 0} days)${q.rate_source ? ` · ${q.rate_source}` : ""}`,
 		value: i,
 		carrier: q.carrier,
 		transit_days: q.transit_days,
 		total_charge: q.total_charge,
 		carrier_quote_id: q.carrier_quote_id,
+		rate_source: q.rate_source,
 	}));
 
 	const prompt_fields =
@@ -133,6 +134,15 @@ function book_quote(frm) {
 				[carrier_name]
 			),
 			() => {
+				if (selected_option.rate_source === "SMC3" || is_smc3_carrier(selected_option.carrier)) {
+					frappe.msgprint(
+						__(
+							"This {0} rate came from SMC3 and is rating-only. Booking, BOL, and tracking are not available for SMC3-sourced quotes yet.",
+							[carrier_name]
+						)
+					);
+					return;
+				}
 				if (is_arcbest_carrier(selected_option.carrier)) {
 					book_arcbest_quote(frm, selected_option);
 					return;
@@ -170,6 +180,11 @@ function is_arcbest_carrier(carrier_code) {
 function is_tforce_carrier(carrier_code) {
 	const code = (carrier_code || "").toUpperCase();
 	return ["TFORCE", "TFF"].includes(code) || code.includes("TFORCE");
+}
+
+function is_smc3_carrier(carrier_code) {
+	const code = (carrier_code || "").toUpperCase();
+	return code === "SMC3" || code.includes("SMC3");
 }
 
 function book_tforce_quote(frm, selected_option) {

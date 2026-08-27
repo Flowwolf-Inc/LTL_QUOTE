@@ -1,0 +1,81 @@
+{
+ "actions": [],
+ "creation": "2026-08-25 18:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "scac",
+  "carrier_label",
+  "eva_access_id",
+  "column_break_1",
+  "account",
+  "enabled",
+  "contract_pricing",
+  "dynamic_pricing"
+ ],
+ "fields": [
+  {
+   "fieldname": "scac",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "SCAC",
+   "reqd": 1
+  },
+  {
+   "fieldname": "carrier_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Carrier Name"
+  },
+  {
+   "description": "SMC3 EVA access id for this network carrier.",
+   "fieldname": "eva_access_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "EVA Access ID"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Optional bill-to account override for this SCAC.",
+   "fieldname": "account",
+   "fieldtype": "Data",
+   "label": "Bill-To Account"
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "default": "1",
+   "fieldname": "contract_pricing",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Contract"
+  },
+  {
+   "default": "1",
+   "fieldname": "dynamic_pricing",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Dynamic"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-25 19:50:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL SMC3 Network Carrier",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

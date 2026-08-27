@@ -169,14 +169,17 @@ def get_quote_request_detail(name: str) -> dict:
 			"pro_number",
 			"bol_document",
 			"bol_document_url",
+			"bol_image",
 		],
 		order_by="creation desc",
 	)
 
-	from ltl_quote.utils.booking import resolve_shipment_bol_url
+	from ltl_quote.utils.booking import resolve_shipment_bol_image_url, resolve_shipment_bol_url
 
-	bol_url = resolve_shipment_bol_url(
-		shipment_name=shipments[0].name if shipments else None,
+	shipment_name = shipments[0].name if shipments else None
+	bol_image = resolve_shipment_bol_image_url(shipment_name=shipment_name)
+	bol_url = bol_image or resolve_shipment_bol_url(
+		shipment_name=shipment_name,
 		quote_request=doc,
 	)
 
@@ -185,6 +188,7 @@ def get_quote_request_detail(name: str) -> dict:
 		"accessorials": accessorials,
 		"shipments": shipments,
 		"bol_url": bol_url,
+		"bol_image": bol_image,
 	}
 
 
@@ -436,6 +440,26 @@ def cancel_shipment_pickup(name: str) -> dict:
 	if connector == CONNECTOR_ARCBEST:
 		return cancel_arcbest_pickup(shipment=name)
 	frappe.throw("Pickup cancellation is only available for Dayton, TForce, and ArcBest shipments.")
+
+
+@frappe.whitelist()
+def cancel_smc3_bol(name: str) -> dict:
+	"""Cancel an SMC3 bill of lading (DELETE /bill-of-lading/v1/app/{SCAC}/{PRO})."""
+	from ltl_quote.carrier_network.adapters.smc3 import cancel_smc3_shipment_bol
+
+	if not name:
+		frappe.throw("Shipment ID is required.")
+	return cancel_smc3_shipment_bol(name)
+
+
+@frappe.whitelist()
+def fetch_smc3_bol_image(name: str) -> dict:
+	"""GET the SMC3 Document API BOL PNG and attach it to the shipment."""
+	from ltl_quote.carrier_network.adapters.smc3 import fetch_smc3_bol_image as _fetch
+
+	if not name:
+		frappe.throw("Shipment ID is required.")
+	return _fetch(name)
 
 
 @frappe.whitelist()
@@ -835,4 +859,38 @@ def save_shipment_detail(name: str, data: str | dict | None = None) -> dict:
 
 	doc.save()
 	frappe.db.commit()
-	return {"name": doc.name, "status": doc.status}
+	_refresh_smc3_bol_after_save(doc)
+	doc.reload()
+	return {
+		"name": doc.name,
+		"status": doc.status,
+		"bol_document_url": doc.bol_document_url or doc.bol_document or "",
+		"bol_image": doc.bol_image or "",
+	}
+
+
+def _refresh_smc3_bol_after_save(shipment) -> None:
+	"""PUT the SMC3 BOL when shipment details change, then replace the PDF."""
+	carrier_name = str(getattr(shipment, "carrier", None) or "").strip()
+	if not carrier_name or not frappe.db.exists("LTL Carrier", carrier_name):
+		return
+	carrier = frappe.get_doc("LTL Carrier", carrier_name)
+	if str(getattr(carrier, "carrier_code", None) or "").upper() != "SMC3" and str(
+		getattr(carrier, "connector_type", None) or ""
+	) != "SMC3":
+		return
+	from ltl_quote.carrier_network.registry import get_adapter
+	from ltl_quote.carrier_network.adapters.smc3 import (
+		attach_smc3_bol_images_to_shipment,
+		attach_smc3_bol_to_shipment,
+	)
+
+	adapter = get_adapter(carrier)
+	result = adapter.update_bill_of_lading(shipment)
+	attach_smc3_bol_to_shipment(shipment, bol_result=result)
+	try:
+		png_result = adapter.get_bol_document_image(shipment, raise_on_empty=False)
+		if png_result.get("images"):
+			attach_smc3_bol_images_to_shipment(shipment, document_result=png_result)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "LTL Quote - SMC3 BOL PNG Refresh Failure")

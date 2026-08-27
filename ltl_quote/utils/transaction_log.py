@@ -11,6 +11,8 @@ API_GATEWAY_ENDPOINT = "/api/method/ltl_quote.api.quote.get_ltl_rates"
 LOG_CARRIER_LABELS = {
 	"DAYTON": "Dayton Freight",
 	"ARCB": "ArcBest",
+	"TFORCE": "TForce Freight",
+	"SMC3": "SMC3",
 	"MOCK": "Mock Carriers",
 	"Multi-Carrier": "Multi-Carrier",
 }
