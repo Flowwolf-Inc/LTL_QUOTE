@@ -104,6 +104,37 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 	return data
 
 
+def _clean_freight_class(value) -> str:
+	text = str(value or "").replace(".0", "").strip()
+	if not text or text.lower() in {"none", "null"}:
+		return ""
+	return text
+
+
+def line_item_freight_class(row, fallback: str = "") -> str:
+	"""NMFC class from a UI line item. Prefers `nmfc_class` over header defaults like 70."""
+	if isinstance(row, dict):
+		data = row
+	else:
+		data = {
+			"nmfc_class": getattr(row, "nmfc_class", None),
+			"freight_class": getattr(row, "freight_class", None),
+			"classification": getattr(row, "classification", None),
+		}
+	candidates = (
+		data.get("nmfc_class"),
+		data.get("freight_class"),
+		data.get("classification"),
+		data.get("class") if isinstance(row, dict) else None,
+		fallback,
+	)
+	for value in candidates:
+		cleaned = _clean_freight_class(value)
+		if cleaned:
+			return cleaned
+	return ""
+
+
 def _expand_items_payload(data: dict) -> None:
 	"""Map Postman-style `items` array into top-level freight fields.
 
@@ -119,9 +150,20 @@ def _expand_items_payload(data: dict) -> None:
 	if not normalized:
 		return
 
+	for item in normalized:
+		item_class = line_item_freight_class(item)
+		if item_class:
+			item["nmfc_class"] = item_class
+			item["freight_class"] = item_class
+			item["classification"] = item_class
+			item["class"] = item_class
+
 	first = normalized[0]
-	if not data.get("freight_class"):
-		data["freight_class"] = first.get("classification") or first.get("freight_class") or first.get("nmfc_class")
+	item_class = line_item_freight_class(first)
+	if item_class:
+		data["freight_class"] = item_class
+
+	frappe.logger().info(f"Payload Items: {[item.get('class') for item in normalized]}")
 
 	if not data.get("commodity_description"):
 		data["commodity_description"] = (

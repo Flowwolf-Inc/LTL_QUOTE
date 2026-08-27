@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import frappe
 from frappe.utils import add_days, getdate, now_datetime
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.accessorials import build_accessorial_items
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest, CarrierRateQuote
 from ltl_quote.carrier_network.registry import get_adapter, get_enabled_carriers
@@ -152,11 +153,14 @@ class RateAggregator:
 	def _build_shipment_request(self) -> ShipmentRequest:
 		items = []
 		for row in getattr(self.doc, "line_items", None) or []:
+			item_class = line_item_freight_class(row, self.doc.freight_class)
 			items.append(
 				{
 					"description": getattr(row, "description", None) or getattr(row, "item_name", None) or "",
-					"freight_class": getattr(row, "freight_class", None) or self.doc.freight_class,
-					"classification": getattr(row, "freight_class", None) or self.doc.freight_class,
+					"nmfc_class": item_class,
+					"freight_class": item_class,
+					"classification": item_class,
+					"class": item_class,
 					"nmfc": getattr(row, "nmfc", None) or "",
 					"qty": getattr(row, "quantity", None) or 1,
 					"weight": getattr(row, "weight", None) or 0,
@@ -169,11 +173,13 @@ class RateAggregator:
 					"packaging_type": getattr(row, "packaging_units", None) or "",
 				}
 			)
+		header_class = line_item_freight_class(items[0] if items else {}, self.doc.freight_class)
+		frappe.logger().info(f"Payload Items: {[item.get('class') for item in items]}")
 		return ShipmentRequest(
 			origin_zip=self.doc.origin_zip,
 			destination_zip=self.doc.destination_zip,
 			total_weight=float(str(self.doc.total_weight or 0).replace(",", "")),
-			freight_class=str(self.doc.freight_class or "").replace(",", ""),
+			freight_class=str(header_class or self.doc.freight_class or "").replace(",", ""),
 			length=float(self.doc.length or 0),
 			width=float(self.doc.width or 0),
 			height=float(self.doc.height or 0),

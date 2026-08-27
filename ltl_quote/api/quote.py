@@ -12,7 +12,7 @@ import frappe
 from frappe.utils import cint, flt, now_datetime
 
 from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
-from ltl_quote.api.payload import parse_rating_payload
+from ltl_quote.api.payload import line_item_freight_class, parse_rating_payload
 from ltl_quote.carrier_network.accessorials import build_accessorial_items_from_payload
 from ltl_quote.carrier_network.adapters.base import ShipmentRequest
 from ltl_quote.decision_engine.recommender import rank_quotes
@@ -241,12 +241,7 @@ def _map_request_line_items(items: list) -> list[dict]:
 			or item.get("item_name")
 			or ""
 		)
-		freight_class = (
-			item.get("freight_class")
-			or item.get("nmfc_class")
-			or item.get("classification")
-			or ""
-		)
+		freight_class = line_item_freight_class(item)
 		nmfc = item.get("nmfc") or item.get("nmfc_number") or ""
 		qty = item.get("quantity") if item.get("quantity") not in (None, "") else item.get("qty")
 		hazmat_raw = item.get("hazmat")

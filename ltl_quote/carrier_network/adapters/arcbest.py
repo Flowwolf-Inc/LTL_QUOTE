@@ -4,6 +4,7 @@ import frappe
 import requests
 from frappe.utils import cint, flt, getdate, nowdate
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
     arcbest_accessorial_params,
     build_accessorial_items_from_payload,
@@ -584,7 +585,9 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "destination_state": dest_state,
             "destination_country": request.get("destination_country") or "US",
             "total_weight": request.get("total_weight") or first_item.get("weight") or 400,
-            "freight_class": request.get("freight_class") or first_item.get("classification") or first_item.get("freight_class") or "70",
+            "freight_class": line_item_freight_class(first_item, request.get("freight_class"))
+            or request.get("freight_class")
+            or "70",
             "pieces": request.get("pieces") or request.get("total_qty") or first_item.get("qty") or 1,
             "length": length,
             "width": width,
@@ -618,8 +621,11 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             "ShipDay": f"{ship_date.day:02d}",
             "ShipYear": str(ship_date.year),
         }
-        self._apply_commodity_params(params, fields, request)
+		self._apply_commodity_params(params, fields, request)
         params.update(arcbest_accessorial_params(accessorial_items, self.carrier_doc))
+        frappe.logger().info(
+            f"Payload Items: {[params.get(key) for key in params if str(key).startswith('Class')]}"
+        )
 
         return params
 
@@ -655,10 +661,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             rows.append(
                 {
                     "weight": weight * pieces if self._weight_is_per_piece(items, fields.get("total_weight")) else weight,
-                    "freight_class": item.get("classification")
-                    or item.get("freight_class")
-                    or fields.get("freight_class")
-                    or "50.0",
+                    "freight_class": line_item_freight_class(item, fields.get("freight_class")) or "50.0",
                     "pieces": pieces,
                     "length": length,
                     "width": width,

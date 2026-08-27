@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 
 from frappe.utils import cint, flt
 
+from ltl_quote.api.payload import line_item_freight_class
+
 DEFAULT_BOL_BASE = "https://bill-of-lading.smc3.com/bill-of-lading/v1/app"
 DEFAULT_BOL_VERSION = "2.1.0"
 DEFAULT_SANDBOX_ACCOUNT = "12345"
@@ -229,9 +231,7 @@ def _handling_unit(item: dict, quote_data: dict) -> dict:
 	weight = max(flt(item.get("weight") or quote_data.get("total_weight") or 1), 1)
 	pieces = max(cint(item.get("qty") or item.get("quantity") or item.get("pieces") or 1), 1)
 	count = max(cint(item.get("packaging_unit_count") or pieces), 1)
-	classification = str(
-		item.get("freight_class") or item.get("classification") or quote_data.get("freight_class") or "70"
-	).strip() or "70"
+	classification = line_item_freight_class(item, quote_data.get("freight_class") or "70") or "70"
 	description = str(
 		item.get("description") or item.get("item_name") or quote_data.get("commodity_description") or "Freight"
 	).strip() or "Freight"

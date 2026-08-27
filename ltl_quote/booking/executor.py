@@ -4,6 +4,7 @@
 import frappe
 from frappe.utils import now_datetime
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.registry import get_adapter
 from ltl_quote.utils.currency import get_quote_currency
 from ltl_quote.utils.booking import resolve_shipper_context
@@ -79,7 +80,11 @@ class ShipmentExecutor:
 			"destination_city": destination_city,
 			"destination_state": destination_state,
 			"quote_request": self.quote_request.name,
-			"freight_class": self.quote_request.freight_class,
+			"freight_class": line_item_freight_class(
+				(getattr(self.quote_request, "line_items", None) or [None])[0],
+				self.quote_request.freight_class,
+			)
+			or self.quote_request.freight_class,
 			"shipper_name": shipper["shipper_name"],
 			"shipper_address": shipper["shipper_address"],
 			"consignee_name": shipper["consignee_name"],
@@ -147,7 +152,7 @@ class ShipmentExecutor:
 		rows = []
 		for row in getattr(self.quote_request, "line_items", None) or []:
 			description = getattr(row, "description", None) or getattr(row, "item_name", None) or ""
-			freight_class = getattr(row, "freight_class", None) or ""
+			freight_class = line_item_freight_class(row, self.quote_request.freight_class)
 			nmfc = getattr(row, "nmfc", None) or ""
 			qty = getattr(row, "quantity", None) or 1
 			rows.append(

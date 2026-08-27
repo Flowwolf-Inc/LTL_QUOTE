@@ -1732,8 +1732,9 @@ ltl_quote.Dashboard = class Dashboard {
 			payload.items = line_items;
 			payload.commodity_description = line_items[0].description || line_items[0].item_name || "";
 			payload.nmfc = line_items[0].nmfc || line_items[0].nmfc_number || "";
-			if (!payload.freight_class && line_items[0].freight_class) {
-				payload.freight_class = line_items[0].freight_class;
+			const item_class = line_items[0].nmfc_class || line_items[0].freight_class;
+			if (item_class) {
+				payload.freight_class = item_class;
 			}
 
 			const rolled_weight = line_items.reduce((sum, row) => {

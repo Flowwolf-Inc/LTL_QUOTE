@@ -6,6 +6,7 @@ import requests
 from frappe.utils import add_days, cint, flt, get_datetime, now_datetime, today
 from frappe.utils.file_manager import save_file
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_dayton_bol_accessorials_section,
@@ -90,7 +91,10 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		dayton_accessorials = dayton_rate_accessorials(request.accessorials, self.carrier_doc)
 
 		clean_weight = self._clean_int(request.total_weight)
-		clean_class = self._clean_float(request.freight_class, 70)
+		clean_class = self._clean_float(
+			line_item_freight_class((request.items or [{}])[0] if request.items else {}, request.freight_class),
+			70,
+		)
 		clean_pieces = self._clean_int(request.pieces, 1)
 		length, width, height = request.first_handling_dimensions()
 
@@ -100,16 +104,44 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"Contact pricing@daytonfreight.com for a manual quote."
 			)
 
-		item = {
-			"weight": clean_weight,
-			"class": clean_class,
-			"pieces": clean_pieces,
-			"description": "LTL Quote Freight Line",
-		}
-		if length > 0 and width > 0 and height > 0:
-			item["length"] = length
-			item["width"] = width
-			item["height"] = height
+		payload_items = []
+		for row in request.items or []:
+			if not isinstance(row, dict):
+				continue
+			row_weight = self._clean_int(row.get("weight") or 0)
+			if row_weight <= 0:
+				continue
+			row_pieces = max(self._clean_int(row.get("qty") or row.get("quantity") or 1, 1), 1)
+			item_class = self._clean_float(line_item_freight_class(row, request.freight_class), 70)
+			payload_item = {
+				"weight": row_weight,
+				"class": item_class,
+				"pieces": row_pieces,
+				"description": str(row.get("description") or row.get("item_name") or "LTL Quote Freight Line"),
+			}
+			row_length = flt(row.get("length") or 0)
+			row_width = flt(row.get("width") or 0)
+			row_height = flt(row.get("height") or 0)
+			if row_length > 0 and row_width > 0 and row_height > 0:
+				payload_item["length"] = row_length
+				payload_item["width"] = row_width
+				payload_item["height"] = row_height
+			payload_items.append(payload_item)
+
+		if not payload_items:
+			payload_item = {
+				"weight": clean_weight,
+				"class": clean_class,
+				"pieces": clean_pieces,
+				"description": "LTL Quote Freight Line",
+			}
+			if length > 0 and width > 0 and height > 0:
+				payload_item["length"] = length
+				payload_item["width"] = width
+				payload_item["height"] = height
+			payload_items = [payload_item]
+
+		frappe.logger().info(f"Payload Items: {[item.get('class') for item in payload_items]}")
 
 		dayton_payload = {
 			"accessorials": dayton_accessorials,
@@ -117,7 +149,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			"destination": str(request.destination_zip),
 			"directOnly": False,
 			"handlingUnits": [],
-			"items": [item],
+			"items": payload_items,
 			"origin": str(request.origin_zip),
 			"serviceOptions": service_option,
 			"shipmentDate": now_datetime().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1675,6 +1707,7 @@ def _item_as_dict(item) -> dict:
 		"item_name": getattr(item, "item_name", None) or "",
 		"item_number": getattr(item, "item_number", None) or "",
 		"freight_class": getattr(item, "freight_class", None) or "",
+		"nmfc_class": getattr(item, "nmfc_class", None) or getattr(item, "freight_class", None) or "",
 		"classification": getattr(item, "freight_class", None) or "",
 		"nmfc": getattr(item, "nmfc", None) or "",
 		"nmfc_number": getattr(item, "nmfc", None) or "",
@@ -1807,12 +1840,7 @@ def _build_dayton_handling_units(
 		if weight_lbs <= 0:
 			weight_lbs = max(1, fallback_weight_lbs // max(len(items), 1))
 
-		freight_class = str(
-			item.get("classification")
-			or item.get("freight_class")
-			or item.get("nmfc_class")
-			or fallback_class
-		)
+		freight_class = line_item_freight_class(item, fallback_class) or fallback_class
 		description = str(
 			item.get("description")
 			or item.get("commodity_description")

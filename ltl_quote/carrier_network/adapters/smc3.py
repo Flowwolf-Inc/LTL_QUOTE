@@ -14,6 +14,7 @@ import requests
 from frappe.utils import cint, flt, getdate
 from frappe.utils.file_manager import save_file
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.adapters.base import (
 	BaseCarrierAdapter,
 	CarrierRateQuote,
@@ -1080,14 +1081,15 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 	def _build_commodities(self, request: ShipmentRequest) -> list[dict]:
 		commodities = []
 		for item in request.items or []:
+			if not isinstance(item, dict):
+				continue
 			weight = flt(item.get("weight") or 0)
 			if weight <= 0:
 				continue
+			item_class = line_item_freight_class(item, request.freight_class)
 			commodities.append(
 				{
-					"classification": str(
-						item.get("classification") or item.get("freight_class") or request.freight_class or ""
-					),
+					"classification": item_class,
 					"weight": _as_smc3_number(weight),
 					"description": str(item.get("description") or item.get("item_name") or "Freight"),
 					"length": _as_smc3_number(item.get("length") or request.length or 0),
@@ -1097,20 +1099,22 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 					"packagingType": _packaging_type(item.get("packaging_type")),
 				}
 			)
-		if commodities:
-			return commodities
-		return [
-			{
-				"classification": str(request.freight_class or ""),
-				"weight": _as_smc3_number(request.total_weight or 0),
-				"description": "Freight",
-				"length": _as_smc3_number(request.length or 0),
-				"width": _as_smc3_number(request.width or 0),
-				"height": _as_smc3_number(request.height or 0),
-				"pieces": _as_smc3_number(request.pieces or 1),
-				"packagingType": "PAT",
-			}
-		]
+		if not commodities:
+			item_class = str(request.freight_class or "")
+			commodities = [
+				{
+					"classification": item_class,
+					"weight": _as_smc3_number(request.total_weight or 0),
+					"description": "Freight",
+					"length": _as_smc3_number(request.length or 0),
+					"width": _as_smc3_number(request.width or 0),
+					"height": _as_smc3_number(request.height or 0),
+					"pieces": _as_smc3_number(request.pieces or 1),
+					"packagingType": "PAT",
+				}
+			]
+		frappe.logger().info(f"Payload Items: {[item.get('classification') for item in commodities]}")
+		return commodities
 
 	def _parse_response(self, data: dict, network_carriers: list[dict]) -> list[CarrierRateQuote]:
 		labels = {row["scac"]: row["carrier_label"] for row in network_carriers if row.get("carrier_label")}

@@ -15,6 +15,7 @@ import requests
 from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.file_manager import save_file
 
+from ltl_quote.api.payload import line_item_freight_class
 from ltl_quote.carrier_network.accessorials import (
 	build_accessorial_items,
 	build_accessorial_items_from_payload,
@@ -1183,10 +1184,12 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 				if isinstance(item, dict):
 					commodities.append(self._commodity_from_item(item, hazmat_default))
 		if commodities:
+			frappe.logger().info(f"Payload Items: {[item.get('class') for item in commodities]}")
 			return commodities
 
 		commodity = self._commodity_from_item(
 			{
+				"nmfc_class": request.freight_class,
 				"classification": request.freight_class,
 				"qty": request.pieces,
 				"weight": request.total_weight,
@@ -1197,6 +1200,7 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 			},
 			hazmat_default,
 		)
+		frappe.logger().info(f"Payload Items: {[commodity.get('class')]}")
 		return [commodity]
 
 	@staticmethod
@@ -1219,13 +1223,7 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 
 		weight_val = flt(item.get("weight") or 0)
 		pieces = max(cint(item.get("pieces") or item.get("qty") or item.get("quantity") or 1), 1)
-		freight_class = str(
-			item.get("class")
-			or item.get("classification")
-			or item.get("freight_class")
-			or item.get("nmfc_class")
-			or "70"
-		)
+		freight_class = line_item_freight_class(item, "70") or "70"
 		hazmat = bool(
 			item.get("dangerousGoods")
 			if item.get("dangerousGoods") is not None
@@ -1551,7 +1549,7 @@ def apply_tforce_bol_details_to_shipment(
 					"handling_unit_type": str(item.get("units") or item.get("packaging_units") or "SKID"),
 					"package_qty": qty,
 					"package_type": str(item.get("packaging_type") or item.get("units") or "BOX"),
-					"freight_class": str(item.get("freight_class") or item.get("classification") or ""),
+					"freight_class": line_item_freight_class(item),
 					"nmfc": str(item.get("nmfc") or item.get("nmfc_number") or ""),
 					"hazmat": 1 if item.get("hazmat") or item.get("hazardous") else 0,
 					"commodity_description": str(
