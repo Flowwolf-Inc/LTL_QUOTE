@@ -2130,7 +2130,7 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!shipment) return false;
 		this.booking_context = {
 			shipment,
-			booked_carrier_code: res.booked_carrier or res.booked_carrier_code || "",
+			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
 			bol_url: res.bol_document_url || res.bol_url || (res.data && res.data.bol_document_url) || "",
 			bol_image: res.bol_image || res.bol_image_url || (res.data && res.data.bol_image) || "",
 			bol_number: res.bol_number || "",
