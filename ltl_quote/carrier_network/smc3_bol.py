@@ -10,7 +10,12 @@ from datetime import datetime, timedelta
 
 from frappe.utils import cint, flt
 
-from ltl_quote.api.payload import default_handling_dimensions, freight_class_lookup_key, line_item_freight_class
+from ltl_quote.api.payload import (
+	default_handling_dimensions,
+	digital_ltl_dimension_unit,
+	freight_class_lookup_key,
+	line_item_freight_class,
+)
 
 DEFAULT_BOL_BASE = "https://bill-of-lading.smc3.com/bill-of-lading/v1/app"
 DEFAULT_BOL_VERSION = "2.1.0"
@@ -252,7 +257,7 @@ def _handling_unit(item: dict, quote_data: dict) -> dict:
 		"width": _as_number(width),
 		"height": _as_number(height),
 		# SMC3 BOL enum is "Inches" / "Centimeters", not "IN" (rating uses the same names).
-		"dimensionsUnit": _dimension_unit(
+		"dimensionsUnit": digital_ltl_dimension_unit(
 			item.get("dimension_unit") or item.get("dimension_units") or quote_data.get("dimension_uom")
 		),
 		"lineItems": [
@@ -281,10 +286,7 @@ def _line_packaging(value) -> str:
 
 def _dimension_unit(value) -> str:
 	"""SMC3 handlingUnits.dimensionsUnit accepts Inches or Centimeters."""
-	raw = str(value or "").strip().upper()
-	if raw in {"CM", "CENTIMETER", "CENTIMETERS"}:
-		return "Centimeters"
-	return "Inches"
+	return digital_ltl_dimension_unit(value)
 
 
 def _pickup_datetime(quote_data: dict) -> str:

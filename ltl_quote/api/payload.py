@@ -212,6 +212,65 @@ def default_handling_dimensions(length=0, width=0, height=0) -> tuple[float, flo
 	return length, width, height
 
 
+def digital_ltl_dimension_unit(value) -> str:
+	"""DSDC eBOL handlingUnits.dimensionsUnit: Inches or Centimeters."""
+	raw = str(value or "").strip().upper().replace(" ", "")
+	if raw in {"CM", "CENTIMETER", "CENTIMETERS"}:
+		return "Centimeters"
+	return "Inches"
+
+
+def digital_ltl_weight_unit(value) -> str:
+	"""DSDC eBOL weightUnit: Pounds or Kilograms."""
+	raw = str(value or "").strip().upper().replace(" ", "")
+	if raw in {"KG", "KGS", "KILOGRAM", "KILOGRAMS"}:
+		return "Kilograms"
+	return "Pounds"
+
+
+def digital_ltl_cube_unit(value) -> str:
+	"""DSDC eBOL cubeDimensionsUnit: Feet or Meters."""
+	raw = str(value or "").strip().upper().replace(" ", "")
+	if raw in {"M", "MTR", "METER", "METERS", "METRE", "METRES"}:
+		return "Meters"
+	return "Feet"
+
+
+def digital_ltl_handling_unit_type(value) -> str:
+	"""DSDC eBOL handlingUnits.type: 3-letter codes (PAT pallet, SKD skid)."""
+	raw = str(value or "").strip().upper()
+	aliases = {
+		"PALLET": "PAT",
+		"PALLETS": "PAT",
+		"PLT": "PAT",
+		"PAT": "PAT",
+		"SKID": "SKD",
+		"SKIDS": "SKD",
+		"SKD": "SKD",
+		"CARTON": "CTN",
+		"CARTONS": "CTN",
+		"CTN": "CTN",
+		"BOX": "BOX",
+		"CRATE": "CRT",
+		"CRT": "CRT",
+		"DRUM": "DRM",
+		"DRM": "DRM",
+		"TOTE": "TBN",
+		"TBN": "TBN",
+		"BUNDLE": "BDL",
+		"BDL": "BDL",
+		"ROLL": "ROL",
+		"ROL": "ROL",
+		"OTHER": "OTH",
+		"OTH": "OTH",
+	}
+	if raw in aliases:
+		return aliases[raw]
+	if len(raw) == 3 and raw.isalpha():
+		return raw
+	return "PAT"
+
+
 def apply_default_handling_dimensions(data: dict) -> dict:
 	"""Copy default pallet inches onto the header and each items[] row when L/W/H is omitted."""
 	items = data.get("items") or []

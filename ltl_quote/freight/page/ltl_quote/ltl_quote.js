@@ -134,7 +134,7 @@ function new_line_item(overrides = {}) {
 			quantity: "",
 			packaging_units: "",
 			packaging_unit_count: "",
-			dimension_units: "",
+			dimension_units: "IN",
 			length: "",
 			width: "",
 			height: "",
@@ -903,18 +903,21 @@ ltl_quote.Dashboard = class Dashboard {
 				</div>`;
 		}
 		if (opts.type === "select") {
+			const selected = val || String(opts.default || "");
+			const includeEmpty = opts.includeEmpty !== false;
+			const emptyOpt = includeEmpty ? `<option value="">Select</option>` : "";
 			const options = (opts.options || [])
 				.map((c) => {
 					const value = typeof c === "object" ? c.value : c;
 					const label = typeof c === "object" ? c.label || c.value : c;
-					return `<option value="${esc(value)}" ${val === String(value) ? "selected" : ""}>${esc(label)}</option>`;
+					return `<option value="${esc(value)}" ${selected === String(value) ? "selected" : ""}>${esc(label)}</option>`;
 				})
 				.join("");
 			return `
 				<div class="ltl-field ${opts.className || ""}">
 					<label>${label}${req}</label>
 					<select class="ltl-input" data-li-edit="${key}"${req_attr}>
-						<option value="">Select</option>${options}
+						${emptyOpt}${options}
 					</select>
 				</div>`;
 		}
@@ -972,7 +975,15 @@ ltl_quote.Dashboard = class Dashboard {
 					<div class="ltl-li-edit-section-head"><i class="fa fa-arrows-h"></i> Dimensions &amp; Weight</div>
 					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
 						<div class="ltl-li-edit-col">
-							${this.li_input("Dimension Units", "dimension_units", { placeholder: "IN" })}
+							${this.li_input("Dimension Units", "dimension_units", {
+								type: "select",
+								options: [
+									{ value: "IN", label: "IN" },
+									{ value: "CM", label: "CM" },
+								],
+								default: "IN",
+								includeEmpty: false,
+							})}
 							${this.li_input("Length", "length", { type: "number", required: true })}
 							${this.li_input("Width", "width", { type: "number", required: true })}
 							${this.li_input("Height", "height", { type: "number", required: true })}
@@ -1136,6 +1147,8 @@ ltl_quote.Dashboard = class Dashboard {
 				qty: parseInt(row.quantity || 1, 10) || 1,
 				quantity: parseInt(row.quantity || 1, 10) || 1,
 				weight: row.weight || "",
+				dimension_units: row.dimension_units || row.dimension_unit || "IN",
+				dimension_unit: row.dimension_unit || row.dimension_units || "IN",
 			}));
 	}
 

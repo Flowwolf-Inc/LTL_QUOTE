@@ -9,6 +9,10 @@ from frappe.utils.file_manager import save_file
 from ltl_quote.api.payload import (
 	apply_line_item_freight_class,
 	default_handling_dimensions,
+	digital_ltl_cube_unit,
+	digital_ltl_dimension_unit,
+	digital_ltl_handling_unit_type,
+	digital_ltl_weight_unit,
 	format_freight_class_float,
 	line_item_freight_class,
 )
@@ -530,7 +534,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 				"grossWeight": weight_lbs,
 				"netWeight": weight_lbs,
 				"handlingUnits": handling_unit_count,
-				"weightUnit": "LBS",
+				"weightUnit": digital_ltl_weight_unit("LBS"),
+				"dimensionsUnit": digital_ltl_dimension_unit(dimensions_unit),
+				"cubeDimensionsUnit": digital_ltl_cube_unit("FT"),
 			},
 			"accessorials": build_dayton_bol_accessorials_section(accessorial_codes),
 			"origin": {
@@ -746,7 +752,7 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			),
 			fallback_nmfc=str(quote_data.get("nmfc") or ""),
 			fallback_hazardous=bool(quote_data.get("is_hazardous", False)),
-			hu_type="PALLET",
+			hu_type="PAT",
 			include_hu_id=True,
 		)
 
@@ -796,15 +802,15 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 			},
 			"shipmentTotals": {
 				"cube": 0,
-				"cubeDimensionsUnit": "FT",
+				"cubeDimensionsUnit": digital_ltl_cube_unit("FT"),
 				"currency": "USD",
 				"declaredValue": 0,
-				"dimensionsUnit": "IN",
+				"dimensionsUnit": digital_ltl_dimension_unit(dimensions_unit),
 				"grossWeight": weight_lbs,
 				"handlingUnits": handling_unit_count,
 				"linearLength": 0,
 				"netWeight": weight_lbs,
-				"weightUnit": "LBS",
+				"weightUnit": digital_ltl_weight_unit("LBS"),
 			},
 			"origin": {
 				"account": self.account_number,
@@ -1781,7 +1787,7 @@ def _build_dayton_handling_units(
 	fallback_description: str = "General Freight Cargo",
 	fallback_nmfc: str = "",
 	fallback_hazardous: bool = False,
-	hu_type: str = "PALLET",
+	hu_type: str = "PAT",
 	include_hu_id: bool = True,
 ) -> tuple[list[dict], int, int]:
 	"""Build Dayton handlingUnits from line items (one HU per item).
@@ -1791,17 +1797,17 @@ def _build_dayton_handling_units(
 	fallback_pieces = max(1, cint(fallback_pieces or 1))
 	fallback_weight_lbs = _dayton_int_weight(fallback_weight)
 	fallback_class = str(fallback_class or "70")
-	fallback_dimension_unit = str(fallback_dimension_unit or "IN").upper()
-	if fallback_dimension_unit not in ("IN", "CM"):
-		fallback_dimension_unit = "IN"
+	fallback_dimension_unit = digital_ltl_dimension_unit(fallback_dimension_unit)
+	dsdc_hu_type = digital_ltl_handling_unit_type(hu_type)
+	dsdc_weight_unit = digital_ltl_weight_unit("LBS")
 
 	if not items:
 		hu_id = "1"
 		hu = {
 			"count": fallback_pieces,
-			"type": hu_type,
+			"type": dsdc_hu_type,
 			"weight": fallback_weight_lbs,
-			"weightUnit": "LBS",
+			"weightUnit": dsdc_weight_unit,
 			"tareWeight": 0,
 			"stackable": False,
 			"lineItems": [
@@ -1814,7 +1820,7 @@ def _build_dayton_handling_units(
 					"packagingType": _resolve_dayton_packaging_type(None),
 					"pieces": fallback_pieces,
 					"weight": fallback_weight_lbs,
-					"weightUnit": "LBS",
+					"weightUnit": dsdc_weight_unit,
 				}
 			],
 		}
@@ -1862,9 +1868,12 @@ def _build_dayton_handling_units(
 		packaging = _resolve_dayton_packaging_type(
 			item.get("packaging_units") or item.get("packaging_type") or item.get("packagingType")
 		)
-		dim_unit = str(item.get("dimension_unit") or item.get("dimension_units") or fallback_dimension_unit).upper()
-		if dim_unit not in ("IN", "CM"):
-			dim_unit = fallback_dimension_unit
+		dim_unit = digital_ltl_dimension_unit(
+			item.get("dimension_unit") or item.get("dimension_units") or fallback_dimension_unit
+		)
+		item_weight_unit = digital_ltl_weight_unit(
+			item.get("weight_unit") or item.get("weight_units") or "LBS"
+		)
 
 		length, width, height = default_handling_dimensions(
 			item.get("length") if item.get("length") not in (None, "") else fallback_length,
@@ -1874,9 +1883,9 @@ def _build_dayton_handling_units(
 
 		hu = {
 			"count": pieces,
-			"type": hu_type,
+			"type": dsdc_hu_type,
 			"weight": weight_lbs,
-			"weightUnit": "LBS",
+			"weightUnit": item_weight_unit,
 			"tareWeight": 0,
 			"stackable": False,
 			"lineItems": [
@@ -1889,7 +1898,7 @@ def _build_dayton_handling_units(
 					"packagingType": packaging,
 					"pieces": pieces,
 					"weight": weight_lbs,
-					"weightUnit": "LBS",
+					"weightUnit": item_weight_unit,
 				}
 			],
 		}
@@ -1940,6 +1949,11 @@ def _sanitize_dayton_ebol_integers(payload: dict) -> dict:
 		if key in totals and totals[key] is not None:
 			totals[key] = _dayton_int_weight(totals[key])
 	if totals:
+		totals["weightUnit"] = digital_ltl_weight_unit(totals.get("weightUnit"))
+		if "dimensionsUnit" in totals or totals.get("linearLength") is not None:
+			totals["dimensionsUnit"] = digital_ltl_dimension_unit(totals.get("dimensionsUnit"))
+		if "cubeDimensionsUnit" in totals:
+			totals["cubeDimensionsUnit"] = digital_ltl_cube_unit(totals.get("cubeDimensionsUnit"))
 		payload["shipmentTotals"] = totals
 
 	commodities = dict(payload.get("commodities") or {})
@@ -1961,7 +1975,13 @@ def _sanitize_dayton_ebol_integers(payload: dict) -> dict:
 		row["length"] = _dayton_int_dimension(length, 48)
 		row["width"] = _dayton_int_dimension(width, 40)
 		row["height"] = _dayton_int_dimension(height, 48)
-		row.setdefault("dimensionsUnit", "IN")
+		row["dimensionsUnit"] = digital_ltl_dimension_unit(row.get("dimensionsUnit"))
+		row["weightUnit"] = digital_ltl_weight_unit(row.get("weightUnit"))
+		row["type"] = digital_ltl_handling_unit_type(row.get("type") or row.get("handlingUnitType"))
+		if "handlingUnitType" in row:
+			row["handlingUnitType"] = digital_ltl_handling_unit_type(
+				row.get("handlingUnitType") or row["type"]
+			)
 
 		line_items = []
 		for line in row.get("lineItems") or []:
@@ -1973,6 +1993,8 @@ def _sanitize_dayton_ebol_integers(payload: dict) -> dict:
 			for key in ("weight", "pieces"):
 				if key in item and item[key] is not None:
 					item[key] = _dayton_int_weight(item[key])
+			if item.get("weightUnit"):
+				item["weightUnit"] = digital_ltl_weight_unit(item.get("weightUnit"))
 
 			hazmat = item.get("hazardousDetails")
 			if isinstance(hazmat, dict) and hazmat.get("weight") is not None:
