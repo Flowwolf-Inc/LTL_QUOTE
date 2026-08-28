@@ -251,7 +251,10 @@ def _handling_unit(item: dict, quote_data: dict) -> dict:
 		"length": _as_number(length),
 		"width": _as_number(width),
 		"height": _as_number(height),
-		"dimensionsUnit": "IN",
+		# SMC3 BOL enum is "Inches" / "Centimeters", not "IN" (rating uses the same names).
+		"dimensionsUnit": _dimension_unit(
+			item.get("dimension_unit") or item.get("dimension_units") or quote_data.get("dimension_uom")
+		),
 		"lineItems": [
 			{
 				"description": description,
@@ -274,6 +277,14 @@ def _handling_type(value) -> str:
 def _line_packaging(value) -> str:
 	raw = str(value or "").strip().upper()
 	return LINE_PACKAGING_TYPES.get(raw, "BOX")
+
+
+def _dimension_unit(value) -> str:
+	"""SMC3 handlingUnits.dimensionsUnit accepts Inches or Centimeters."""
+	raw = str(value or "").strip().upper()
+	if raw in {"CM", "CENTIMETER", "CENTIMETERS"}:
+		return "Centimeters"
+	return "Inches"
 
 
 def _pickup_datetime(quote_data: dict) -> str:
