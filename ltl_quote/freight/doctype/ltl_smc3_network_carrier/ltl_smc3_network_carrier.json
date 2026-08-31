@@ -12,7 +12,9 @@
   "account",
   "enabled",
   "contract_pricing",
-  "dynamic_pricing"
+  "dynamic_pricing",
+  "barcode_symbology",
+  "barcode_printing_requirements"
  ],
  "fields": [
   {
@@ -65,11 +67,23 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Dynamic"
+  },
+  {
+   "description": "APA barcodeRequirements symbology for PRO labels, e.g. Code 39.",
+   "fieldname": "barcode_symbology",
+   "fieldtype": "Data",
+   "label": "Barcode Symbology"
+  },
+  {
+   "description": "APA printing rules for this SCAC's PRO barcode.",
+   "fieldname": "barcode_printing_requirements",
+   "fieldtype": "Small Text",
+   "label": "Barcode Printing Requirements"
   }
  ],
  "istable": 1,
  "links": [],
- "modified": "2026-08-25 19:50:00.000000",
+ "modified": "2026-08-28 19:40:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL SMC3 Network Carrier",

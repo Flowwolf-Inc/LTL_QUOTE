@@ -74,6 +74,7 @@ frappe.ui.form.on("LTL Shipment", {
 			frm.remove_custom_button(__("Cancel BOL"), __("SMC3 Actions"));
 			frm.remove_custom_button(__("Get BOL Image"), __("SMC3 Actions"));
 			frm.remove_custom_button(__("View BOL Image"), __("SMC3 Actions"));
+			frm.remove_custom_button(__("Get Next PRO"), __("SMC3 Actions"));
 
 			frm.add_custom_button(__("Refresh Tracking"), () => {
 				frappe.call({
@@ -172,6 +173,41 @@ frappe.ui.form.on("LTL Shipment", {
 				frm.add_custom_button(__("Generate BOL"), () => {
 					frappe.core.utils.update_dayton_carrier_bol(frm);
 				}).addClass("btn-primary");
+			}
+
+			if (
+				is_smc3_carrier(frm.doc.carrier)
+				&& frm.doc.status !== "Cancelled"
+				&& frm.doc.status !== "Delivered"
+			) {
+				frm.add_custom_button(__("Get Next PRO"), () => {
+					const run = (force) => {
+						frappe.call({
+							method: "assign_next_pro",
+							doc: frm.doc,
+							args: { force },
+							freeze: true,
+							freeze_message: __("Requesting next PRO from SMC3…"),
+							callback(r) {
+								if (r.message?.status === "success") {
+									frappe.show_alert({
+										message: __("PRO {0} assigned.", [r.message.pro_number || ""]),
+										indicator: "green",
+									});
+								}
+								frm.reload_doc();
+							},
+						});
+					};
+					if (frm.doc.pro_number) {
+						frappe.confirm(
+							__("PRO {0} is already assigned. Assign a new number?", [frm.doc.pro_number]),
+							() => run(1)
+						);
+					} else {
+						run(0);
+					}
+				}, __("SMC3 Actions"));
 			}
 
 			if (
@@ -461,6 +497,7 @@ function pickup_connector_key(carrier_code) {
 	if (code === "DAYTON") return "DAYTON";
 	if (["TFORCE", "TFF"].includes(code) || code.includes("TFORCE")) return "TFORCE";
 	if (["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code) || code.includes("ARC")) return "ARCB";
+	if (code === "SMC3" || code.includes("SMC3")) return "SMC3";
 	return code;
 }
 
@@ -473,7 +510,7 @@ function is_arcbest_carrier(carrier_code) {
 }
 
 function is_pickup_tracking_carrier(carrier_code) {
-	return ["DAYTON", "TFORCE", "ARCB"].includes(pickup_connector_key(carrier_code));
+	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(pickup_connector_key(carrier_code));
 }
 
 function is_smc3_carrier(carrier_code) {
@@ -486,6 +523,7 @@ function pickup_carrier_label(carrier_code) {
 	if (key === "TFORCE") return "TForce";
 	if (key === "ARCB") return "ArcBest";
 	if (key === "DAYTON") return "Dayton";
+	if (key === "SMC3") return "SMC3";
 	return key || "Carrier";
 }
 
@@ -493,5 +531,6 @@ function pickup_lookup_method(carrier_code) {
 	const key = pickup_connector_key(carrier_code);
 	if (key === "TFORCE") return "ltl_quote.api.shipping.get_tforce_pickup";
 	if (key === "ARCB") return "ltl_quote.api.shipping.get_arcbest_pickup";
+	if (key === "SMC3") return "ltl_quote.api.shipping.get_smc3_pickup";
 	return "ltl_quote.api.shipping.get_dayton_pickup";
 }

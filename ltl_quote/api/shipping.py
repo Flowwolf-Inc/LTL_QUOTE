@@ -730,10 +730,10 @@ def create_dayton_pickup(shipment=None, shipment_name=None):
 	result = adapter.create_pickup(doc)
 	doc.reload()
 	return {
+		**(result or {}),
 		"status": "success",
 		"shipment": doc.name,
 		"pickup": shipment_pickup_summary(doc),
-		**result,
 	}
 
 
@@ -799,7 +799,7 @@ def update_dayton_pickup(shipment=None, shipment_name=None, payload=None):
 	result = adapter.update_pickup(doc.pickup_number, body)
 	apply_pickup_response_to_shipment(doc, result, save=True)
 	doc.reload()
-	return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
+	return {**(result or {}), "status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc)}
 
 
 @frappe.whitelist(allow_guest=False)
@@ -822,7 +822,7 @@ def update_dayton_pickup_by_psid(shipment=None, shipment_name=None, payload=None
 	result = adapter.update_pickup_by_psid(target_psid, payload)
 	apply_pickup_response_to_shipment(doc, result, save=True)
 	doc.reload()
-	return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
+	return {**(result or {}), "status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc)}
 
 
 @frappe.whitelist(allow_guest=False)
@@ -849,7 +849,7 @@ def cancel_dayton_pickup(shipment=None, shipment_name=None, number=None):
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		doc.reload()
-		return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
+		return {**(result or {}), "status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc)}
 	return {"status": "success" if result.get("success") else "error", **result}
 
 
@@ -878,10 +878,10 @@ def create_tforce_pickup(shipment=None, shipment_name=None):
 	result = adapter.create_pickup(doc)
 	doc.reload()
 	return {
+		**(result or {}),
 		"status": "success",
 		"shipment": doc.name,
 		"pickup": shipment_pickup_summary(doc),
-		**result,
 	}
 
 
@@ -929,7 +929,7 @@ def cancel_tforce_pickup(shipment=None, shipment_name=None, number=None):
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		doc.reload()
-		return {"status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc), **result}
+		return {**(result or {}), "status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc)}
 	return {"status": "success" if result.get("success") else "error", **result}
 
 
@@ -958,10 +958,10 @@ def create_arcbest_pickup(shipment=None, shipment_name=None):
 	result = adapter.create_pickup(doc)
 	doc.reload()
 	return {
+		**(result or {}),
 		"status": "success",
 		"shipment": doc.name,
 		"pickup": shipment_pickup_summary(doc),
-		**result,
 	}
 
 
@@ -1005,4 +1005,207 @@ def cancel_arcbest_pickup(shipment=None, shipment_name=None, number=None):
 		"shipment": doc.name,
 		"pickup": shipment_pickup_summary(doc),
 		"message": "ArcBest pickup marked cancelled locally. Contact ArcBest to change a tendered pickup.",
+	}
+
+
+def _get_smc3_shipment(shipment=None, shipment_name=None):
+	from ltl_quote.carrier_network.carrier_identity import CONNECTOR_SMC3, shipment_connector
+
+	name = str(shipment or shipment_name or "").strip()
+	if not name or not frappe.db.exists("LTL Shipment", name):
+		frappe.throw("A valid shipment ID is required.")
+	doc = frappe.get_doc("LTL Shipment", name)
+	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
+	if shipment_connector(doc) != CONNECTOR_SMC3:
+		frappe.throw("This action is only available for SMC3 shipments.")
+	return doc
+
+
+@frappe.whitelist(allow_guest=False)
+def create_smc3_pickup(shipment=None, shipment_name=None):
+	"""Schedule an SMC3 pickup for a booked shipment (POST /dispatch/v1/app/{SCAC})."""
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_smc3_shipment(shipment, shipment_name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	adapter = SMC3CarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier))
+	result = adapter.create_pickup(doc)
+	doc.reload()
+	return {
+		**(result or {}),
+		"status": "success",
+		"shipment": doc.name,
+		"pickup": shipment_pickup_summary(doc),
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def get_smc3_pickup(shipment=None, shipment_name=None, number=None):
+	"""Return stored SMC3 pickup confirmation (Dispatch has no pickup GET)."""
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+
+	doc = _get_smc3_shipment(shipment, shipment_name)
+	pickup_number = str(number or doc.pickup_number or "").strip()
+	if not pickup_number:
+		frappe.throw("This shipment does not have an SMC3 pickup confirmation yet.")
+	summary = shipment_pickup_summary(doc)
+	return {
+		"status": "success",
+		"ok": True,
+		"shipment": doc.name,
+		"pickup": summary,
+		"pickup_number": pickup_number,
+		"pickup_status": doc.pickup_status or "Scheduled",
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def cancel_smc3_pickup(shipment=None, shipment_name=None, number=None):
+	"""Cancel an SMC3 pickup (POST dispatchCode CANCEL)."""
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+	from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number, shipment_pickup_summary
+
+	doc = None
+	if shipment or shipment_name:
+		doc = _get_smc3_shipment(shipment, shipment_name)
+		frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+		target = str(number or "").strip() or resolve_pickup_cancel_number(doc)
+	else:
+		target = str(number or "").strip()
+		if not target:
+			frappe.throw("Provide either shipment or number.")
+
+	adapter = SMC3CarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier) if doc else None)
+	result = adapter.cancel_pickup(target, shipment=doc)
+	if not result.get("success"):
+		frappe.throw(result.get("message") or "Could not cancel the SMC3 pickup.")
+	if doc:
+		doc.pickup_status = "Cancelled"
+		doc.dispatch_status = "Failed"
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()
+		doc.reload()
+		return {**(result or {}), "status": "success", "shipment": doc.name, "pickup": shipment_pickup_summary(doc)}
+	return {"status": "success", **result}
+
+
+@frappe.whitelist(allow_guest=False)
+def assign_smc3_pro(shipment=None, shipment_name=None, force=0):
+	"""POST APA Next Available PRO and persist it on the shipment without creating a BOL."""
+	from frappe.utils import cint
+
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+
+	doc = _get_smc3_shipment(shipment, shipment_name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	adapter = SMC3CarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier))
+	result = adapter.assign_next_pro_number(doc, force=bool(cint(force)))
+	doc.reload()
+	return {
+		"status": "success",
+		"ok": True,
+		"shipment": doc.name,
+		"pro_number": doc.pro_number,
+		"carrier_confirmation": doc.carrier_confirmation,
+		"transaction_id": result.get("transaction_id") or doc.carrier_confirmation,
+		"bol_scac": doc.bol_scac,
+		"scac": result.get("scac") or doc.bol_scac,
+		"is_test": result.get("is_test"),
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def sync_smc3_barcode_requirements(carrier=None):
+	"""GET APA barcodeRequirements and store symbology/printing rules on existing SCACs."""
+	from frappe.utils import cint
+
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+
+	name = str(carrier or "SMC3").strip()
+	if not name or not frappe.db.exists("LTL Carrier", name):
+		frappe.throw("A valid SMC3 carrier is required.")
+	doc = frappe.get_doc("LTL Carrier", name)
+	frappe.has_permission("LTL Carrier", "write", doc=doc, throw=True)
+	if str(doc.connector_type or "").strip() != "SMC3" and str(doc.carrier_code or "").upper() != "SMC3":
+		frappe.throw("Barcode requirements sync is only available for SMC3.")
+	adapter = SMC3CarrierAdapter(doc)
+	requirements = adapter.get_barcode_requirements()
+	by_scac = {row["scac"]: row for row in requirements}
+	updated = 0
+	unmatched = 0
+	skipped_disabled = 0
+	for row in doc.get("smc3_network_carriers") or []:
+		scac = str(row.scac or "").strip().upper()
+		if not scac:
+			continue
+		req = by_scac.get(scac)
+		if not req:
+			unmatched += 1
+			continue
+		if not cint(row.enabled):
+			skipped_disabled += 1
+			continue
+		row.barcode_symbology = req.get("symbology") or ""
+		row.barcode_printing_requirements = req.get("printing_requirements") or ""
+		updated += 1
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+	return {
+		"status": "success",
+		"updated": updated,
+		"unmatched": unmatched,
+		"skipped_disabled": skipped_disabled,
+		"api_count": len(requirements),
+		"message": f"Updated barcode requirements for {updated} network carrier(s).",
+	}
+
+
+@frappe.whitelist(allow_guest=False)
+def sync_smc3_dispatch_response_messages(carrier=None):
+	"""GET Dispatch v3 responseMessages/dispatch and upsert LTL SMC3 Dispatch Message rows."""
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+
+	name = str(carrier or "SMC3").strip()
+	if not name or not frappe.db.exists("LTL Carrier", name):
+		frappe.throw("A valid SMC3 carrier is required.")
+	doc = frappe.get_doc("LTL Carrier", name)
+	frappe.has_permission("LTL Carrier", "write", doc=doc, throw=True)
+	if str(doc.connector_type or "").strip() != "SMC3" and str(doc.carrier_code or "").upper() != "SMC3":
+		frappe.throw("Dispatch response message sync is only available for SMC3.")
+	adapter = SMC3CarrierAdapter(doc)
+	rows = adapter.get_dispatch_response_messages()
+	created = 0
+	updated = 0
+	for row in rows:
+		code = str(row.get("code") or "").strip()
+		if not code:
+			continue
+		values = {
+			"status": row.get("status") or "FAIL",
+			"message": row.get("message") or code,
+			"resolution": row.get("resolution") or "",
+			"api_last_modified": row.get("api_last_modified") or "",
+		}
+		if frappe.db.exists("LTL SMC3 Dispatch Message", code):
+			existing = frappe.get_doc("LTL SMC3 Dispatch Message", code)
+			existing.update(values)
+			existing.save(ignore_permissions=True)
+			updated += 1
+		else:
+			frappe.get_doc(
+				{
+					"doctype": "LTL SMC3 Dispatch Message",
+					"code": code,
+					**values,
+				}
+			).insert(ignore_permissions=True)
+			created += 1
+	frappe.db.commit()
+	return {
+		"status": "success",
+		"created": created,
+		"updated": updated,
+		"api_count": len(rows),
+		"message": f"Synced {created + updated} dispatch response message(s) ({created} new).",
 	}

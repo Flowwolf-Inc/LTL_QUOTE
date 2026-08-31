@@ -307,6 +307,7 @@ def get_shipment_detail(name: str) -> dict:
 	from ltl_quote.carrier_network.carrier_identity import (
 		CONNECTOR_ARCBEST,
 		CONNECTOR_DAYTON,
+		CONNECTOR_SMC3,
 		CONNECTOR_TFORCE,
 		connector_ui_code,
 		shipment_connector,
@@ -325,8 +326,14 @@ def get_shipment_detail(name: str) -> dict:
 		live = bool(doc.pickup_number) and str(doc.pickup_status or "") not in PICKUP_TERMINAL_STATUSES
 		adapter = DaytonCarrierAdapter() if live else None
 		pickup = shipment_pickup_summary(doc, live=live, adapter=adapter)
-	elif connector in {CONNECTOR_TFORCE, CONNECTOR_ARCBEST}:
+	elif connector in {CONNECTOR_TFORCE, CONNECTOR_ARCBEST, CONNECTOR_SMC3}:
 		pickup = shipment_pickup_summary(doc)
+
+	barcode = None
+	if connector == CONNECTOR_SMC3:
+		from ltl_quote.carrier_network.adapters.smc3 import barcode_requirements_for_shipment
+
+		barcode = barcode_requirements_for_shipment(doc)
 
 	return {
 		"doc": doc.as_dict(),
@@ -335,6 +342,7 @@ def get_shipment_detail(name: str) -> dict:
 		"accessorials": accessorials,
 		"dayton_documents": dayton_documents,
 		"pickup": pickup,
+		"barcode": barcode,
 		"carrier": connector_ui_code(connector),
 		"connector": connector,
 	}
@@ -360,10 +368,11 @@ def refresh_shipment_bol(name: str) -> dict:
 @frappe.whitelist()
 def schedule_shipment_pickup(name: str) -> dict:
 	"""Schedule a carrier pickup for a booked shipment."""
-	from ltl_quote.api.shipping import create_arcbest_pickup, create_dayton_pickup, create_tforce_pickup
+	from ltl_quote.api.shipping import create_arcbest_pickup, create_dayton_pickup, create_smc3_pickup, create_tforce_pickup
 	from ltl_quote.carrier_network.carrier_identity import (
 		CONNECTOR_ARCBEST,
 		CONNECTOR_DAYTON,
+		CONNECTOR_SMC3,
 		CONNECTOR_TFORCE,
 		shipment_connector,
 	)
@@ -378,16 +387,19 @@ def schedule_shipment_pickup(name: str) -> dict:
 		return create_dayton_pickup(shipment=name)
 	if connector == CONNECTOR_ARCBEST:
 		return create_arcbest_pickup(shipment=name)
-	frappe.throw("Pickup scheduling is only available for Dayton, TForce, and ArcBest shipments.")
+	if connector == CONNECTOR_SMC3:
+		return create_smc3_pickup(shipment=name)
+	frappe.throw("Pickup scheduling is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
 
 
 @frappe.whitelist()
 def get_shipment_pickup(name: str) -> dict:
 	"""Fetch stored or live pickup details for a shipment."""
-	from ltl_quote.api.shipping import get_arcbest_pickup, get_dayton_pickup, get_tforce_pickup
+	from ltl_quote.api.shipping import get_arcbest_pickup, get_dayton_pickup, get_smc3_pickup, get_tforce_pickup
 	from ltl_quote.carrier_network.carrier_identity import (
 		CONNECTOR_ARCBEST,
 		CONNECTOR_DAYTON,
+		CONNECTOR_SMC3,
 		CONNECTOR_TFORCE,
 		shipment_connector,
 	)
@@ -402,7 +414,9 @@ def get_shipment_pickup(name: str) -> dict:
 		return get_dayton_pickup(shipment=name)
 	if connector == CONNECTOR_ARCBEST:
 		return get_arcbest_pickup(shipment=name)
-	frappe.throw("Pickup lookup is only available for Dayton, TForce, and ArcBest shipments.")
+	if connector == CONNECTOR_SMC3:
+		return get_smc3_pickup(shipment=name)
+	frappe.throw("Pickup lookup is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
 
 
 @frappe.whitelist()
@@ -421,10 +435,11 @@ def update_shipment_pickup(name: str, data: str | dict | None = None) -> dict:
 @frappe.whitelist()
 def cancel_shipment_pickup(name: str) -> dict:
 	"""Cancel a scheduled pickup."""
-	from ltl_quote.api.shipping import cancel_arcbest_pickup, cancel_dayton_pickup, cancel_tforce_pickup
+	from ltl_quote.api.shipping import cancel_arcbest_pickup, cancel_dayton_pickup, cancel_smc3_pickup, cancel_tforce_pickup
 	from ltl_quote.carrier_network.carrier_identity import (
 		CONNECTOR_ARCBEST,
 		CONNECTOR_DAYTON,
+		CONNECTOR_SMC3,
 		CONNECTOR_TFORCE,
 		shipment_connector,
 	)
@@ -439,7 +454,19 @@ def cancel_shipment_pickup(name: str) -> dict:
 		return cancel_dayton_pickup(shipment=name)
 	if connector == CONNECTOR_ARCBEST:
 		return cancel_arcbest_pickup(shipment=name)
-	frappe.throw("Pickup cancellation is only available for Dayton, TForce, and ArcBest shipments.")
+	if connector == CONNECTOR_SMC3:
+		return cancel_smc3_pickup(shipment=name)
+	frappe.throw("Pickup cancellation is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
+
+
+@frappe.whitelist()
+def assign_smc3_pro(name: str, force: int = 0) -> dict:
+	"""POST APA Next Available PRO for an SMC3 shipment without creating a BOL."""
+	from ltl_quote.api.shipping import assign_smc3_pro as _assign
+
+	if not name:
+		frappe.throw("Shipment ID is required.")
+	return _assign(shipment=name, force=force)
 
 
 @frappe.whitelist()
@@ -471,26 +498,28 @@ def get_pickup_page_data(name: str) -> dict:
 	doc = frappe.get_doc("LTL Shipment", name)
 	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
 
-	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
 	from ltl_quote.carrier_network.carrier_identity import (
 		CONNECTOR_DAYTON,
 		connector_ui_code,
 		shipment_connector,
 		supports_pickup,
 	)
-	from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment, shipment_pickup_summary
+	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
 
 	connector = shipment_connector(doc)
 	if not supports_pickup(doc):
-		frappe.throw("Pickup management is only available for Dayton, TForce, and ArcBest shipments.")
+		frappe.throw("Pickup management is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
 
 	live_result = {}
 	raw_pickup = {}
 	if connector == CONNECTOR_DAYTON and doc.pickup_number:
+		from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+		from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment as apply_live
+
 		adapter = DaytonCarrierAdapter()
 		live_result = adapter.get_pickup(doc.pickup_number)
 		if live_result.get("ok"):
-			apply_pickup_response_to_shipment(doc, live_result, save=True)
+			apply_live(doc, live_result, save=True)
 			doc.reload()
 			raw_pickup = live_result.get("raw") or {}
 
@@ -594,7 +623,7 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 	from ltl_quote.utils.location import attach_zip_coordinates, resolve_us_location
 
 	if not supports_tracking(doc):
-		frappe.throw("Tracking dashboard is only available for Dayton, TForce, and ArcBest shipments.")
+		frappe.throw("Tracking dashboard is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
 	if not str(doc.pro_number or "").strip():
 		frappe.throw("This shipment does not have a PRO / tracking number yet.")
 
@@ -613,6 +642,7 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 		try:
 			raw_refresh = ShipmentTracker(doc).refresh()
 			doc.reload()
+			frappe.clear_messages()
 			event_count = int(raw_refresh.get("events") or 0)
 			if event_count:
 				refresh_result = {
@@ -768,7 +798,7 @@ def refresh_shipment_tracking(name: str) -> dict:
 	frappe.has_permission("LTL Shipment", "read", doc=doc, throw=True)
 
 	if not supports_tracking(doc):
-		frappe.throw("Tracking refresh is only available for Dayton, TForce, and ArcBest shipments.")
+		frappe.throw("Tracking refresh is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
 
 	carrier_label = connector_label(shipment_connector(doc))
 	try:

@@ -252,23 +252,50 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         return raw
 
     @staticmethod
-    def _find_xml_node(root, tag_name: str):
+    def _local_xml_tag(elem) -> str:
+        tag = getattr(elem, "tag", "") or ""
+        if isinstance(tag, str) and "}" in tag:
+            return tag.rsplit("}", 1)[-1]
+        return str(tag)
+
+    @classmethod
+    def _xml_descendants(cls, root):
+        """Depth-first descendants without Element.iter()/ElementPath.
+
+        Python 3.14 closes leftover XPath generators with GeneratorExit,
+        which debugpy treats as a breakpoint when Raised Exceptions is on.
+        """
+        if root is None:
+            return []
+        found = []
+        stack = list(reversed(list(root)))
+        while stack:
+            elem = stack.pop()
+            found.append(elem)
+            stack.extend(reversed(list(elem)))
+        return found
+
+    @classmethod
+    def _find_xml_nodes(cls, root, tag_name: str):
+        if root is None or not tag_name:
+            return []
         tag_upper = tag_name.upper()
-        node = root.find(tag_name)
-        if node is not None:
-            return node
-        for variant in (tag_name.upper(), tag_name.lower(), tag_name.title()):
-            node = root.find(variant)
-            if node is not None:
-                return node
-        node = root.find(f".//{tag_name}")
-        if node is not None:
-            return node
-        for elem in root.iter():
-            local_tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-            if local_tag.upper() == tag_upper:
-                return elem
-        return None
+        return [
+            elem
+            for elem in cls._xml_descendants(root)
+            if cls._local_xml_tag(elem).upper() == tag_upper
+        ]
+
+    @classmethod
+    def _find_xml_node(cls, root, tag_name: str):
+        if root is None or not tag_name:
+            return None
+        tag_upper = tag_name.upper()
+        for child in list(root):
+            if cls._local_xml_tag(child).upper() == tag_upper:
+                return child
+        nodes = cls._find_xml_nodes(root, tag_name)
+        return nodes[0] if nodes else None
 
     @classmethod
     def _xml_text(cls, root, tag_name: str, default: str = "") -> str:
@@ -279,7 +306,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
 
     @classmethod
     def _extract_error_message(cls, root) -> str:
-        error_elements = root.findall(".//ERROR")
+        error_elements = cls._find_xml_nodes(root, "ERROR")
         messages: list[str] = []
         for err in error_elements:
             code = cls._xml_text(err, "ERRORCODE")
@@ -393,8 +420,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
         events: list[dict] = []
         event_nodes = []
         for tag in ("EVENT", "HISTORY", "TRACE", "SHIPMENTSTATUS", "STATUS"):
-            event_nodes.extend(list(root.iter(tag)))
-            event_nodes.extend(root.findall(f".//{tag}"))
+            event_nodes.extend(self._find_xml_nodes(root, tag))
 
         seen = set()
         unique_nodes = []
@@ -787,19 +813,12 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
                 error=f"ArcBest XML parse error: {pe}",
             )
 
-        num_errors = cint(root.findtext("NUMERRORS", "0"))
+        num_errors = cint(self._xml_text(root, "NUMERRORS", "0"))
         if num_errors > 0:
-            error_elements = root.findall(".//ERROR")
-            error_msg = ""
-            for err in error_elements:
-                code = err.findtext("ERRORCODE", "")
-                msg = err.findtext("ERRORMESSAGE", "")
-                error_msg += f"Code {code}: {msg} | "
+            error_msg = self._extract_error_message(root)
+            if error_msg == "Validation Error":
+                error_msg = "Unknown Location Validation Error"
 
-            if not error_msg:
-                error_msg = root.findtext(".//ERRORMESSAGE", "Unknown Location Validation Error")
-
-            error_msg = error_msg.strip(" |")
             if "Dimensions or Cube is required" in error_msg:
                 weight = flt((params or {}).get("Wgt1") or 0)
                 if weight > ARCBEST_MAX_AUTO_RATE_LBS:
@@ -819,16 +838,12 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
                 error=f"ArcBest API error: {error_msg}",
             )
 
-        quote_id = root.findtext("QUOTEID") or ""
-        total_charge = flt(root.findtext("CHARGE"))
-        transit_str = root.findtext("ADVERTISEDTRANSIT") or "0"
+        quote_id = self._xml_text(root, "QUOTEID") or ""
+        total_charge = flt(self._xml_text(root, "CHARGE"))
+        transit_str = self._xml_text(root, "ADVERTISEDTRANSIT") or "0"
         transit_days = cint("".join(filter(str.isdigit, transit_str))) or 1
-        delivery_date = root.findtext("ADVERTISEDDUEDATE")
-
-        fuel_surcharge = 0.0
-        fuel_node = root.find(".//FUELSURCHARGE")
-        if fuel_node is not None and fuel_node.text:
-            fuel_surcharge = flt(fuel_node.text)
+        delivery_date = self._xml_text(root, "ADVERTISEDDUEDATE")
+        fuel_surcharge = flt(self._xml_text(root, "FUELSURCHARGE") or 0)
 
         linehaul = total_charge - fuel_surcharge
 
@@ -842,7 +857,7 @@ class ArcBestCarrierAdapter(BaseCarrierAdapter):
             accessorial_charge=0.0,
             currency="USD",
             carrier_quote_id=f"ABF-{quote_id}" if quote_id else "",
-            service_level=root.findtext("SERVICETYPE") or "Standard LTL",
+            service_level=self._xml_text(root, "SERVICETYPE") or "Standard LTL",
             reliability_score=float(getattr(self.carrier, "reliability_score", None) or 90),
             rate_source="ARCBEST",
             quoted_scac=str(getattr(self.carrier, "scac", None) or "ABFS").upper(),

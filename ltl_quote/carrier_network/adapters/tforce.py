@@ -102,34 +102,49 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 		except Exception:
 			return {}
 
-	def get_bearer_token(self) -> str:
-		"""Return a Bearer access token (cached OAuth client_credentials, or static api_key)."""
-		if not self.client_id:
-			frappe.throw(
-				"TForce credentials missing. Set API Key (client_id) and API Secret (client_secret), "
-				"or paste a Bearer access token into API Key and leave API Secret blank."
-			)
+	@staticmethod
+	def _looks_like_jwt(value: str) -> bool:
+		parts = str(value or "").split(".")
+		return len(parts) == 3 and all(parts)
 
-		# Static bearer token mode: only API Key is filled.
-		if self.client_id and not self.client_secret:
+	@staticmethod
+	def _jwt_claims(token: str) -> dict:
+		parts = str(token or "").split(".")
+		if len(parts) != 3:
+			return {}
+		payload = parts[1] + ("=" * (-len(parts[1]) % 4))
+		try:
+			parsed = frappe.parse_json(base64.urlsafe_b64decode(payload).decode())
+			return parsed if isinstance(parsed, dict) else {}
+		except Exception:
+			return {}
+
+	def _oauth_username(self) -> str:
+		return str(self._oauth_config.get("username") or "").strip()
+
+	def _oauth_password(self) -> str:
+		return str(self._oauth_config.get("password") or "").strip()
+
+	def _oauth_client_id(self, jwt_token: str = "") -> str:
+		client_id = str(self._oauth_config.get("client_id") or "").strip()
+		if client_id:
+			return client_id
+		if jwt_token:
+			return str(self._jwt_claims(jwt_token).get("azp") or "").strip()
+		if self.client_id and not self._looks_like_jwt(self.client_id):
 			return self.client_id
+		return ""
 
-		cache_key = getattr(self.carrier_doc, "name", None) or "TFORCE"
-		cached = _TOKEN_CACHE.get(cache_key)
-		now = time.time()
-		if cached and cached[1] > now + 60:
-			return cached[0]
-
+	def _fetch_oauth_token(self, grant_type: str, **fields) -> tuple[str, float]:
 		token_url = self._oauth_config.get("token_url") or DEFAULT_TOKEN_URL
 		scope = self._oauth_config.get("scope") or DEFAULT_SCOPE
+		data = {"grant_type": grant_type, "scope": scope}
+		for key, value in fields.items():
+			if value:
+				data[key] = value
 		response = requests.post(
 			token_url,
-			data={
-				"client_id": self.client_id,
-				"client_secret": self.client_secret,
-				"grant_type": "client_credentials",
-				"scope": scope,
-			},
+			data=data,
 			headers={"Content-Type": "application/x-www-form-urlencoded"},
 			timeout=REQUEST_TIMEOUT,
 		)
@@ -137,15 +152,62 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 			frappe.throw(
 				f"TForce OAuth token request failed: HTTP {response.status_code} | {response.text}"
 			)
-
-		payload = response.json()
-		access_token = payload.get("access_token")
+		payload = response.json() if response.content else {}
+		access_token = payload.get("access_token") if isinstance(payload, dict) else ""
 		if not access_token:
 			frappe.throw(f"TForce OAuth response missing access_token: {payload}")
-
 		expires_in = max(cint(payload.get("expires_in") or 3600), 60)
-		_TOKEN_CACHE[cache_key] = (access_token, now + expires_in)
-		return access_token
+		return access_token, time.time() + expires_in
+
+	def get_bearer_token(self) -> str:
+		"""Return a Bearer token from cache, a stored JWT, password grant, or client credentials."""
+		cache_key = getattr(self.carrier_doc, "name", None) or "TFORCE"
+		cached = _TOKEN_CACHE.get(cache_key)
+		now = time.time()
+		if cached and cached[1] > now + 60:
+			return cached[0]
+
+		api_key = (self.client_id or "").strip()
+		if api_key.lower().startswith("bearer "):
+			api_key = api_key[7:].strip()
+		jwt_token = api_key if self._looks_like_jwt(api_key) else ""
+		if jwt_token:
+			exp = flt(self._jwt_claims(jwt_token).get("exp") or 0)
+			if not exp or exp > now + 60:
+				_TOKEN_CACHE[cache_key] = (jwt_token, exp or now + 3600)
+				return jwt_token
+
+		username = self._oauth_username()
+		password = self._oauth_password()
+		client_id = self._oauth_client_id(jwt_token)
+		if username and password and client_id:
+			secret = self.client_secret if not self._looks_like_jwt(self.client_secret) else ""
+			token, expires_at = self._fetch_oauth_token(
+				"password",
+				client_id=client_id,
+				username=username,
+				password=password,
+				client_secret=secret,
+			)
+			_TOKEN_CACHE[cache_key] = (token, expires_at)
+			return token
+
+		if api_key and self.client_secret and not jwt_token:
+			token, expires_at = self._fetch_oauth_token(
+				"client_credentials",
+				client_id=api_key,
+				client_secret=self.client_secret,
+			)
+			_TOKEN_CACHE[cache_key] = (token, expires_at)
+			return token
+
+		if jwt_token:
+			return jwt_token
+
+		frappe.throw(
+			"TForce credentials missing. Set API Key (client_id) and API Secret (client_secret), "
+			"paste a Bearer access token into API Key, or store username/password in Notes."
+		)
 
 	def get_headers(self) -> dict:
 		return {

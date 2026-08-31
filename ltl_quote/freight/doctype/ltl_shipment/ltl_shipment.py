@@ -32,10 +32,16 @@ class LTLShipment(Document):
 
 	@frappe.whitelist()
 	def cancel_pickup(self):
-		from ltl_quote.api.shipping import cancel_arcbest_pickup, cancel_dayton_pickup, cancel_tforce_pickup
+		from ltl_quote.api.shipping import (
+			cancel_arcbest_pickup,
+			cancel_dayton_pickup,
+			cancel_smc3_pickup,
+			cancel_tforce_pickup,
+		)
 		from ltl_quote.carrier_network.carrier_identity import (
 			CONNECTOR_ARCBEST,
 			CONNECTOR_DAYTON,
+			CONNECTOR_SMC3,
 			CONNECTOR_TFORCE,
 			shipment_connector,
 		)
@@ -47,7 +53,17 @@ class LTLShipment(Document):
 			return cancel_dayton_pickup(shipment=self.name)
 		if connector == CONNECTOR_ARCBEST:
 			return cancel_arcbest_pickup(shipment=self.name)
-		frappe.throw("Pickup cancellation is only supported for Dayton, TForce, and ArcBest shipments.")
+		if connector == CONNECTOR_SMC3:
+			return cancel_smc3_pickup(shipment=self.name)
+		frappe.throw("Pickup cancellation is only supported for Dayton, TForce, ArcBest, and SMC3 shipments.")
+
+	@frappe.whitelist()
+	def assign_next_pro(self, force=0):
+		from frappe.utils import cint
+
+		from ltl_quote.api.shipping import assign_smc3_pro
+
+		return assign_smc3_pro(shipment=self.name, force=cint(force))
 
 	@frappe.whitelist()
 	def cancel_bol(self):

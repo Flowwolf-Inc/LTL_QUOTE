@@ -24,6 +24,18 @@ class LTLCarrier(Document):
 			result["message"] = f"{result.get('message') or ''} {catalog_note}".strip()
 		return result
 
+	@frappe.whitelist()
+	def sync_barcode_requirements(self):
+		from ltl_quote.api.shipping import sync_smc3_barcode_requirements
+
+		return sync_smc3_barcode_requirements(carrier=self.name)
+
+	@frappe.whitelist()
+	def sync_dispatch_response_messages(self):
+		from ltl_quote.api.shipping import sync_smc3_dispatch_response_messages
+
+		return sync_smc3_dispatch_response_messages(carrier=self.name)
+
 	def _sync_dayton_catalogs(self) -> str:
 		"""Best-effort sync of Dayton Accessorial + Response Accessorial + Service Center DocTypes."""
 		from ltl_quote.api.shipping import (

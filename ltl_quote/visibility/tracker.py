@@ -26,7 +26,7 @@ class ShipmentTracker:
 		has_exception = False
 		latest = None
 
-		for ev in sorted(events, key=lambda e: e.get("event_datetime") or ""):
+		for ev in sorted(events, key=lambda e: str(e.get("event_datetime") or "")):
 			self.shipment.append(
 				"tracking_events",
 				{

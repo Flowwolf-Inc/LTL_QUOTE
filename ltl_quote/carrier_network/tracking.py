@@ -41,6 +41,11 @@ DAYTON_ACTIVITY_LABELS: dict[str, str] = {
 	"DEL": "Delivered",
 	"XCP": "Exception",
 	"EXC": "Exception",
+	# SMC3 Status API standardized codes / labels
+	"PICKED UP": "Picked Up",
+	"IN TRANSIT": "In Transit",
+	"OUT FOR DELIVERY": "Out for Delivery",
+	"INFO": "Info",
 }
 
 # Milestone keys used by the orange tracking timeline UI.
@@ -86,6 +91,10 @@ _ACTIVITY_MILESTONE_INDEX: dict[str, int] = {
 	"EXC": 3,
 	"DEL": 5,
 	"VOIDED": 1,
+	"PICKED UP": 2,
+	"IN TRANSIT": 3,
+	"OUT FOR DELIVERY": 4,
+	"INFO": 3,
 }
 
 EXCEPTION_CODES = {"PWD", "EX", "EXCEPTION", "013", "XCP", "EXC"}

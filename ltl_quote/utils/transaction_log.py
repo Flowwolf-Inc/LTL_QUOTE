@@ -27,8 +27,26 @@ ALLOWED_LOG_STATUSES = frozenset(
 		"Already Booked",
 		"API Error",
 		"Connection Failed",
+		"Tracked",
+		"Dispatched",
+		"Cancelled",
 	}
 )
+
+LOG_STATUS_ALIASES = {
+	"Tracked": "Quotes Received",
+	"Dispatched": "Booked",
+	"Cancelled": "Booked",
+	"Assigned": "Booked",
+	"Success": "Quotes Received",
+}
+
+
+def coerce_log_status(status: str) -> str:
+	value = str(status or "").strip()
+	if value in ALLOWED_LOG_STATUSES:
+		return value
+	return LOG_STATUS_ALIASES.get(value, "API Error")
 
 
 def log_api_transaction(headers, body, response_payload, status, carrier_id):
@@ -42,7 +60,7 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 		body = body or {}
 		carrier_label = LOG_CARRIER_LABELS.get(carrier_id, carrier_id or "Dayton Freight")
 		api_url = body.get("api_url") or body.get("api_endpoint") or API_GATEWAY_ENDPOINT
-		log_status = status if status in ALLOWED_LOG_STATUSES else "API Error"
+		log_status = coerce_log_status(status)
 
 		log_doc = frappe.get_doc(
 			{
@@ -111,9 +129,9 @@ def log_carrier_transaction(
 				"doctype": "LTL Carrier Transaction Log",
 				"carrier_name": carrier,
 				"direction": direction,
-				"action_method": method,
+				"action_method": method if str(method or "").upper() in {"POST", "GET", "PUT"} else "POST",
 				"api_endpoint": url,
-				"status": status,
+				"status": coerce_log_status(status),
 				"origin_zip": origin,
 				"destination_zip": dest,
 				"timestamp": now_datetime(),
@@ -125,4 +143,5 @@ def log_carrier_transaction(
 		log_doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as log_ex:
+		frappe.clear_messages()
 		frappe.logger().error(f"Failed to write LTL Carrier Transaction Log: {log_ex}")

@@ -5,6 +5,7 @@ function ltl_connector_key(carrier) {
 	if (code === "DAYTON") return "DAYTON";
 	if (["TFORCE", "TFF"].includes(code) || code.includes("TFORCE")) return "TFORCE";
 	if (["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code) || code.includes("ARC")) return "ARCB";
+	if (code === "SMC3" || code.includes("SMC3")) return "SMC3";
 	return code;
 }
 
@@ -13,11 +14,21 @@ function ltl_connector_label(carrier) {
 	if (key === "TFORCE") return "TForce";
 	if (key === "ARCB") return "ArcBest";
 	if (key === "DAYTON") return "Dayton";
+	if (key === "SMC3") return "SMC3";
 	return key || "Carrier";
 }
 
 function ltl_supports_pickup(carrier) {
-	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
+	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(ltl_connector_key(carrier));
+}
+
+function ltl_pickup_ok(result) {
+	const status = String((result && result.status) || "").toLowerCase();
+	return (
+		status === "success" ||
+		status === "acknowledged" ||
+		Boolean(result && (result.ok || result.success))
+	);
 }
 
 function ltl_supports_smc3_bol(carrier) {
@@ -25,7 +36,7 @@ function ltl_supports_smc3_bol(carrier) {
 }
 
 function ltl_supports_tracking(carrier) {
-	return ["DAYTON", "TFORCE", "ARCB"].includes(ltl_connector_key(carrier));
+	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(ltl_connector_key(carrier));
 }
 
 frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
@@ -1075,11 +1086,12 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.find(".ltl-nav-item").removeClass("active");
 		this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
 		this.show_view("quote");
-		if (!this.expanded) this.toggle_shipment();
+		if (!this.expanded) this.toggle_shipment(true);
 		else {
 			this.body.find(".ltl-ship-card").addClass("expanded");
 			this.body.find(".ltl-ship-collapsed").hide();
 			this.body.find(".ltl-ship-expanded").show();
+			this.body.find(".ltl-quick-quotes-check").prop("checked", false);
 		}
 		this.refresh_line_items_table();
 		this.ensure_line_items_expanded();
@@ -1174,7 +1186,7 @@ ltl_quote.Dashboard = class Dashboard {
 				},
 				8
 			);
-			if (!this.expanded) this.toggle_shipment();
+			if (!this.expanded) this.toggle_shipment(true);
 			this.ensure_line_items_expanded();
 			const el = this.body.find(".ltl-line-items")[0];
 			if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1187,7 +1199,13 @@ ltl_quote.Dashboard = class Dashboard {
 		return `
 			<div class="ltl-card ltl-ship-card">
 				<div class="ltl-card-head ltl-ship-head" data-action="toggle-ship">
-					<span><i class="fa fa-chevron-down ltl-chevron"></i> Shipment Details</span>
+					<span>
+						<i class="fa fa-chevron-down ltl-chevron"></i> ${__("Shipment Details")}
+						<label class="ltl-quick-quotes">
+							<input type="checkbox" class="ltl-quick-quotes-check" checked />
+							${__("Quick Quotes")}
+						</label>
+					</span>
 				</div>
 				${this.render_collapsed_fields()}
 				${this.render_expanded_fields()}
@@ -1297,7 +1315,7 @@ ltl_quote.Dashboard = class Dashboard {
 					freeze_message: __("Scheduling pickup with {0}…", [label]),
 					callback: (r) => {
 						const result = r.message || {};
-						if (result.status === "success") {
+						if (ltl_pickup_ok(result)) {
 							frappe.show_alert({ message: __("Pickup scheduled"), indicator: "green" });
 							this.load_pickup_detail(shipment);
 							return;
@@ -1339,7 +1357,7 @@ ltl_quote.Dashboard = class Dashboard {
 				freeze: true,
 				callback: (r) => {
 					const result = r.message || {};
-					if (result.status === "success") {
+					if (ltl_pickup_ok(result)) {
 						frappe.show_alert({ message: __("Pickup updated"), indicator: "green" });
 						this.load_pickup_detail(shipment);
 						return;
@@ -1382,7 +1400,7 @@ ltl_quote.Dashboard = class Dashboard {
 				freeze: true,
 				callback: (r) => {
 					const result = r.message || {};
-					if (result.status === "success") {
+					if (ltl_pickup_ok(result)) {
 						frappe.show_alert({ message: __("Pickup line updated"), indicator: "green" });
 						this.load_pickup_detail(shipment);
 						return;
@@ -1400,14 +1418,14 @@ ltl_quote.Dashboard = class Dashboard {
 			e.stopPropagation();
 			const shipment = $(e.currentTarget).attr("data-shipment");
 			if (!shipment) return;
-			frappe.confirm(__("Cancel this Dayton pickup?"), () => {
+			frappe.confirm(__("Cancel this pickup?"), () => {
 				frappe.call({
 					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.cancel_shipment_pickup",
 					args: { name: shipment },
 					freeze: true,
 					callback: (r) => {
 						const result = r.message || {};
-						if (result.status === "success") {
+						if (ltl_pickup_ok(result)) {
 							frappe.show_alert({ message: __("Pickup cancelled"), indicator: "green" });
 							this.load_pickup_detail(shipment);
 							return;
@@ -1426,6 +1444,42 @@ ltl_quote.Dashboard = class Dashboard {
 			e.stopPropagation();
 			const shipment = $(e.currentTarget).attr("data-shipment");
 			if (shipment) this.open_tracking_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-detail-get-next-pro", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			const existing = String($(e.currentTarget).attr("data-pro") || "").trim();
+			if (!shipment) return;
+			const run = (force) => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.assign_smc3_pro",
+					args: { name: shipment, force: force ? 1 : 0 },
+					freeze: true,
+					freeze_message: __("Requesting next PRO from SMC3…"),
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({
+								message: __("PRO {0} assigned", [result.pro_number || ""]),
+								indicator: "green",
+							});
+							this.open_shipment_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("PRO Assignment Failed"),
+							indicator: "red",
+							message: result.message || __("Could not assign a PRO number."),
+						});
+					},
+				});
+			};
+			if (existing) {
+				frappe.confirm(__("PRO {0} is already assigned. Assign a new number?", [existing]), () => run(true));
+			} else {
+				run(false);
+			}
 		});
 
 		this.body.on("click", ".ltl-detail-cancel-bol", (e) => {
@@ -1585,7 +1639,15 @@ ltl_quote.Dashboard = class Dashboard {
 		const debounced_recent = frappe.utils.debounce(() => this.load_recent_requests(), 400);
 		this.body.on("input", zip_selector, debounced_recent);
 
-		this.body.on("click", "[data-action='toggle-ship']", () => this.toggle_shipment());
+		this.body.on("click", "[data-action='toggle-ship']", (e) => {
+			if ($(e.target).closest(".ltl-quick-quotes").length) return;
+			this.toggle_shipment();
+		});
+		this.body.on("click", ".ltl-quick-quotes", (e) => e.stopPropagation());
+		this.body.on("change", ".ltl-quick-quotes-check", (e) => {
+			const quick = $(e.currentTarget).is(":checked");
+			this.toggle_shipment(!quick);
+		});
 		this.body.on("click", "[data-action='toggle-load-acc']", () => this.toggle_load_accessorials());
 		this.body.on("click", "[data-action='toggle-line-items']", (e) => {
 			if ($(e.target).closest("[data-action='add-line-item']").length) return;
@@ -1643,13 +1705,17 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 	}
 
-	toggle_shipment() {
-		this.expanded = !this.expanded;
-		this.sync_core_fields(this.expanded);
+	toggle_shipment(expanded) {
+		const next = typeof expanded === "boolean" ? expanded : !this.expanded;
+		if (next !== this.expanded) {
+			this.sync_core_fields(next);
+		}
+		this.expanded = next;
 		const card = this.body.find(".ltl-ship-card");
 		card.toggleClass("expanded", this.expanded);
 		card.find(".ltl-ship-collapsed").toggle(!this.expanded);
 		card.find(".ltl-ship-expanded").toggle(this.expanded);
+		this.body.find(".ltl-quick-quotes-check").prop("checked", !this.expanded);
 		this.load_recent_requests();
 	}
 
@@ -2001,11 +2067,24 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	quote_source(quote) {
-		const source = String(quote?.source || quote?.rate_source || "").trim().toUpperCase();
-		if (source === "SMC3") return "SMC3";
-		const code = String(quote?.carrier_code || "").toUpperCase();
-		if (code.startsWith("SMC3-")) return "SMC3";
-		return "";
+		const raw = String(quote?.source || quote?.rate_source || "").trim();
+		const code = String(quote?.carrier_code || quote?.carrier || "").trim();
+		const raw_upper = raw.toUpperCase();
+		const code_upper = code.toUpperCase();
+		if (raw_upper === "SMC3" || code_upper.startsWith("SMC3-")) return "SMC3";
+		const key = ltl_connector_key(raw || code);
+		if (["SMC3", "DAYTON", "TFORCE", "ARCB"].includes(key)) {
+			return ltl_connector_label(key);
+		}
+		return raw_upper;
+	}
+
+	render_source_line(quote) {
+		const source = this.quote_source(quote);
+		if (!source) return "";
+		return `<div class="ltl-carrier-source">${frappe.utils.escape_html(
+			__("SOURCE: {0}", [source])
+		)}</div>`;
 	}
 
 	quote_carrier_name(quote) {
@@ -2013,7 +2092,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const source = this.quote_source(quote);
 		let name = String(quote?.carrier_name || quote?.carrier || "").trim();
 		const is_demo = /demo carrier/i.test(name) || /^SMC3$/i.test(name) || /^SMC3-/.test(name.toUpperCase());
-		if (source === "SMC3" || scac) {
+		if (source === "SMC3") {
 			if (!name || is_demo) {
 				name = (scac && SMC3_SCAC_NAMES[scac] && scac !== "SMCA") || scac || name;
 			}
@@ -2027,16 +2106,11 @@ ltl_quote.Dashboard = class Dashboard {
 	render_carrier_cell(quote) {
 		const esc = frappe.utils.escape_html;
 		const name = this.quote_carrier_name(quote);
-		const source = this.quote_source(quote);
-		const source_line =
-			source === "SMC3"
-				? `<div class="ltl-carrier-source">${esc(__("SOURCE: {0}", [source]))}</div>`
-				: "";
 		return `<div class="ltl-carrier-cell">
 			<span class="ltl-carrier-badge">${esc(this.carrier_badge_text(quote))}</span>
 			<div class="ltl-carrier-text">
 				<span class="ltl-carrier-name">${esc(name)}</span>
-				${source_line}
+				${this.render_source_line(quote)}
 			</div>
 		</div>`;
 	}
@@ -2228,11 +2302,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const currency = quote.currency || "USD";
 		const carrier_name = this.quote_carrier_name(quote);
 		const carrier_code = this.carrier_badge_text(quote);
-		const source = this.quote_source(quote);
-		const source_line =
-			source === "SMC3"
-				? `<div class="ltl-carrier-source">${esc(__("SOURCE: {0}", [source]))}</div>`
-				: "";
+		const source_line = this.render_source_line(quote);
 		const service = esc(quote.service_level || "Standard LTL");
 		const rating = quote.reliability_score ? (quote.reliability_score / 20).toFixed(1) : null;
 		const tags = quote.tags || (quote.tag ? [quote.tag] : []);
@@ -2838,6 +2908,18 @@ ltl_quote.Dashboard = class Dashboard {
 			</section>`;
 	}
 
+	render_smc3_barcode_note(barcode) {
+		const data = barcode || {};
+		const symbology = String(data.symbology || "").trim();
+		const printing = String(data.printing_requirements || "").trim();
+		if (!symbology && !printing) return "";
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		return `<div class="ltl-barcode-note">
+			${symbology ? `<div><strong>${__("Barcode")}</strong> ${esc(symbology)}</div>` : ""}
+			${printing ? `<div class="ltl-barcode-print">${esc(printing)}</div>` : ""}
+		</div>`;
+	}
+
 	render_quote_detail(payload) {
 		const doc = payload.doc || {};
 		const accessorials = payload.accessorials || [];
@@ -3114,6 +3196,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const carrier = String(carrier_hint || doc.carrier || "").toUpperCase();
 		const is_tforce = ltl_connector_key(carrier) === "TFORCE";
 		const is_arcbest = ltl_connector_key(carrier) === "ARCB";
+		const is_smc3 = ltl_connector_key(carrier) === "SMC3";
 		const pro = String(doc.pro_number || "").trim();
 		if (!ltl_supports_pickup(carrier)) {
 			return { badge: "", actions: "" };
@@ -3124,11 +3207,12 @@ ltl_quote.Dashboard = class Dashboard {
 		const status = String(doc.pickup_status || info.status || "").trim();
 		const shipment_status = String(doc.status || "");
 		const can_view = ["Booked", "Dispatched", "In Transit", "Out for Delivery"].includes(shipment_status)
-			&& (is_tforce || is_arcbest || Boolean(pro));
+			&& (is_tforce || is_arcbest || is_smc3 || Boolean(pro));
+		const has_scheduled_pickup = is_smc3 ? Boolean(status) : Boolean(pickup_number);
 
 		let badge_class = "ltl-pickup-status-pending";
 		let badge_label = __("Pickup not scheduled");
-		if (pickup_number) {
+		if (has_scheduled_pickup) {
 			badge_class = status === "Cancelled" ? "ltl-pickup-status-cancelled" : "ltl-pickup-status-assigned";
 			if (status === "PickedUp") {
 				badge_class = "ltl-pickup-status-complete";
@@ -3144,12 +3228,12 @@ ltl_quote.Dashboard = class Dashboard {
 
 		const view_btn = can_view
 			? `<button type="button" class="ltl-btn ltl-detail-view-pickup" data-shipment="${esc(doc.name)}">
-					<i class="fa fa-calendar"></i> ${__("View Pickup")}
+					<i class="fa fa-calendar"></i> ${has_scheduled_pickup ? __("View Pickup") : __("Pickup Request")}
 				</button>`
 			: "";
 
 		return {
-			badge: can_view || pickup_number
+			badge: can_view || has_scheduled_pickup
 				? `<span class="ltl-pickup-status-badge ${badge_class}" title="${esc(pickup_number || status || "")}">${badge_label}</span>`
 				: "",
 			actions: view_btn,
@@ -3166,7 +3250,8 @@ ltl_quote.Dashboard = class Dashboard {
 		const connector = ltl_connector_key(carrier);
 		const is_tforce = connector === "TFORCE";
 		const is_arcbest = connector === "ARCB";
-		const hide_dayton_fields = is_tforce || is_arcbest;
+		const is_smc3 = connector === "SMC3";
+		const hide_dayton_fields = is_tforce || is_arcbest || is_smc3;
 		const carrier_title = ltl_connector_label(carrier);
 		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
 		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
@@ -3175,7 +3260,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const status = String(pickup.status || doc.pickup_status || "").trim();
 		const psid = pickup.psid || doc.pickup_psid || "";
 		const is_cancelled = status === "Cancelled";
-		const has_pickup = Boolean(pickup_number);
+		const has_pickup = is_smc3 ? Boolean(status) : Boolean(pickup_number);
 		const shipper = raw.shipper || {};
 		const shipper_addr = shipper.address || {};
 		const contact = raw.contact || {};
@@ -3266,6 +3351,35 @@ ltl_quote.Dashboard = class Dashboard {
 					</div>`}
 				</section>`;
 
+		const smc3_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("SMC3 Dispatch API")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">POST</span> /dispatch/v1/app/{SCAC} — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a carrier pickup through SMC3 Dispatch after the BOL is booked.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("This confirmation was stored from the SMC3 Dispatch response.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">POST</span> dispatchCode CANCEL — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup request with SMC3.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
+
 		const dayton_actions = `
 				<section class="ltl-detail-card ltl-pickup-actions-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Dayton Pickup API Actions")}</div>
@@ -3344,7 +3458,13 @@ ltl_quote.Dashboard = class Dashboard {
 					</div>` : ""}
 				</section>`;
 
-		const pickup_actions = is_tforce ? tforce_actions : is_arcbest ? arcbest_actions : dayton_actions;
+		const pickup_actions = is_tforce
+			? tforce_actions
+			: is_arcbest
+				? arcbest_actions
+				: is_smc3
+					? smc3_actions
+					: dayton_actions;
 
 		return `
 			<div class="ltl-detail ltl-pickup-detail">
@@ -3692,6 +3812,23 @@ ltl_quote.Dashboard = class Dashboard {
 					<i class="fa fa-times"></i> ${__("Cancel BOL")}
 				</button>`
 			: "";
+		const can_track =
+			ltl_supports_tracking(payload.carrier || doc.carrier)
+			&& Boolean(String(doc.pro_number || "").trim())
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const track_btn = can_track
+			? `<button type="button" class="ltl-btn ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-map-marker"></i> ${__("Tracking")}
+				</button>`
+			: "";
+		const can_get_pro =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const get_pro_btn = can_get_pro
+			? `<button type="button" class="ltl-btn ltl-detail-get-next-pro" data-shipment="${esc(doc.name)}" data-pro="${esc(doc.pro_number || "")}">
+					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
+				</button>`
+			: "";
 		const bol_preview = this.render_bol_preview_card({
 			bol_url: preview_url,
 			bol_number: doc.bol_number,
@@ -3716,6 +3853,9 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
 						${view_bol_btn}
 						${cancel_bol_btn}
+						${dayton_pickup_ui.actions}
+						${get_pro_btn}
+						${track_btn}
 					</div>
 				</div>
 
@@ -3787,7 +3927,9 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-field"><label>Estimated Delivery</label>
 							<input type="date" class="ltl-input" data-detail="estimated_delivery_date" value="${esc(doc.estimated_delivery_date || "")}" ${ro} /></div>
 						<div class="ltl-field"><label>PRO / Tracking Number</label>
-							<input class="ltl-input" data-detail="pro_number" value="${val(doc.pro_number)}" ${ro} /></div>
+							<input class="ltl-input" data-detail="pro_number" value="${val(doc.pro_number)}" ${ro} />
+							${this.render_smc3_barcode_note(payload.barcode)}
+						</div>
 						<div class="ltl-field"><label>Actual Delivery</label>
 							<input type="date" class="ltl-input" data-detail="actual_delivery_date" value="${esc(doc.actual_delivery_date || "")}" ${ro} /></div>
 						<div class="ltl-field"><label>Carrier Confirmation #</label>
@@ -4122,6 +4264,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.rate_errors = [];
 		if (this.load_acc_expanded) this.toggle_load_accessorials();
 		if (this.line_items_expanded) this.toggle_line_items_section(false);
+		if (this.expanded) this.toggle_shipment(false);
 		this.render_rates();
 		this.load_recent_requests();
 	}

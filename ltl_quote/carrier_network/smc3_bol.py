@@ -21,6 +21,19 @@ DEFAULT_BOL_BASE = "https://bill-of-lading.smc3.com/bill-of-lading/v1/app"
 DEFAULT_BOL_VERSION = "2.1.0"
 DEFAULT_SANDBOX_ACCOUNT = "12345"
 DEFAULT_DOCUMENT_DEMO_PRO = "11234559"
+DEFAULT_DOCUMENT_DEMO_BOL = "444555678"
+
+
+def canonical_bol_number(bol, shipment=None, quote_data=None) -> str:
+	"""Strip the local uniqueness suffix (`-{quote_request}`) before calling SMC3."""
+	value = str(bol or "").strip()
+	quote_name = str(
+		(quote_data or {}).get("quote_request") or getattr(shipment, "quote_request", None) or ""
+	).strip()
+	if quote_name and value.endswith(f"-{quote_name}"):
+		return value[: -(len(quote_name) + 1)]
+	return value
+
 
 HANDLING_UNIT_TYPES = {
 	"SKD": "SKD",
@@ -151,10 +164,12 @@ def extract_reference_numbers(data: dict) -> dict:
 	refs = data.get("referenceNumbers") if isinstance(data, dict) else None
 	if not isinstance(refs, dict):
 		refs = {}
+	bol = str(refs.get("bol") or refs.get("bolNumber") or "").strip()
 	return {
 		"pro": str(refs.get("pro") or refs.get("proNumber") or "").strip(),
+		"bol": bol,
 		"shipment_confirmation": str(
-			refs.get("shipmentConfirmationNumber") or refs.get("bolNumber") or ""
+			refs.get("shipmentConfirmationNumber") or bol or ""
 		).strip(),
 	}
 
@@ -396,5 +411,8 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 		"payment_terms": getattr(shipment, "bol_payment_terms", None) or "Prepaid",
 		"pickup_date": getattr(shipment, "pickup_date", None),
 		"pro_number": getattr(shipment, "pro_number", None),
+		"bol_number": getattr(shipment, "bol_number", None),
 		"quoted_scac": getattr(shipment, "bol_scac", None),
+		"origin_country": getattr(qr, "origin_country", None) if qr else None,
+		"destination_country": getattr(qr, "destination_country", None) if qr else None,
 	}

@@ -327,6 +327,24 @@ body.ltl-fullscreen .layout-side-section {
 	display: flex;
 	align-items: center;
 	gap: 10px;
+	flex-wrap: wrap;
+}
+.ltl-quick-quotes {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: 8px;
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--ltl-text);
+	cursor: pointer;
+	user-select: none;
+}
+.ltl-quick-quotes input {
+	margin: 0;
+	accent-color: var(--ltl-orange);
+	width: 14px;
+	height: 14px;
 }
 .ltl-chevron {
 	transition: transform 0.2s ease;
@@ -1278,6 +1296,16 @@ img.ltl-bol-image {
 	opacity: 0.65;
 	cursor: not-allowed;
 }
+.ltl-barcode-note {
+	margin-top: 6px;
+	font-size: 11px;
+	color: #6b7280;
+	line-height: 1.45;
+}
+.ltl-barcode-print {
+	margin-top: 4px;
+	white-space: pre-wrap;
+}
 .ltl-bol-status-badge {
 	display: inline-flex;
 	align-items: center;
@@ -1356,7 +1384,8 @@ img.ltl-bol-image {
 	white-space: nowrap;
 	cursor: pointer;
 }
-.ltl-detail-track-shipment {
+.ltl-detail-track-shipment,
+.ltl-detail-get-next-pro {
 	background: rgba(255, 255, 255, 0.14);
 	color: #fff;
 	border: 1px solid rgba(255, 255, 255, 0.45);
@@ -1367,7 +1396,8 @@ img.ltl-bol-image {
 	white-space: nowrap;
 	cursor: pointer;
 }
-.ltl-detail-track-shipment:hover {
+.ltl-detail-track-shipment:hover,
+.ltl-detail-get-next-pro:hover {
 	background: rgba(255, 255, 255, 0.24);
 }
 .ltl-pickup-detail .ltl-detail-hero-left {
