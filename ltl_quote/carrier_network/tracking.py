@@ -45,6 +45,8 @@ DAYTON_ACTIVITY_LABELS: dict[str, str] = {
 	"PICKED UP": "Picked Up",
 	"IN TRANSIT": "In Transit",
 	"OUT FOR DELIVERY": "Out for Delivery",
+	"D1": "Delivered",
+	"D1D": "Delivered",
 	"INFO": "Info",
 }
 
@@ -77,6 +79,8 @@ _ACTIVITY_MILESTONE_INDEX: dict[str, int] = {
 	"DLV": 5,
 	"OK": 5,
 	"DELIVERED": 5,
+	"D1": 5,
+	"D1D": 5,
 	"DL": 5,
 	"OF": 4,
 	"PU": 2,
@@ -149,9 +153,17 @@ def shipment_status_milestone_index(status: str | None) -> int:
 	return 0
 
 
-def shipment_status_from_activity(code: str | None) -> str | None:
-	"""Map a Dayton activity code to LTL Shipment.status."""
+def shipment_status_from_activity(code: str | None, description: str | None = None) -> str | None:
+	"""Map a carrier activity code (and optional description) to LTL Shipment.status."""
+	if text_implies_delivered(code):
+		return "Delivered"
+	# Generic codes like INFO must not hide a delivered description.
+	if text_implies_delivered(description) and milestone_index_for_code(code) != 4:
+		return "Delivered"
+
 	idx = milestone_index_for_code(code)
+	if idx is None:
+		idx = milestone_index_for_code(description)
 	if idx is None:
 		return None
 	if idx <= 2:
@@ -163,6 +175,49 @@ def shipment_status_from_activity(code: str | None) -> str | None:
 	if idx >= 5:
 		return "Delivered"
 	return None
+
+
+def text_implies_delivered(*parts: str | None) -> bool:
+	"""True when SMC3/carrier text is a completed delivery, not OFD or an attempt."""
+	value = " ".join(normalize_activity_code(part) for part in parts if part).strip()
+	if not value or "ATTEMPT" in value:
+		return False
+	if "OUT FOR DELIVERY" in value or value in {"OFD", "OF"}:
+		return False
+	if value in {"D1", "D1D", "DLV", "DL", "DEL", "OK", "DELIVERED"}:
+		return True
+	return "DELIVERED" in value
+
+
+def highest_shipment_status(events: list[dict] | None) -> str | None:
+	"""Return the furthest lifecycle status implied by a set of tracking events."""
+	mapped = None
+	best = -1
+	for ev in events or []:
+		candidate = shipment_status_from_activity(ev.get("status_code"), ev.get("status_description"))
+		if ev.get("actual_delivery") or text_implies_delivered(ev.get("status_code"), ev.get("status_description")):
+			candidate = "Delivered"
+		rank = shipment_status_milestone_index(candidate) if candidate else -1
+		if candidate and rank >= best:
+			mapped = candidate
+			best = rank
+	return mapped
+
+
+def delivery_details_from_events(events: list[dict] | None) -> dict:
+	"""Pull actual delivery date/time/signature off parsed Status v1 events."""
+	date = None
+	time = None
+	signature = ""
+	for ev in events or []:
+		date = ev.get("actual_delivery") or date
+		time = ev.get("actual_delivery_time") or time
+		signature = str(ev.get("delivery_signature") or signature or "").strip()
+	return {
+		"actual_delivery_date": date,
+		"actual_delivery_time": time,
+		"delivery_signature": signature,
+	}
 
 
 def build_timeline_milestones(

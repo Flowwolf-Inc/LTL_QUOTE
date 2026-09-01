@@ -1514,15 +1514,24 @@ ltl_quote.Dashboard = class Dashboard {
 			const shipment = $(e.currentTarget).attr("data-shipment");
 			if (!shipment) return;
 			frappe.call({
-				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.fetch_smc3_bol_image",
-				args: { name: shipment },
+				method: "ltl_quote.carrier_network.adapters.smc3.fetch_bol_image",
+				args: { shipment_name: shipment },
 				freeze: true,
-				freeze_message: __("Fetching BOL image…"),
+				freeze_message: __("Fetching BOL Image from SMC3..."),
 				callback: (r) => {
 					const result = r.message || {};
 					if (result.status === "success") {
+						if (result.file_url) {
+							window.open(result.file_url, "_blank", "noopener,noreferrer");
+						}
 						frappe.show_alert({ message: __("BOL image saved"), indicator: "green" });
-						this.open_shipment_detail(shipment);
+						if (this.detail_type === "quote") {
+							const quote = (this.detail_doc && this.detail_doc.doc && this.detail_doc.doc.name) || "";
+							if (quote) this.open_quote_detail(quote);
+							else this.open_shipment_detail(shipment);
+						} else {
+							this.open_shipment_detail(shipment);
+						}
 						return;
 					}
 					frappe.msgprint({
@@ -2947,6 +2956,16 @@ ltl_quote.Dashboard = class Dashboard {
 					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
 				</button>`
 				: "";
+		const can_fetch_bol_image =
+			Boolean(linked.name)
+			&& ltl_supports_smc3_bol(linked.carrier || doc.final_carrier)
+			&& !["Cancelled", "Delivered"].includes(String(linked.status || ""))
+			&& Boolean(String(linked.pro_number || linked.bol_number || doc.pro_number || doc.bol_number || "").trim());
+		const fetch_bol_image_btn = can_fetch_bol_image
+			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(linked.name)}">
+					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
+				</button>`
+			: "";
 		const bol_preview = this.render_bol_preview_card({
 			bol_url,
 			bol_number: doc.bol_number || linked.bol_number,
@@ -2992,6 +3011,7 @@ ltl_quote.Dashboard = class Dashboard {
 					<div class="ltl-detail-hero-right">
 						<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
 						${view_bol_btn}
+						${fetch_bol_image_btn}
 					</div>
 				</div>
 
@@ -3812,6 +3832,11 @@ ltl_quote.Dashboard = class Dashboard {
 					<i class="fa fa-times"></i> ${__("Cancel BOL")}
 				</button>`
 			: "";
+		const fetch_bol_image_btn = can_cancel_bol
+			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
+				</button>`
+			: "";
 		const can_track =
 			ltl_supports_tracking(payload.carrier || doc.carrier)
 			&& Boolean(String(doc.pro_number || "").trim())
@@ -3853,6 +3878,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
 						${view_bol_btn}
 						${cancel_bol_btn}
+						${fetch_bol_image_btn}
 						${dayton_pickup_ui.actions}
 						${get_pro_btn}
 						${track_btn}
@@ -3932,6 +3958,10 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 						<div class="ltl-field"><label>Actual Delivery</label>
 							<input type="date" class="ltl-input" data-detail="actual_delivery_date" value="${esc(doc.actual_delivery_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Actual Delivery Time</label>
+							<input class="ltl-input" value="${val(doc.actual_delivery_time || "")}" readonly /></div>
+						<div class="ltl-field"><label>Delivery Signature</label>
+							<input class="ltl-input" value="${val(doc.delivery_signature || "")}" readonly /></div>
 						<div class="ltl-field"><label>Carrier Confirmation #</label>
 							<input class="ltl-input" data-detail="carrier_confirmation" value="${val(doc.carrier_confirmation)}" ${ro} /></div>
 						<div class="ltl-field"><label>Pickup Number</label>

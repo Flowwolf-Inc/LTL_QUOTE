@@ -43,16 +43,22 @@ class ShipmentTracker:
 				has_exception = True
 			latest = ev
 
+		previous_status = str(self.shipment.status or "")
 		if latest:
 			self.shipment.current_status = latest.get("status_description")
 			self.shipment.current_location = latest.get("location")
 			self.shipment.last_tracking_update = now_datetime()
-			self._update_shipment_status(latest.get("status_code"))
+			self._update_shipment_status(
+				latest.get("status_code"),
+				latest.get("status_description"),
+				events=events,
+			)
 			self._apply_tracking_dates(events)
 
 		self.shipment.has_exception = has_exception
 		self.shipment.eta_predicted = self._predict_eta()
 		self.shipment.save(ignore_permissions=True)
+		self._log_delivery_transition(previous_status, latest, events)
 		frappe.db.commit()
 
 		if has_exception and self.settings.enable_exception_alerts:
@@ -60,10 +66,12 @@ class ShipmentTracker:
 
 		return {"events": len(events), "has_exception": has_exception}
 
-	def _update_shipment_status(self, status_code: str | None):
-		from ltl_quote.carrier_network.tracking import shipment_status_from_activity
+	def _update_shipment_status(self, status_code: str | None, description: str | None = None, events=None):
+		from ltl_quote.carrier_network.tracking import highest_shipment_status, shipment_status_from_activity
 
-		mapped = shipment_status_from_activity(status_code)
+		mapped = highest_shipment_status(events) if events else None
+		if not mapped:
+			mapped = shipment_status_from_activity(status_code, description)
 		if mapped:
 			self.shipment.status = mapped
 			return
@@ -74,6 +82,7 @@ class ShipmentTracker:
 			"IN_TRANSIT": "In Transit",
 			"OUT_FOR_DELIVERY": "Out for Delivery",
 			"DELIVERED": "Delivered",
+			"D1": "Delivered",
 			"VOIDED": "Cancelled",
 		}
 		if status_code and status_code in mapping:
@@ -82,13 +91,13 @@ class ShipmentTracker:
 	def _apply_tracking_dates(self, events: list[dict]) -> None:
 		from frappe.utils import getdate
 
+		from ltl_quote.carrier_network.tracking import delivery_details_from_events
+
 		pickup_date = None
 		estimated = None
-		actual = None
 		for ev in events or []:
 			pickup_date = ev.get("pickup_date") or pickup_date
 			estimated = ev.get("estimated_delivery") or estimated
-			actual = ev.get("actual_delivery") or actual
 		if pickup_date and not self.shipment.pickup_date:
 			try:
 				self.shipment.pickup_date = getdate(pickup_date)
@@ -99,11 +108,47 @@ class ShipmentTracker:
 				self.shipment.estimated_delivery_date = getdate(estimated)
 			except Exception:
 				pass
+
+		details = delivery_details_from_events(events)
+		actual = details.get("actual_delivery_date")
 		if actual:
 			try:
 				self.shipment.actual_delivery_date = getdate(actual)
 			except Exception:
 				pass
+			if details.get("actual_delivery_time") and self.shipment.meta.has_field("actual_delivery_time"):
+				self.shipment.actual_delivery_time = details["actual_delivery_time"]
+			if details.get("delivery_signature") and self.shipment.meta.has_field("delivery_signature"):
+				self.shipment.delivery_signature = details["delivery_signature"]
+			self.shipment.status = "Delivered"
+
+	def _log_delivery_transition(self, previous_status: str, latest: dict | None, events: list[dict] | None):
+		if str(self.shipment.status or "") != "Delivered" or previous_status == "Delivered":
+			return
+		from ltl_quote.carrier_network.tracking import delivery_details_from_events
+
+		details = delivery_details_from_events(events)
+		when = details.get("actual_delivery_date") or (latest or {}).get("event_datetime") or ""
+		time = details.get("actual_delivery_time") or ""
+		signature = details.get("delivery_signature") or ""
+		parts = ["SMC3 status update: Delivered"]
+		if when:
+			parts.append(f"Date: {when}")
+		if time:
+			parts.append(f"Time: {time}")
+		if signature:
+			parts.append(f"Signature: {frappe.utils.escape_html(signature)}")
+		comment = " — ".join(parts)
+		try:
+			self.shipment.add_comment("Comment", comment)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "LTL Shipment - Delivery Comment")
+		quote_name = str(self.shipment.quote_request or "").strip()
+		if quote_name and frappe.db.exists("LTL Quote Request", quote_name):
+			try:
+				frappe.get_doc("LTL Quote Request", quote_name).add_comment("Comment", comment)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "LTL Quote Request - Delivery Comment")
 
 	def _predict_eta(self):
 		if self.shipment.estimated_delivery_date:

@@ -17,7 +17,13 @@ from ltl_quote.carrier_network.smc3_bol import (
 	canonical_bol_number,
 	quote_data_from_shipment,
 )
-from ltl_quote.carrier_network.tracking import activity_label, is_exception_code, normalize_activity_code
+from ltl_quote.carrier_network.tracking import (
+	activity_label,
+	is_exception_code,
+	milestone_index_for_code,
+	normalize_activity_code,
+	text_implies_delivered,
+)
 
 DEFAULT_DISPATCH_BASE = "https://dispatch.smc3.com/dispatch/v3/app"
 DEFAULT_STATUS_BASE = "https://status.smc3.com/status/v1/app"
@@ -283,6 +289,15 @@ def parse_status_events(data: dict) -> list[dict]:
 	pickup_date = _parse_smc3_date(transit.get("pickupDate"))
 	estimated = _parse_smc3_date(delivery.get("estimatedDate"))
 	actual = _parse_smc3_date(delivery.get("actualDate"))
+	actual_time = _parse_smc3_time(delivery.get("actualTime"))
+	signature = str(
+		delivery.get("signature")
+		or delivery.get("signedBy")
+		or delivery.get("podSignature")
+		or delivery.get("receiverName")
+		or ""
+	).strip()
+	delivered_at = _parse_event_datetime(_combine_smc3_date_time(delivery.get("actualDate"), delivery.get("actualTime")))
 	for event in events:
 		if pickup_date:
 			event["pickup_date"] = pickup_date
@@ -290,6 +305,28 @@ def parse_status_events(data: dict) -> list[dict]:
 			event["estimated_delivery"] = estimated
 		if actual:
 			event["actual_delivery"] = actual
+		if actual_time:
+			event["actual_delivery_time"] = actual_time
+		if signature:
+			event["delivery_signature"] = signature
+		if delivered_at and text_implies_delivered(event.get("status_code"), event.get("status_description")):
+			event["event_datetime"] = event.get("event_datetime") or delivered_at
+
+	if actual and not any(text_implies_delivered(ev.get("status_code"), ev.get("status_description")) for ev in events):
+		events.append(
+			{
+				"event_datetime": delivered_at,
+				"status_code": "D1",
+				"status_description": "Delivered",
+				"location": "",
+				"is_exception": 0,
+				"pickup_date": pickup_date,
+				"estimated_delivery": estimated,
+				"actual_delivery": actual,
+				"actual_delivery_time": actual_time,
+				"delivery_signature": signature,
+			}
+		)
 	return events
 
 
@@ -355,6 +392,9 @@ def _parse_status_row(row) -> dict | None:
 		code = normalize_activity_code(description)
 	if not code and not description:
 		return None
+	if text_implies_delivered(code, description) and milestone_index_for_code(code) is None:
+		code = "D1"
+		description = description or "Delivered"
 	when = _status_event_datetime(row)
 	city = str(row.get("city") or row.get("cityName") or "").strip()
 	state = str(row.get("state") or row.get("stateProvince") or "").strip()
@@ -411,6 +451,21 @@ def _parse_smc3_date(value):
 		return datetime.strptime(text[:8], "%Y%m%d").date()
 	except ValueError:
 		return None
+
+
+def _parse_smc3_time(value) -> str | None:
+	"""Normalize SMC3 HHMM / HH:MM[:SS] into a Frappe Time value."""
+	text = str(value or "").strip()
+	if not text:
+		return None
+	digits = "".join(ch for ch in text if ch.isdigit())
+	if len(digits) < 3:
+		return None
+	digits = digits.ljust(6, "0")[:6]
+	hours, minutes, seconds = int(digits[:2]), int(digits[2:4]), int(digits[4:6])
+	if hours > 23 or minutes > 59 or seconds > 59:
+		return None
+	return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _parse_event_datetime(value):

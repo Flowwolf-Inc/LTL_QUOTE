@@ -2062,9 +2062,19 @@ def fetch_smc3_bol_image(shipment_name: str) -> dict:
 		"scac": result.get("scac") or "",
 		"transaction_id": result.get("transaction_id") or "",
 		"image_url": attached.get("image_url") or "",
+		"file_url": attached.get("image_url") or "",
 		"image_urls": attached.get("image_urls") or [],
 		"page_count": attached.get("page_count") or 0,
 	}
+
+
+@frappe.whitelist()
+def fetch_bol_image(shipment_name: str | None = None, name: str | None = None) -> dict:
+	"""Public RPC for the Quote page and Desk: GET the SMC3 BOL PNG and return a preview URL."""
+	result = fetch_smc3_bol_image(shipment_name or name)
+	file_url = result.get("image_url") or result.get("document_url") or ""
+	result["file_url"] = file_url
+	return result
 
 
 def cancel_smc3_shipment_bol(shipment_name: str) -> dict:

@@ -218,12 +218,15 @@ frappe.ui.form.on("LTL Shipment", {
 			) {
 				frm.add_custom_button(__("Get BOL Image"), () => {
 					frappe.call({
-						method: "fetch_bol_image",
-						doc: frm.doc,
+						method: "ltl_quote.carrier_network.adapters.smc3.fetch_bol_image",
+						args: { shipment_name: frm.doc.name },
 						freeze: true,
-						freeze_message: __("Fetching BOL image…"),
+						freeze_message: __("Fetching BOL Image from SMC3..."),
 						callback(r) {
 							if (r.message?.status === "success") {
+								if (r.message.file_url) {
+									window.open(r.message.file_url, "_blank", "noopener,noreferrer");
+								}
 								frappe.show_alert({
 									message: __("BOL image saved."),
 									indicator: "green",

@@ -16,6 +16,8 @@
   "pickup_date",
   "estimated_delivery_date",
   "actual_delivery_date",
+  "actual_delivery_time",
+  "delivery_signature",
   "column_break_lifecycle",
   "bol_number",
   "dayton_bol_id",
@@ -158,6 +160,18 @@
    "fieldname": "actual_delivery_date",
    "fieldtype": "Date",
    "label": "Actual Delivery"
+  },
+  {
+   "fieldname": "actual_delivery_time",
+   "fieldtype": "Time",
+   "label": "Actual Delivery Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "delivery_signature",
+   "fieldtype": "Data",
+   "label": "Delivery Signature",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_lifecycle",
@@ -566,7 +580,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-27 12:20:00.000000",
+ "modified": "2026-09-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Freight",
  "name": "LTL Shipment",

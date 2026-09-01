@@ -10,8 +10,60 @@ frappe.ui.form.on("LTL Quote Request", {
 		frm.add_custom_button(__("Fetch Rates"), () => fetch_rates(frm)).addClass("btn-primary");
 
 		render_book_button(frm);
+		render_smc3_actions(frm);
 	},
 });
+
+function render_smc3_actions(frm) {
+	frm.remove_custom_button(__("Get BOL Image"), __("SMC3 Actions"));
+	if (frm.is_new() || !frm.doc.name) {
+		return;
+	}
+
+	frappe.db
+		.get_list("LTL Shipment", {
+			fields: ["name", "carrier", "pro_number", "bol_number", "status"],
+			filters: { quote_request: frm.doc.name },
+			limit: 1,
+			order_by: "creation desc",
+		})
+		.then((rows) => {
+			const shipment = (rows || [])[0];
+			if (!shipment || !is_smc3_carrier(shipment.carrier)) {
+				return;
+			}
+			if (["Cancelled", "Delivered"].includes(shipment.status)) {
+				return;
+			}
+			if (!shipment.pro_number && !shipment.bol_number) {
+				return;
+			}
+			frm.add_custom_button(
+				__("Get BOL Image"),
+				() => {
+					frappe.call({
+						method: "ltl_quote.carrier_network.adapters.smc3.fetch_bol_image",
+						args: { shipment_name: shipment.name },
+						freeze: true,
+						freeze_message: __("Fetching BOL Image from SMC3..."),
+						callback(r) {
+							if (r.message?.status === "success") {
+								if (r.message.file_url) {
+									window.open(r.message.file_url, "_blank", "noopener,noreferrer");
+								}
+								frappe.show_alert({
+									message: __("BOL image saved."),
+									indicator: "green",
+								});
+							}
+							frm.reload_doc();
+						},
+					});
+				},
+				__("SMC3 Actions")
+			);
+		});
+}
 
 function render_book_button(frm) {
 	frm.remove_custom_button(__("Book Selected Quote"));
