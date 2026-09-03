@@ -21,6 +21,13 @@ class LTLShipment(Document):
 
 	@frappe.whitelist()
 	def fetch_proof_of_delivery(self):
+		from ltl_quote.carrier_network.carrier_identity import CONNECTOR_SMC3, shipment_connector
+
+		if shipment_connector(self) == CONNECTOR_SMC3:
+			from ltl_quote.api.smc3 import get_smc3_document
+
+			return get_smc3_document(shipment=self.name, document_type="POD", file_type="PDF")
+
 		from ltl_quote.carrier_network.registry import get_adapter
 
 		if not self.pro_number:
@@ -76,6 +83,16 @@ class LTLShipment(Document):
 		from ltl_quote.carrier_network.adapters.smc3 import fetch_smc3_bol_image
 
 		return fetch_smc3_bol_image(self.name)
+
+	@frappe.whitelist()
+	def get_barcode_spec(self):
+		from ltl_quote.carrier_network.adapters.smc3 import barcode_requirements_for_shipment
+
+		data = barcode_requirements_for_shipment(self) or {}
+		return {
+			"symbology": data.get("symbology") or "",
+			"printing_requirements": data.get("printing_requirements") or "",
+		}
 
 	@frappe.whitelist()
 	def update_electronic_bol(self):

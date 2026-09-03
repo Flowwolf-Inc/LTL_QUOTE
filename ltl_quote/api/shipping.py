@@ -1042,22 +1042,10 @@ def create_smc3_pickup(shipment=None, shipment_name=None):
 
 @frappe.whitelist(allow_guest=False)
 def get_smc3_pickup(shipment=None, shipment_name=None, number=None):
-	"""Return stored SMC3 pickup confirmation (Dispatch has no pickup GET)."""
-	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+	"""Live GET of an SMC3 pickup confirmation (Dispatch v3)."""
+	from ltl_quote.api.smc3 import get_pickup as live_get_pickup
 
-	doc = _get_smc3_shipment(shipment, shipment_name)
-	pickup_number = str(number or doc.pickup_number or "").strip()
-	if not pickup_number:
-		frappe.throw("This shipment does not have an SMC3 pickup confirmation yet.")
-	summary = shipment_pickup_summary(doc)
-	return {
-		"status": "success",
-		"ok": True,
-		"shipment": doc.name,
-		"pickup": summary,
-		"pickup_number": pickup_number,
-		"pickup_status": doc.pickup_status or "Scheduled",
-	}
+	return live_get_pickup(shipment=shipment or shipment_name, number=number)
 
 
 @frappe.whitelist(allow_guest=False)

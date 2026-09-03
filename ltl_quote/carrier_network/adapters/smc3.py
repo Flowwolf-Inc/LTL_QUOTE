@@ -8,10 +8,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import frappe
 import requests
-from frappe.utils import cint, flt, getdate
+from frappe.utils import cint, flt, get_url, getdate, now_datetime
 from frappe.utils.file_manager import save_file
 
 from ltl_quote.api.payload import (
@@ -63,8 +64,8 @@ from ltl_quote.carrier_network.smc3_dispatch import (
 	pickup_already_scheduled,
 	status_bol_query_params,
 	status_pro_query_params,
+	status_query_params,
 	status_request_body,
-	sandbox_status_query_params,
 )
 from ltl_quote.carrier_network.smc3_quote_mapper import (
 	RATE_SOURCE,
@@ -80,9 +81,25 @@ DEFAULT_ENDPOINT = "https://pricing.smc3.com/pricing/v3/app/aggregate"
 LEGACY_V1_ENDPOINT = "https://pricing.smc3.com/pricing/aggregate/v1/app/"
 DEFAULT_APA_BASE = "https://apa.smc3.com/apa/assignment/v2/app/carriers"
 DEFAULT_DOCUMENT_BASE = "https://document.smc3.com/document/v1/app"
+DEFAULT_NOTIFICATIONS_BASE = "https://eva.smc3.com/notifications/v1/app"
+DEFAULT_TERMINALS_BASE = "https://terminals.smc3.com/terminals/v1/app"
+DOCUMENT_TYPES = {"BL", "POD", "DR"}
+DOCUMENT_FILE_TYPES = {"PDF", "PNG"}
+
+
+def _document_label(document_type: str) -> str:
+	return {"BL": "BOL", "POD": "POD", "DR": "delivery receipt"}.get(str(document_type or "BL").upper(), "document")
+STATUS_CALLBACK_METHOD = "ltl_quote.api.webhooks.smc3_status_update"
 DEFAULT_MINOR_VERSION = "1.2"
 DEFAULT_WAIT_SECONDS = 30
 MAX_CARRIERS_PER_REQUEST = 35
+_PRIVATE_CALLBACK_HOSTS = {
+	"localhost",
+	"127.0.0.1",
+	"0.0.0.0",
+	"::1",
+	"host.docker.internal",
+}
 
 SMC3_DEFAULT_ACCESSORIALS = {
 	"LIFTGATE": "LFTD",
@@ -349,19 +366,26 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		bol_txn = str(put_data.get("transactionId") or bol_data.get("transactionId") or "").strip()
 		quoted_scac = str(put_data.get("scac") or bol_data.get("scac") or data.get("scac") or scac).upper()
 		bol_payload["bol_number"] = scn
-		png_result = self.get_bol_document_image(
-			SimpleNamespace(
-				pro_number=pro,
-				bol_number=scn,
-				bol_scac=quoted_scac,
-				bol_shipper_postal_code=bol_payload.get("origin_zip"),
-				bol_consignee_postal_code=bol_payload.get("destination_zip"),
-				quote_request=bol_payload.get("quote_request"),
-				smc3_bol_pro=path_pro,
-			),
-			quote_data=bol_payload,
-			raise_on_empty=False,
-		)
+		png_result = {}
+		try:
+			png_result = self.get_bol_document_image(
+				SimpleNamespace(
+					pro_number=pro,
+					bol_number=scn,
+					bol_scac=quoted_scac,
+					bol_shipper_postal_code=bol_payload.get("origin_zip"),
+					bol_consignee_postal_code=bol_payload.get("destination_zip"),
+					quote_request=bol_payload.get("quote_request"),
+					smc3_bol_pro=path_pro,
+				),
+				quote_data=bol_payload,
+				raise_on_empty=False,
+			) or {}
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "LTL Quote - SMC3 BOL PNG Fetch Failure")
+			png_result = {}
+		if not isinstance(png_result, dict):
+			png_result = {}
 		return {
 			"status": "booked",
 			"pro_number": pro,
@@ -439,6 +463,7 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		scac = self._apa_scac(quote_data)
 		assigned_pro = self._document_pro(shipment, quote_data)
 		bol_number = self._document_bol(shipment, quote_data)
+		self._assert_live_document_refs(scac, assigned_pro, bol_number)
 		origin_zip, dest_zip = self._document_postal_codes(shipment, quote_data)
 		if not assigned_pro and not bol_number:
 			if raise_on_empty:
@@ -458,7 +483,14 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			}
 
 		result = self._fetch_bol_document(
-			scac, assigned_pro, origin_zip, dest_zip, bol=bol_number, raise_on_error=False
+			scac,
+			assigned_pro,
+			origin_zip,
+			dest_zip,
+			bol=bol_number,
+			raise_on_error=False,
+			document_type="BL",
+			file_type="PNG",
 		)
 		images = result.get("images") or []
 		used_pro = assigned_pro
@@ -474,6 +506,8 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 					dest_zip,
 					bol=demo_bol or bol_number,
 					raise_on_error=False,
+					document_type="BL",
+					file_type="PNG",
 				)
 				images = result.get("images") or []
 				if images:
@@ -503,6 +537,204 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			"raw_response": result.get("raw_response") or {},
 		}
 
+	def get_bol_document_pdf(self, shipment, quote_data: dict | None = None, raise_on_empty: bool = True) -> dict:
+		"""GET the SMC3 Document API BOL as a PDF, falling back to BOL PUT."""
+		quote_data = quote_data or quote_data_from_shipment(shipment)
+		scac = self._apa_scac(quote_data)
+		assigned_pro = self._document_pro(shipment, quote_data)
+		bol_number = self._document_bol(shipment, quote_data)
+		self._assert_live_document_refs(scac, assigned_pro, bol_number)
+		origin_zip, dest_zip = self._document_postal_codes(shipment, quote_data)
+		empty = {
+			"status": "error",
+			"images": [],
+			"document_binary": "",
+			"message": "SMC3 document API did not return a BOL PDF.",
+		}
+		if not assigned_pro and not bol_number:
+			if raise_on_empty:
+				frappe.throw("A PRO or BOL number is required to fetch the SMC3 BOL PDF.")
+			empty["message"] = "A PRO or BOL number is required to fetch the SMC3 BOL PDF."
+			return empty
+		if not origin_zip or not dest_zip:
+			if raise_on_empty:
+				frappe.throw("Origin and destination postal codes are required to fetch the SMC3 BOL PDF.")
+			empty["message"] = "Origin and destination postal codes are required to fetch the SMC3 BOL PDF."
+			return empty
+
+		result = self._fetch_bol_document(
+			scac,
+			assigned_pro,
+			origin_zip,
+			dest_zip,
+			bol=bol_number,
+			raise_on_error=False,
+			file_type="PDF",
+			document_type="BL",
+		)
+		pdf = str(result.get("document_binary") or "").strip()
+		if not pdf and self._is_sandbox_mode():
+			demo_pro = self._sandbox_document_demo_pro()
+			demo_bol = self._sandbox_document_demo_bol()
+			if (demo_pro and demo_pro != assigned_pro) or (demo_bol and demo_bol != bol_number):
+				result = self._fetch_bol_document(
+					scac,
+					demo_pro or assigned_pro,
+					origin_zip,
+					dest_zip,
+					bol=demo_bol or bol_number,
+					raise_on_error=False,
+					document_type="BL",
+					file_type="PDF",
+				)
+				pdf = str(result.get("document_binary") or "").strip()
+
+		if pdf:
+			return {
+				"status": "success",
+				"pro_number": str(getattr(shipment, "pro_number", None) or assigned_pro).strip(),
+				"bol_number": str(getattr(shipment, "bol_number", None) or bol_number).strip(),
+				"scac": str(result.get("scac") or scac).upper(),
+				"transaction_id": str(result.get("transaction_id") or "").strip(),
+				"document_binary": pdf,
+				"raw_response": result.get("raw_response") or {},
+			}
+
+		try:
+			put_data = self.update_bill_of_lading(shipment, quote_data)
+		except Exception:
+			put_data = {}
+		pdf = str((put_data or {}).get("document_binary") or "").strip()
+		if pdf:
+			return {
+				"status": "success",
+				"pro_number": str((put_data or {}).get("pro_number") or getattr(shipment, "pro_number", None) or assigned_pro).strip(),
+				"bol_number": str((put_data or {}).get("bol_number") or getattr(shipment, "bol_number", None) or bol_number).strip(),
+				"scac": str((put_data or {}).get("quoted_scac") or scac).upper(),
+				"transaction_id": str((put_data or {}).get("carrier_confirmation") or "").strip(),
+				"document_binary": pdf,
+				"raw_response": (put_data or {}).get("raw_response") or {},
+			}
+		if raise_on_empty:
+			frappe.throw(result.get("message") or empty["message"])
+		empty["message"] = result.get("message") or empty["message"]
+		empty["raw_response"] = result.get("raw_response") or {}
+		return empty
+
+	def get_document(
+		self,
+		shipment,
+		quote_data: dict | None = None,
+		document_type: str = "BL",
+		file_type: str = "PDF",
+		raise_on_empty: bool = True,
+	) -> dict:
+		"""GET SMC3 Document API for BL, POD, or DR."""
+		document_type = str(document_type or "BL").strip().upper() or "BL"
+		file_type = str(file_type or "PDF").strip().upper() or "PDF"
+		if document_type not in DOCUMENT_TYPES:
+			frappe.throw(f"Unsupported SMC3 document type: {document_type}. Use BL, POD, or DR.")
+		if file_type not in DOCUMENT_FILE_TYPES:
+			frappe.throw(f"Unsupported SMC3 file type: {file_type}. Use PDF or PNG.")
+		if document_type == "BL" and file_type == "PDF":
+			return self.get_bol_document_pdf(shipment, quote_data=quote_data, raise_on_empty=raise_on_empty)
+		if document_type == "BL" and file_type == "PNG":
+			return self.get_bol_document_image(shipment, quote_data=quote_data, raise_on_empty=raise_on_empty)
+
+		quote_data = quote_data or quote_data_from_shipment(shipment)
+		scac = self._apa_scac(quote_data)
+		assigned_pro = self._document_pro(shipment, quote_data)
+		bol_number = self._document_bol(shipment, quote_data)
+		self._assert_live_document_refs(scac, assigned_pro, bol_number)
+		origin_zip, dest_zip = self._document_postal_codes(shipment, quote_data)
+		label = _document_label(document_type)
+		empty = {
+			"status": "error",
+			"document_type": document_type,
+			"file_type": file_type,
+			"images": [],
+			"document_binary": "",
+			"message": f"SMC3 document API did not return a {label} {file_type}.",
+		}
+		if not assigned_pro and not bol_number:
+			empty["message"] = f"A PRO or BOL number is required to fetch the SMC3 {label}."
+			if raise_on_empty:
+				frappe.throw(empty["message"])
+			return empty
+		if not origin_zip or not dest_zip:
+			empty["message"] = f"Origin and destination postal codes are required to fetch the SMC3 {label}."
+			if raise_on_empty:
+				frappe.throw(empty["message"])
+			return empty
+
+		result = self._fetch_bol_document(
+			scac,
+			assigned_pro,
+			origin_zip,
+			dest_zip,
+			bol=bol_number,
+			raise_on_error=False,
+			document_type=document_type,
+			file_type=file_type,
+		)
+		ok = bool(result.get("document_binary") if file_type == "PDF" else result.get("images"))
+		if not ok and self._is_sandbox_mode():
+			demo_pro = self._sandbox_document_demo_pro()
+			demo_bol = self._sandbox_document_demo_bol()
+			if (demo_pro and demo_pro != assigned_pro) or (demo_bol and demo_bol != bol_number):
+				result = self._fetch_bol_document(
+					scac,
+					demo_pro or assigned_pro,
+					origin_zip,
+					dest_zip,
+					bol=demo_bol or bol_number,
+					raise_on_error=False,
+					document_type=document_type,
+					file_type=file_type,
+				)
+				ok = bool(result.get("document_binary") if file_type == "PDF" else result.get("images"))
+
+		if not ok:
+			empty["message"] = result.get("message") or empty["message"]
+			empty["raw_response"] = result.get("raw_response") or {}
+			if raise_on_empty:
+				frappe.throw(empty["message"])
+			return empty
+		return {
+			"status": "success",
+			"document_type": document_type,
+			"file_type": file_type,
+			"pro_number": str(getattr(shipment, "pro_number", None) or result.get("pro_number") or assigned_pro).strip(),
+			"bol_number": str(getattr(shipment, "bol_number", None) or result.get("bol_number") or bol_number).strip(),
+			"scac": str(result.get("scac") or scac).upper(),
+			"transaction_id": str(result.get("transaction_id") or "").strip(),
+			"images": result.get("images") or [],
+			"document_binary": result.get("document_binary") or "",
+			"raw_response": result.get("raw_response") or {},
+		}
+
+	def get_proof_of_delivery(self, pro_number: str) -> dict:
+		shipment = self._shipment_for_pro(pro_number)
+		if not shipment:
+			return {"pod_available": False, "message": "No SMC3 shipment found for this PRO number."}
+		result = self.get_document(shipment, document_type="POD", file_type="PDF", raise_on_empty=False)
+		if result.get("status") != "success" or not result.get("document_binary"):
+			return {
+				"pod_available": False,
+				"message": result.get("message") or "Proof of delivery document is not available yet.",
+				"raw_response": result.get("raw_response") or {},
+			}
+		return {
+			"pod_available": True,
+			"document_type": "POD",
+			"file_type": "PDF",
+			"document_binary": result.get("document_binary"),
+			"pro_number": result.get("pro_number") or pro_number,
+			"bol_number": result.get("bol_number") or "",
+			"scac": result.get("scac") or "",
+			"raw_response": result.get("raw_response") or {},
+		}
+
 	def _fetch_bol_document(
 		self,
 		scac: str,
@@ -511,10 +743,17 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		dest_zip: str,
 		raise_on_error: bool = True,
 		bol: str = "",
+		file_type: str = "PNG",
+		document_type: str = "BL",
 	) -> dict:
+		file_type = str(file_type or "PNG").strip().upper() or "PNG"
+		document_type = str(document_type or "BL").strip().upper() or "BL"
+		if document_type not in DOCUMENT_TYPES:
+			document_type = "BL"
+		label = _document_label(document_type)
 		params = {
-			"documentType": "BL",
-			"fileType": "PNG",
+			"documentType": document_type,
+			"fileType": file_type,
 			"originPostalCode": origin_zip,
 			"destinationPostalCode": dest_zip,
 		}
@@ -608,16 +847,25 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			empty["raw_response"] = sanitize_bol_log(data)
 			return empty
 
-		images = extract_bol_png_images(data)
+		images = extract_bol_png_images(data) if file_type != "PDF" else []
+		pdf = extract_bol_pdf(data) if file_type == "PDF" else ""
+		ok = bool(pdf) if file_type == "PDF" else bool(images)
 		refs = data.get("referenceNumbers") if isinstance(data.get("referenceNumbers"), dict) else {}
 		return {
-			"status": "success" if images else "error",
+			"status": "success" if ok else "error",
 			"pro_number": str(refs.get("proNumber") or refs.get("pro") or pro).strip(),
 			"bol_number": str(refs.get("bol") or refs.get("bolNumber") or bol).strip(),
 			"scac": str(data.get("scac") or scac).upper(),
 			"transaction_id": str(data.get("transactionId") or "").strip(),
 			"images": images,
-			"message": "" if images else "SMC3 document API did not return a BOL PNG image.",
+			"document_binary": pdf,
+			"message": ""
+			if ok
+			else (
+				f"SMC3 document API did not return a {label} PDF."
+				if file_type == "PDF"
+				else f"SMC3 document API did not return a {label} PNG image."
+			),
 			"raw_response": sanitize_bol_log(data),
 		}
 
@@ -637,10 +885,24 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		)
 
 	def _sandbox_document_demo_pro(self) -> str:
+		if not self._is_sandbox_mode():
+			return ""
 		return str(self._config.get("document_demo_pro") or DEFAULT_DOCUMENT_DEMO_PRO).strip()
 
 	def _sandbox_document_demo_bol(self) -> str:
+		if not self._is_sandbox_mode():
+			return ""
 		return str(self._config.get("document_demo_bol") or DEFAULT_DOCUMENT_DEMO_BOL).strip()
+
+	def _assert_live_document_refs(self, scac: str, assigned_pro: str, bol_number: str) -> None:
+		"""Block sandbox-only SMCA / demo PRO fallbacks in production."""
+		if self._is_sandbox_mode():
+			return
+		scac = str(scac or "").strip().upper()
+		if not scac or scac in {"SMC3", "SMC", "SMCA"}:
+			frappe.throw("A network SCAC is required to fetch this SMC3 document.")
+		if not str(assigned_pro or "").strip() and not str(bol_number or "").strip():
+			frappe.throw("A PRO or BOL number is required to fetch this SMC3 document.")
 
 	def _document_postal_codes(self, shipment, quote_data: dict) -> tuple[str, str]:
 		origin = str(
@@ -668,7 +930,9 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		if self._is_sandbox_mode():
 			return "SMCA"
 		scac = str(quote_data.get("quoted_scac") or quote_data.get("scac") or "").strip().upper()
-		if scac and scac not in {"SMC3", "SMC"}:
+		if scac in {"SMC3", "SMC", "SMCA"}:
+			scac = ""
+		if scac:
 			return scac
 		frappe.throw("This SMC3 quote is missing a network SCAC for PRO assignment.")
 
@@ -700,6 +964,10 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 
 	def _document_url(self, scac: str) -> str:
 		base = str(self._config.get("document_base_url") or DEFAULT_DOCUMENT_BASE).rstrip("/")
+		return f"{base}/{str(scac or '').strip().upper()}"
+
+	def _terminals_url(self, scac: str) -> str:
+		base = str(self._config.get("terminals_base_url") or DEFAULT_TERMINALS_BASE).rstrip("/")
 		return f"{base}/{str(scac or '').strip().upper()}"
 
 	def _dispatch_url(self, scac: str, confirmation: str | None = None) -> str:
@@ -749,9 +1017,12 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		).strip()
 		if account:
 			return account
+		fallback = self._default_bill_account()
+		if fallback:
+			return fallback
 		if self._is_sandbox_mode():
 			return DEFAULT_SANDBOX_ACCOUNT
-		return self._default_bill_account() or DEFAULT_SANDBOX_ACCOUNT
+		frappe.throw("SMC3 bill-to account number is required.")
 
 	def _create_bill_of_lading(self, scac: str, quote_data: dict, is_test: bool, retry_auth: bool = True) -> dict:
 		payload = build_bol_payload(quote_data, is_test=is_test, account=self._bol_account(), function="Create")
@@ -1127,6 +1398,251 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			return f"{base[: -len('/carriers')]}/barcodeRequirements"
 		return "https://apa.smc3.com/apa/assignment/v2/app/barcodeRequirements"
 
+	def create_status_callback_endpoint(
+		self,
+		endpoint: str | None = None,
+		effective_date: str | None = None,
+		service: str | None = None,
+	) -> dict:
+		"""POST Notifications v1 callback-endpoint/create so SMC3 can push STATUS updates."""
+		url = self._notifications_create_url()
+		headers = self._notifications_headers()
+		callback = self._resolve_status_callback_url(endpoint)
+		payload = {
+			"endpoint": callback,
+			"effectiveDate": self._callback_effective_date(effective_date),
+			"service": str(service or self._config.get("status_callback_service") or "STATUS").strip().upper()
+			or "STATUS",
+		}
+		try:
+			response = self.token_service.request(
+				"POST", url, headers=headers, json=payload, timeout=60
+			)
+		except SMC3AuthError:
+			frappe.throw(AUTH_USER_MESSAGE)
+		except requests.exceptions.RequestException as exc:
+			self._log_apa(url, headers, payload, str(exc), "Connection Failed", {}, None)
+			frappe.throw(f"SMC3 status callback registration connection error: {exc}")
+
+		data = None
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = None
+		status = data.get("messageStatus") if isinstance(data, dict) else {}
+		if not isinstance(status, dict):
+			status = {}
+		passed = str(status.get("status") or "").upper() == "PASS"
+		log_status = "OK" if response.status_code in (200, 201, 207) and passed else "API Error"
+		self._log_apa(
+			url,
+			headers,
+			payload,
+			data if data is not None else (response.text or "")[:500],
+			log_status,
+			{},
+			None,
+		)
+		if is_invalid_access_token(response):
+			frappe.throw(AUTH_USER_MESSAGE)
+		if response.status_code not in (200, 201, 207):
+			if status.get("message"):
+				frappe.throw(status.get("message"))
+			frappe.throw(self._format_http_error(response))
+		if data is None:
+			frappe.throw(
+				f"SMC3 status callback registration returned non-JSON: {(response.text or '')[:250]}"
+			)
+		if not isinstance(data, dict):
+			frappe.throw("SMC3 status callback registration returned an unexpected payload.")
+		if not passed:
+			frappe.throw(status.get("message") or "SMC3 status callback registration failed.")
+
+		transaction_id = str(data.get("transactionId") or "").strip()
+		self._remember_status_callback(payload, transaction_id, status)
+		return {
+			"ok": True,
+			"status": "success",
+			"transaction_id": transaction_id,
+			"endpoint": callback,
+			"effective_date": payload["effectiveDate"],
+			"service": payload["service"],
+			"message": status.get("message")
+			or "Default callback endpoint successfully created/updated",
+			"raw": data,
+		}
+
+	def list_status_callback_endpoints(self) -> dict:
+		"""GET /notifications/v1/app/callback-endpoint."""
+		url = f"{self._notifications_base()}/callback-endpoint"
+		data = self._notifications_request("GET", url)
+		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+		return {
+			"ok": True,
+			"status": "success",
+			"transaction_id": str(data.get("transactionId") or "").strip(),
+			"message": status.get("message") or "Notification callbacks retrieved.",
+			"raw": data,
+		}
+
+	def delete_status_callback_endpoint(self, callback_id: str) -> dict:
+		"""DELETE /notifications/v1/app/callback-endpoint/{callback_id}."""
+		callback_id = str(callback_id or "").strip()
+		if not callback_id:
+			frappe.throw("A callback endpoint id is required.")
+		url = f"{self._notifications_base()}/callback-endpoint/{callback_id}"
+		data = self._notifications_request("DELETE", url)
+		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+		self._forget_status_callback(callback_id)
+		return {
+			"ok": True,
+			"status": "success",
+			"callback_id": callback_id,
+			"transaction_id": str(data.get("transactionId") or "").strip(),
+			"message": status.get("message") or "Notification callback deleted.",
+			"raw": data,
+		}
+
+	def status_callback_url(self) -> str:
+		"""Public URL SMC3 should POST STATUS updates to."""
+		explicit = str(self._config.get("status_callback_url") or "").strip()
+		if explicit:
+			return explicit
+		stored = self._config.get("status_webhook") if isinstance(self._config.get("status_webhook"), dict) else {}
+		previous = str(stored.get("endpoint") or "").strip()
+		if previous:
+			return previous
+		base = str(self._config.get("public_base_url") or "").strip().rstrip("/")
+		path = f"/api/method/{STATUS_CALLBACK_METHOD}"
+		if base:
+			return f"{base}{path}"
+		return get_url(path)
+
+	def _resolve_status_callback_url(self, endpoint: str | None) -> str:
+		callback = str(endpoint or "").strip() or self.status_callback_url()
+		parsed = urlparse(callback)
+		host = str(parsed.hostname or "").strip().lower()
+		if parsed.scheme not in {"http", "https"} or not host:
+			frappe.throw(
+				"A public HTTPS callback URL is required, for example "
+				f"https://your-domain.com/api/method/{STATUS_CALLBACK_METHOD}"
+			)
+		if host in _PRIVATE_CALLBACK_HOSTS or host.endswith(".localhost"):
+			frappe.throw(
+				"SMC3 cannot reach a localhost callback. Set a public HTTPS URL "
+				f"(ngrok or production) pointing to /api/method/{STATUS_CALLBACK_METHOD}."
+			)
+		return callback
+
+	def _callback_effective_date(self, value: str | None = None) -> str:
+		raw = str(
+			value or self._config.get("status_callback_effective_date") or ""
+		).strip()
+		digits = "".join(ch for ch in raw if ch.isdigit())
+		if len(digits) >= 8:
+			return digits[:8]
+		return getdate().strftime("%Y%m%d")
+
+	def _notifications_base(self) -> str:
+		return str(self._config.get("notifications_base_url") or DEFAULT_NOTIFICATIONS_BASE).rstrip("/")
+
+	def _notifications_create_url(self) -> str:
+		override = str(self._config.get("notifications_create_url") or "").strip()
+		if override:
+			return override
+		return f"{self._notifications_base()}/callback-endpoint/create"
+
+	def _notifications_headers(self) -> dict:
+		scac = "SMCA" if self._is_sandbox_mode() else ""
+		if not scac:
+			rows = self._network_carriers()
+			if rows:
+				scac = str(rows[0].get("scac") or "").strip().upper()
+		return self._eva_headers(scac)
+
+	def _notifications_request(self, method: str, url: str, payload=None) -> dict:
+		method = str(method or "GET").upper()
+		headers = self._notifications_headers()
+		try:
+			kwargs = {"headers": headers, "timeout": 60}
+			if payload is not None and method not in {"GET", "DELETE", "HEAD"}:
+				kwargs["json"] = payload
+			response = self.token_service.request(method, url, **kwargs)
+		except SMC3AuthError:
+			frappe.throw(AUTH_USER_MESSAGE)
+		except requests.exceptions.RequestException as exc:
+			self._log_apa(url, headers, payload or {}, str(exc), "Connection Failed", {}, None, method=method)
+			frappe.throw(f"SMC3 notifications connection error: {exc}")
+
+		data = None
+		if response.status_code == 204 or not (response.content or b"").strip():
+			data = {}
+		else:
+			try:
+				data = response.json() if response.content else {}
+			except ValueError:
+				data = None
+		status = data.get("messageStatus") if isinstance(data, dict) else {}
+		if not isinstance(status, dict):
+			status = {}
+		passed = str(status.get("status") or "PASS").upper() in {"", "PASS"}
+		log_status = "OK" if response.status_code in (200, 201, 204, 207) and passed else "API Error"
+		self._log_apa(
+			url,
+			headers,
+			payload or {},
+			data if data is not None else (response.text or "")[:500],
+			log_status,
+			{},
+			None,
+			method=method,
+		)
+		if is_invalid_access_token(response):
+			frappe.throw(AUTH_USER_MESSAGE)
+		if response.status_code not in (200, 201, 204, 207):
+			if status.get("message"):
+				frappe.throw(status.get("message"))
+			frappe.throw(self._format_http_error(response))
+		if data is None:
+			frappe.throw(f"SMC3 notifications returned non-JSON: {(response.text or '')[:250]}")
+		if not isinstance(data, dict):
+			frappe.throw("SMC3 notifications returned an unexpected payload.")
+		if not passed:
+			frappe.throw(status.get("message") or "SMC3 notifications request failed.")
+		return data
+
+	def _remember_status_callback(self, payload: dict, transaction_id: str, status: dict) -> None:
+		raw = (self.carrier_doc.get("notes") or "").strip()
+		if raw and not raw.startswith("{"):
+			return
+		notes = dict(self._config or {})
+		notes["status_callback_url"] = payload.get("endpoint") or ""
+		notes["status_webhook"] = {
+			"endpoint": payload.get("endpoint") or "",
+			"effectiveDate": payload.get("effectiveDate") or "",
+			"service": payload.get("service") or "STATUS",
+			"transactionId": transaction_id,
+			"registeredAt": str(now_datetime()),
+			"message": str(status.get("message") or "").strip(),
+		}
+		self.carrier_doc.db_set("notes", frappe.as_json(notes, indent=2), update_modified=False)
+		self._config = notes
+
+	def _forget_status_callback(self, callback_id: str) -> None:
+		stored = self._config.get("status_webhook") if isinstance(self._config.get("status_webhook"), dict) else {}
+		stored_id = str(
+			stored.get("transactionId") or stored.get("id") or stored.get("callbackId") or ""
+		).strip()
+		if stored_id != str(callback_id or "").strip():
+			return
+		raw = (self.carrier_doc.get("notes") or "").strip()
+		if raw and not raw.startswith("{"):
+			return
+		notes = dict(self._config or {})
+		notes.pop("status_webhook", None)
+		self.carrier_doc.db_set("notes", frappe.as_json(notes, indent=2), update_modified=False)
+		self._config = notes
+
 	def _log_apa(self, url, headers, payload, response_payload, status, origin, dest_zip, method: str = "POST") -> None:
 		log_carrier_transaction(
 			carrier="SMC3",
@@ -1158,37 +1674,42 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		return headers
 
 	def get_tracking(self, pro_number: str) -> list[dict]:
-		pro = str(pro_number or "").strip()
-		shipment = self._shipment_for_pro(pro)
-		quote_data = quote_data_from_shipment(shipment) if shipment else {"pro_number": pro}
-		try:
-			scac = self._apa_scac(quote_data)
-		except Exception:
-			return []
-		url = self._status_url(scac)
-		headers = self._eva_headers(scac)
-		origin_zip = str(quote_data.get("origin_zip") or "")
-		dest_zip = str(quote_data.get("destination_zip") or "")
-		data = self._request_status(url, headers, quote_data, shipment, origin_zip, dest_zip, pro=pro)
-		if not isinstance(data, dict):
+		"""Poll SMC3 Status v1 GET /status/v1/app/{SCAC}?proNumber= and return tracker events."""
+		data = self.get_status(pro_number)
+		if not isinstance(data, dict) or not data:
 			return []
 		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
 		if str(status.get("status") or "").upper() not in {"", "PASS"}:
 			frappe.throw(status.get("message") or "SMC3 status request failed.")
 		return parse_status_events(data)
 
+	def get_status(self, pro_number: str, quote_data: dict | None = None) -> dict:
+		"""GET https://status.smc3.com/status/v1/app/{SCAC}?proNumber=..."""
+		pro = str(pro_number or "").strip()
+		if not pro:
+			return {}
+		shipment = self._shipment_for_pro(pro)
+		merged = quote_data_from_shipment(shipment) if shipment else {"pro_number": pro}
+		if quote_data:
+			merged = {**merged, **quote_data}
+		merged.setdefault("pro_number", pro)
+		scac = self._apa_scac(merged)
+		url = self._status_url(scac)
+		headers = self._eva_headers(scac)
+		origin_zip = str(merged.get("origin_zip") or "")
+		dest_zip = str(merged.get("destination_zip") or "")
+		data = self._request_status(url, headers, merged, shipment, origin_zip, dest_zip, pro=pro)
+		return data if isinstance(data, dict) else {}
+
 	def _request_status(self, url, headers, quote_data, shipment, origin_zip, dest_zip, pro: str = ""):
 		attempts = []
 		for params in (
-			status_bol_query_params(quote_data, shipment),
+			status_query_params(pro, quote_data, shipment),
 			status_pro_query_params(pro, quote_data, shipment),
+			status_bol_query_params(quote_data, shipment),
 		):
 			if params and params not in attempts:
 				attempts.append(params)
-		if self._is_sandbox_mode():
-			demo = sandbox_status_query_params(self._config)
-			if demo and demo not in attempts:
-				attempts.append(demo)
 
 		response = None
 		data = None
@@ -1198,12 +1719,6 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 				frappe.throw(AUTH_USER_MESSAGE)
 			if self._status_payload_ok(response, data):
 				return data if isinstance(data, dict) else {}
-			if not self._status_should_retry(response, data) and getattr(response, "status_code", None) not in (
-				200,
-				201,
-				207,
-			):
-				break
 
 		if response is None:
 			return {}
@@ -1388,15 +1903,193 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		apply_pickup_response_to_shipment(shipment, normalized, save=True)
 		return normalized
 
-	def get_pickup(self, pickup_number: str) -> dict:
+	def get_pickup(self, pickup_number: str, shipment=None) -> dict:
+		"""GET live SMC3 pickup: /dispatch/v3/app/{SCAC}/{confirmationNumber}."""
 		number = str(pickup_number or "").strip()
 		if not number:
-			return {"ok": False, "message": "A pickup confirmation number is required.", "raw": {}}
+			frappe.throw("A pickup confirmation number is required.")
+		if isinstance(shipment, str) and shipment:
+			shipment = frappe.get_doc("LTL Shipment", shipment)
+		if shipment is None:
+			name = frappe.db.get_value("LTL Shipment", {"pickup_number": number}, "name")
+			if name:
+				shipment = frappe.get_doc("LTL Shipment", name)
+		quote_data = quote_data_from_shipment(shipment) if shipment else {}
+		if not (quote_data.get("quoted_scac") or quote_data.get("scac")):
+			if self._is_sandbox_mode():
+				quote_data = {**quote_data, "quoted_scac": "SMCA"}
+			elif not shipment:
+				frappe.throw("A booked shipment is required to look up this SMC3 pickup.")
+		scac = self._apa_scac(quote_data)
+		url = self._dispatch_url(scac, number)
+		headers = self._eva_headers(scac)
+		origin_zip = str((quote_data or {}).get("origin_zip") or "")
+		dest_zip = str((quote_data or {}).get("destination_zip") or "")
+		try:
+			response = self.token_service.request("GET", url, headers=headers, timeout=60)
+		except SMC3AuthError:
+			frappe.throw(AUTH_USER_MESSAGE)
+		except requests.exceptions.RequestException as exc:
+			self._log_apa(
+				url, headers, {"confirmationNumber": number}, str(exc), "Connection Failed", {"postalCode": origin_zip}, dest_zip, method="GET"
+			)
+			frappe.throw(f"SMC3 pickup lookup failed: {exc}")
+
+		data = None
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = None
+		self._log_apa(
+			url,
+			headers,
+			{"confirmationNumber": number},
+			data if isinstance(data, dict) else (response.text or "")[:500],
+			"Success" if response.status_code == 200 else "API Error",
+			{"postalCode": origin_zip},
+			dest_zip,
+			method="GET",
+		)
+		if is_invalid_access_token(response):
+			frappe.throw(AUTH_USER_MESSAGE)
+		if response.status_code != 200:
+			if isinstance(data, dict):
+				status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+				if status.get("message"):
+					frappe.throw(format_dispatch_status_message(status))
+			frappe.throw(self._format_http_error(response))
+		if not isinstance(data, dict):
+			frappe.throw(f"SMC3 pickup lookup returned non-JSON response: {(response.text or '')[:250]}")
+		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+		if str(status.get("status") or "").upper() not in {"", "PASS"}:
+			frappe.throw(format_dispatch_status_message(status) or "SMC3 pickup lookup failed.")
+		return parse_dispatch_response(data)
+
+	def update_pickup_request(self, pickup_number: str, shipment=None) -> dict:
+		"""PUT SMC3 pickup update: /dispatch/v3/app/{SCAC}/{confirmationNumber} with dispatchCode UPDATE."""
+		from ltl_quote.carrier_network.pickup import apply_pickup_response_to_shipment, resolve_pickup_window
+
+		number = str(pickup_number or "").strip()
+		if not number:
+			frappe.throw("A pickup confirmation number is required.")
+		if isinstance(shipment, str) and shipment:
+			shipment = frappe.get_doc("LTL Shipment", shipment)
+		if shipment is None:
+			name = frappe.db.get_value("LTL Shipment", {"pickup_number": number}, "name")
+			if name:
+				shipment = frappe.get_doc("LTL Shipment", name)
+		if not shipment:
+			frappe.throw("A shipment is required to update this SMC3 pickup.")
+		quote_data = quote_data_from_shipment(shipment)
+		scac = self._apa_scac(quote_data)
+		ready_dt, close_dt = resolve_pickup_window(shipment)
+		payload = build_dispatch_payload(
+			shipment,
+			quote_data,
+			dispatch_code="UPDATE",
+			pickup_number=number,
+		)
+		url = self._dispatch_url(scac, number)
+		headers = self._eva_headers(scac)
+		origin_zip = str(quote_data.get("origin_zip") or "")
+		dest_zip = str(quote_data.get("destination_zip") or "")
+		try:
+			response = self.token_service.request("PUT", url, headers=headers, json=payload, timeout=60)
+		except SMC3AuthError:
+			frappe.throw(AUTH_USER_MESSAGE)
+		except requests.exceptions.RequestException as exc:
+			self._log_apa(
+				url, headers, payload, str(exc), "Connection Failed", {"postalCode": origin_zip}, dest_zip, method="PUT"
+			)
+			frappe.throw(f"SMC3 pickup update failed: {exc}")
+
+		data = None
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = None
+		self._log_apa(
+			url,
+			headers,
+			payload,
+			data if isinstance(data, dict) else (response.text or "")[:500],
+			"Dispatched" if response.status_code == 200 else "API Error",
+			{"postalCode": origin_zip},
+			dest_zip,
+			method="PUT",
+		)
+		if is_invalid_access_token(response):
+			frappe.throw(AUTH_USER_MESSAGE)
+		if response.status_code != 200:
+			if isinstance(data, dict):
+				status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+				if status.get("message"):
+					frappe.throw(format_dispatch_status_message(status))
+			frappe.throw(self._format_http_error(response))
+		if not isinstance(data, dict):
+			frappe.throw(f"SMC3 pickup update returned non-JSON response: {(response.text or '')[:250]}")
+		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+		if str(status.get("status") or "").upper() not in {"", "PASS"}:
+			frappe.throw(format_dispatch_status_message(status) or "SMC3 pickup update failed.")
+		normalized = parse_dispatch_response(data, ready=ready_dt, close=close_dt)
+		if not normalized.get("pickup_number"):
+			normalized["pickup_number"] = number
+		apply_pickup_response_to_shipment(shipment, normalized, save=True)
+		return normalized
+
+	def get_carrier_terminal_info(self, scac: str, postal_code: str) -> dict:
+		"""GET SMC3 terminal info: /terminals/v1/app/{SCAC}?postalCode=..."""
+		scac = str(scac or "").strip().upper()
+		postal_code = str(postal_code or "").strip()
+		if not scac:
+			frappe.throw("A carrier SCAC is required to look up SMC3 terminals.")
+		if not postal_code:
+			frappe.throw("A postal code is required to look up SMC3 terminals.")
+		url = self._terminals_url(scac)
+		headers = self._apa_headers()
+		params = {"postalCode": postal_code}
+		try:
+			response = self.token_service.request("GET", url, headers=headers, params=params, timeout=60)
+		except SMC3AuthError:
+			frappe.throw(AUTH_USER_MESSAGE)
+		except requests.exceptions.RequestException as exc:
+			frappe.throw(f"SMC3 terminals lookup failed: {exc}")
+
+		data = None
+		try:
+			data = response.json() if response.content else {}
+		except ValueError:
+			data = None
+		self._log_apa(
+			url,
+			headers,
+			params,
+			data if isinstance(data, dict) else (response.text or "")[:500],
+			"Success" if response.status_code == 200 else "API Error",
+			{"postalCode": postal_code},
+			"",
+			method="GET",
+		)
+		if is_invalid_access_token(response):
+			frappe.throw(AUTH_USER_MESSAGE)
+		if response.status_code != 200:
+			if isinstance(data, dict):
+				status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+				message = str(status.get("message") or "").strip()
+				if message:
+					frappe.throw(message)
+			frappe.throw(self._format_http_error(response))
+		if data is None or not isinstance(data, dict):
+			frappe.throw(f"SMC3 terminals lookup returned non-JSON response: {(response.text or '')[:250]}")
+		status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
+		if str(status.get("status") or "").upper() not in {"", "PASS"}:
+			frappe.throw(str(status.get("message") or "SMC3 terminals lookup failed."))
 		return {
 			"ok": True,
-			"pickup_number": number,
-			"pickup_status": "Scheduled",
-			"raw": {"confirmationNumber": number},
+			"scac": str(data.get("scac") or scac).upper(),
+			"postal_code": postal_code,
+			"terminals": data.get("terminals") or data.get("terminal") or data.get("locations") or data,
+			"raw": data,
 		}
 
 	def cancel_pickup(self, number: str, shipment=None) -> dict:
@@ -1408,16 +2101,27 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			shipment = frappe.get_doc("LTL Shipment", shipment)
 		quote_data = quote_data_from_shipment(shipment) if shipment else {}
 		try:
-			scac = self._apa_scac(quote_data) if quote_data else self._apa_scac({"quoted_scac": "SMCA"})
+			if shipment or quote_data.get("quoted_scac") or quote_data.get("scac"):
+				scac = self._apa_scac(quote_data)
+			elif self._is_sandbox_mode():
+				scac = self._apa_scac({"quoted_scac": "SMCA"})
+			else:
+				return {
+					"success": False,
+					"message": "A booked shipment (or network SCAC) is required to cancel this pickup.",
+				}
 		except Exception as exc:
 			return {"success": False, "message": str(exc)}
 
-		payload = build_dispatch_payload(
-			shipment or SimpleNamespace(pickup_comments="", pickup_number=target, pickup_status="Scheduled"),
-			quote_data or {"pro_number": "", "quoted_scac": scac},
-			dispatch_code="CANCEL",
-			pickup_number=target,
-		)
+		try:
+			payload = build_dispatch_payload(
+				shipment or SimpleNamespace(pickup_comments="", pickup_number=target, pickup_status="Scheduled"),
+				quote_data or {"pro_number": "", "quoted_scac": scac},
+				dispatch_code="CANCEL",
+				pickup_number=target,
+			)
+		except frappe.ValidationError as exc:
+			return {"success": False, "message": str(exc)}
 		url = self._dispatch_url(scac)
 		headers = self._eva_headers(scac)
 		origin_zip = str((quote_data or {}).get("origin_zip") or "")
@@ -1569,7 +2273,12 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			request.destination_zip, request.destination_city, request.destination_state
 		)
 		shipper = resolve_shipper_context()
-		default_eva = str(self._config.get("eva_access_id") or SANDBOX_EVA_ACCESS_ID)
+		default_eva = str(self._config.get("eva_access_id") or "").strip()
+		if not default_eva:
+			if self._is_sandbox_mode():
+				default_eva = SANDBOX_EVA_ACCESS_ID
+			else:
+				frappe.throw("SMC3 EVA Access ID is required.")
 		bill_to_defaults = self._config.get("bill_to") if isinstance(self._config.get("bill_to"), dict) else {}
 		payment_cfg = self._config.get("payment") if isinstance(self._config.get("payment"), dict) else {}
 		account_number = self._default_bill_account()
@@ -1861,6 +2570,16 @@ def attach_smc3_bol_to_shipment(shipment, bol_result: dict | None = None) -> dic
 		)
 		file_url = file_doc.file_url
 		absolute_url = f"{frappe.utils.get_url()}{file_url}"
+		frappe.db.set_value(
+			"LTL Shipment",
+			shipment_name,
+			{
+				"bol_document": file_url,
+				"bol_document_url": absolute_url,
+				"bol_document_type": "Bill of Lading",
+			},
+			update_modified=False,
+		)
 		quote_name = frappe.db.get_value("LTL Shipment", shipment_name, "quote_request")
 		if quote_name:
 			existing = frappe.db.exists(
@@ -1891,6 +2610,7 @@ def attach_smc3_bol_to_shipment(shipment, bol_result: dict | None = None) -> dic
 				{
 					"bol_number": bol_number or None,
 					"pro_number": pro_number or None,
+					"bol_document_url": absolute_url,
 				},
 				update_modified=False,
 			)
@@ -2034,9 +2754,10 @@ def attach_smc3_bol_images_to_shipment(shipment, document_result: dict | None = 
 
 
 def fetch_smc3_bol_image(shipment_name: str) -> dict:
-	"""GET the SMC3 BOL PNG and attach it to the shipment."""
+	"""Return the SMC3 BOL PDF URL, fetching from SMC3 when it is not already attached."""
 	from ltl_quote.carrier_network.carrier_identity import CONNECTOR_SMC3, shipment_connector
 	from ltl_quote.carrier_network.registry import get_adapter
+	from ltl_quote.utils.booking import resolve_shipment_bol_url
 
 	name = str(shipment_name or "").strip()
 	if not name or not frappe.db.exists("LTL Shipment", name):
@@ -2044,35 +2765,66 @@ def fetch_smc3_bol_image(shipment_name: str) -> dict:
 	doc = frappe.get_doc("LTL Shipment", name)
 	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
 	if shipment_connector(doc) != CONNECTOR_SMC3:
-		frappe.throw("BOL image fetch is only available for SMC3 shipments.")
+		frappe.throw("BOL PDF fetch is only available for SMC3 shipments.")
 	if not str(doc.pro_number or "").strip() and not str(doc.bol_number or "").strip():
-		frappe.throw("A PRO or BOL number is required to fetch this SMC3 bill of lading image.")
+		frappe.throw("A PRO or BOL number is required to fetch this SMC3 bill of lading.")
+
+	existing = str(doc.bol_document_url or doc.bol_document or "").strip()
+	if existing and not _looks_like_image_url(existing):
+		file_url = existing if existing.startswith("http") else f"{frappe.utils.get_url()}{existing if existing.startswith('/') else '/' + existing}"
+		return {
+			"status": "success",
+			"shipment": doc.name,
+			"pro_number": doc.pro_number or "",
+			"bol_number": doc.bol_number or "",
+			"file_url": file_url,
+			"document_url": file_url,
+			"image_url": file_url,
+		}
 
 	carrier = frappe.get_doc("LTL Carrier", doc.carrier)
 	adapter = get_adapter(carrier)
-	result = adapter.get_bol_document_image(doc)
-	attached = attach_smc3_bol_images_to_shipment(doc, document_result=result)
+	result = adapter.get_bol_document_pdf(doc, raise_on_empty=False)
+	if result.get("status") != "success" or not result.get("document_binary"):
+		fallback = resolve_shipment_bol_url(shipment_name=doc.name)
+		if fallback and not _looks_like_image_url(fallback):
+			return {
+				"status": "success",
+				"shipment": doc.name,
+				"pro_number": doc.pro_number or "",
+				"bol_number": doc.bol_number or "",
+				"file_url": fallback,
+				"document_url": fallback,
+				"image_url": fallback,
+			}
+		frappe.throw(result.get("message") or "Failed to fetch SMC3 BOL PDF.")
+	attached = attach_smc3_bol_to_shipment(doc, bol_result=result)
 	if attached.get("status") != "success":
-		frappe.throw(attached.get("message") or "Failed to attach SMC3 BOL PNG.")
+		frappe.throw(attached.get("message") or "Failed to attach SMC3 BOL PDF.")
+	file_url = attached.get("document_url") or ""
 	return {
 		"status": "success",
 		"shipment": doc.name,
 		"pro_number": attached.get("pro_number") or result.get("pro_number") or doc.pro_number or "",
-		"bol_number": result.get("bol_number") or doc.bol_number or "",
+		"bol_number": attached.get("bol_number") or result.get("bol_number") or doc.bol_number or "",
 		"scac": result.get("scac") or "",
 		"transaction_id": result.get("transaction_id") or "",
-		"image_url": attached.get("image_url") or "",
-		"file_url": attached.get("image_url") or "",
-		"image_urls": attached.get("image_urls") or [],
-		"page_count": attached.get("page_count") or 0,
+		"file_url": file_url,
+		"document_url": file_url,
+		"image_url": file_url,
 	}
+
+
+def _looks_like_image_url(url: str) -> bool:
+	path = str(url or "").split("?")[0].lower()
+	return path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
 
 
 @frappe.whitelist()
 def fetch_bol_image(shipment_name: str | None = None, name: str | None = None) -> dict:
-	"""Public RPC for the Quote page and Desk: GET the SMC3 BOL PNG and return a preview URL."""
+	"""Public RPC: return the SMC3 BOL PDF URL and open it in a new tab from the UI."""
 	result = fetch_smc3_bol_image(shipment_name or name)
-	file_url = result.get("image_url") or result.get("document_url") or ""
+	file_url = result.get("file_url") or result.get("document_url") or result.get("image_url") or ""
 	result["file_url"] = file_url
 	return result
 

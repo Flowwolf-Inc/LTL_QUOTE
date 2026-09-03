@@ -363,7 +363,7 @@ def get_quote_booking_context(quote_request_id: str) -> dict:
 	doc = frappe.db.get_value(
 		"LTL Quote Request",
 		quote_request_id,
-		["name", "status", "final_carrier", "bol_number", "bol_document_url"],
+		["name", "status", "final_carrier", "bol_number", "bol_document_url", "carrier_reference_number"],
 		as_dict=True,
 	)
 	shipment = frappe.db.get_value("LTL Shipment", {"quote_request": quote_request_id}, "name")
@@ -380,10 +380,23 @@ def get_quote_booking_context(quote_request_id: str) -> dict:
 		"quote_status": doc.status,
 		"shipment": shipment,
 		"booked_carrier": booked_carrier,
+		"booked_scac": _shipment_booked_scac(shipment),
+		"booked_carrier_quote_id": str(doc.carrier_reference_number or "").strip(),
 		"bol_url": bol_url,
 		"bol_image": bol_image,
 		"bol_number": doc.bol_number or "",
 	}
+
+
+def _shipment_booked_scac(shipment_name: str | None) -> str:
+	"""Network SCAC stored on the booked LTL Shipment (SMC3 uses this to identify the rate row)."""
+	name = str(shipment_name or "").strip()
+	if not name or not frappe.db.exists("LTL Shipment", name):
+		return ""
+	scac = str(frappe.db.get_value("LTL Shipment", name, "bol_scac") or "").strip().upper()
+	if scac in {"", "SMC3", "SMC", "SMCA"}:
+		return ""
+	return scac
 
 
 @frappe.whitelist(allow_guest=False)
@@ -410,6 +423,8 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 				"quote_request_id": doc.name,
 				"shipment": shipment_name,
 				"booked_carrier": doc.final_carrier or carrier_key,
+				"booked_scac": _shipment_booked_scac(shipment_name),
+				"booked_carrier_quote_id": str(doc.carrier_reference_number or carrier_quote_id or "").strip(),
 				"bol_number": doc.bol_number or "",
 				"pro_number": doc.pro_number or "",
 				"bol_document_url": bol_url,
@@ -481,6 +496,8 @@ def accept_carrier_quote(quote_request_id, carrier_code, total_charge, carrier_q
 			"quote_request_id": doc.name,
 			"shipment": shipment_name,
 			"booked_carrier": carrier_key,
+			"booked_scac": _shipment_booked_scac(shipment_name),
+			"booked_carrier_quote_id": str(doc.carrier_reference_number or carrier_quote_id or "").strip(),
 			"data": {"shipment": shipment_name} if shipment_name else {},
 			"bol_number": doc.bol_number if getattr(doc, "bol_number", None) else "Pending",
 			"pro_number": doc.pro_number if getattr(doc, "pro_number", None) else "Auto-Assigned",

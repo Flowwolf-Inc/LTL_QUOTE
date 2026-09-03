@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta
 
+import frappe
 from frappe.utils import cint, flt
 
 from ltl_quote.api.payload import (
@@ -66,13 +67,37 @@ LINE_PACKAGING_TYPES = {
 }
 
 
+def require_text(value, field_label: str) -> str:
+	"""Return a stripped string, or raise if the required payload field is empty."""
+	text = str(value or "").strip()
+	if not text:
+		frappe.throw(f"{field_label} is required before sending this request to SMC3.")
+	return text
+
+
+def require_phone(value, field_label: str) -> str:
+	"""Return a 10-digit phone, or raise if the required payload field is missing."""
+	digits = _phone(value)
+	if len(digits) < 10:
+		frappe.throw(f"{field_label} is required before sending this request to SMC3.")
+	return digits
+
+
+def require_email(value, field_label: str) -> str:
+	"""Return an email address, or raise if the required payload field is missing."""
+	text = str(value or "").strip()
+	if not text or "@" not in text:
+		frappe.throw(f"{field_label} is required before sending this request to SMC3.")
+	return text
+
+
 def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function: str = "Create") -> dict:
 	"""Map a platform booking payload onto the SMC3 BOL Create/Update body."""
 	quote_data = quote_data or {}
 	origin = _party(
 		quote_data,
 		account=account,
-		name=quote_data.get("shipper_name") or quote_data.get("shipper_company_name") or "Shipper Co",
+		name=quote_data.get("shipper_name") or quote_data.get("shipper_company_name"),
 		address=quote_data.get("shipper_address"),
 		city=quote_data.get("origin_city"),
 		state=quote_data.get("origin_state"),
@@ -80,11 +105,13 @@ def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function
 		country=quote_data.get("origin_country"),
 		contact_name=quote_data.get("origin_contact_name") or quote_data.get("contact_name"),
 		contact_phone=quote_data.get("origin_contact_phone") or quote_data.get("contact_phone"),
+		party_label="Shipper",
+		is_test=is_test,
 	)
 	destination = _party(
 		quote_data,
 		account=account,
-		name=quote_data.get("consignee_name") or quote_data.get("consignee_company_name") or "Consignee Co",
+		name=quote_data.get("consignee_name") or quote_data.get("consignee_company_name"),
 		address=quote_data.get("consignee_address"),
 		city=quote_data.get("destination_city"),
 		state=quote_data.get("destination_state"),
@@ -92,11 +119,13 @@ def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function
 		country=quote_data.get("destination_country"),
 		contact_name=quote_data.get("destination_contact_name"),
 		contact_phone=quote_data.get("destination_contact_phone"),
+		party_label="Consignee",
+		is_test=is_test,
 	)
 	bill_to = _party(
 		quote_data,
 		account=account,
-		name=quote_data.get("bill_to_name") or origin["name"] or "Bill To Co",
+		name=quote_data.get("bill_to_name") or origin["name"],
 		address=quote_data.get("bill_to_address") or origin.get("address1"),
 		city=quote_data.get("bill_to_city") or origin.get("city"),
 		state=quote_data.get("bill_to_state") or origin.get("stateProvince"),
@@ -104,6 +133,8 @@ def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function
 		country=quote_data.get("bill_to_country") or origin.get("country"),
 		contact_name=quote_data.get("bill_to_contact_name") or origin.get("contact", {}).get("name"),
 		contact_phone=quote_data.get("bill_to_contact_phone") or origin.get("contact", {}).get("phone"),
+		party_label="Bill-To",
+		is_test=is_test,
 	)
 	payload = {
 		"bol": {
@@ -130,10 +161,18 @@ def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function
 
 def extract_bol_pdf(data: dict) -> str:
 	images = data.get("images") if isinstance(data, dict) else None
-	if not isinstance(images, dict):
-		return ""
-	raw = images.get("bol") or images.get("billOfLading") or images.get("bolDocument") or ""
-	return str(raw or "").strip()
+	if isinstance(images, dict):
+		raw = images.get("bol") or images.get("billOfLading") or images.get("bolDocument") or ""
+		text = str(raw or "").strip()
+		return text if is_usable_pdf(text) else ""
+	if isinstance(images, list):
+		for item in images:
+			text = str(item or "").strip()
+			if is_usable_pdf(text):
+				return text
+	if isinstance(images, str) and is_usable_pdf(images):
+		return images.strip()
+	return ""
 
 
 def extract_bol_png_images(data: dict) -> list[str]:
@@ -158,6 +197,15 @@ def is_usable_png_image(raw: str) -> bool:
 		text = text.split(",", 1)[1]
 	text = "".join(text.split())
 	return text.startswith("iVBORw0KGgo")
+
+
+def is_usable_pdf(raw: str) -> bool:
+	"""True when the payload looks like a Base64 PDF (`JVBERi` = %PDF)."""
+	text = str(raw or "").strip()
+	if "," in text and text.lower().startswith("data:"):
+		text = text.split(",", 1)[1]
+	text = "".join(text.split())
+	return text.startswith("JVBERi")
 
 
 def extract_reference_numbers(data: dict) -> dict:
@@ -209,18 +257,26 @@ def _party(
 	country,
 	contact_name,
 	contact_phone,
+	party_label: str,
+	is_test: bool,
 ) -> dict:
+	account_value = str(account or "").strip()
+	if not account_value:
+		if is_test:
+			account_value = DEFAULT_SANDBOX_ACCOUNT
+		else:
+			frappe.throw(f"{party_label} account number is required before sending this request to SMC3.")
 	return {
-		"account": str(account or DEFAULT_SANDBOX_ACCOUNT).strip() or DEFAULT_SANDBOX_ACCOUNT,
-		"name": str(name or "").strip() or "Shipper Co",
-		"address1": str(address or "12 S. Main").strip() or "12 S. Main",
-		"city": str(city or "").strip() or "Unknown",
-		"stateProvince": str(state or "").strip() or "XX",
-		"postalCode": str(postal or "").strip(),
+		"account": account_value,
+		"name": require_text(name, f"{party_label} Company Name"),
+		"address1": require_text(address, f"{party_label} Address"),
+		"city": require_text(city, f"{party_label} City"),
+		"stateProvince": require_text(state, f"{party_label} State"),
+		"postalCode": require_text(postal, f"{party_label} Postal Code"),
 		"country": _country(country or quote_data.get("origin_country")),
 		"contact": {
-			"name": str(contact_name or name or "Shipping Desk").strip() or "Shipping Desk",
-			"phone": _phone(contact_phone),
+			"name": require_text(contact_name, f"{party_label} Contact Name"),
+			"phone": require_phone(contact_phone, f"{party_label} Contact Phone"),
 		},
 	}
 
@@ -326,7 +382,7 @@ def _phone(value) -> str:
 	digits = "".join(ch for ch in str(value or "") if ch.isdigit())
 	if len(digits) >= 10:
 		return digits[-10:]
-	return "5552226666"
+	return digits
 
 
 def _country(value) -> str:
@@ -347,8 +403,6 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 	"""Rebuild a booking-style payload from a booked shipment for BOL PUT."""
 	quote_request = quote_request or getattr(shipment, "quote_request", None)
 	if isinstance(quote_request, str) and quote_request:
-		import frappe
-
 		if frappe.db.exists("LTL Quote Request", quote_request):
 			quote_request = frappe.get_doc("LTL Quote Request", quote_request)
 	qr = quote_request if quote_request and not isinstance(quote_request, str) else None
@@ -388,13 +442,28 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 		"consignee_address": getattr(shipment, "bol_consignee_address1", None)
 		or (getattr(qr, "consignee_address", None) if qr else None),
 		"contact_name": getattr(shipment, "bol_shipper_contact_name", None)
+		or (getattr(qr, "origin_contact_name", None) if qr else None)
 		or (getattr(qr, "contact_name", None) if qr else None),
 		"contact_phone": getattr(shipment, "bol_shipper_contact_phone", None)
+		or (getattr(qr, "origin_contact_phone", None) if qr else None)
 		or (getattr(qr, "contact_phone", None) if qr else None),
-		"origin_contact_name": getattr(shipment, "bol_shipper_contact_name", None),
-		"origin_contact_phone": getattr(shipment, "bol_shipper_contact_phone", None),
-		"destination_contact_name": getattr(shipment, "bol_consignee_contact_name", None),
-		"destination_contact_phone": getattr(shipment, "bol_consignee_contact_phone", None),
+		"contact_email": (
+			(getattr(qr, "origin_contact_email", None) or getattr(qr, "contact_email", None)) if qr else None
+		),
+		"origin_contact_name": getattr(shipment, "bol_shipper_contact_name", None)
+		or (getattr(qr, "origin_contact_name", None) if qr else None)
+		or (getattr(qr, "contact_name", None) if qr else None),
+		"origin_contact_phone": getattr(shipment, "bol_shipper_contact_phone", None)
+		or (getattr(qr, "origin_contact_phone", None) if qr else None)
+		or (getattr(qr, "contact_phone", None) if qr else None),
+		"origin_contact_email": (
+			(getattr(qr, "origin_contact_email", None) or getattr(qr, "contact_email", None)) if qr else None
+		),
+		"destination_contact_name": getattr(shipment, "bol_consignee_contact_name", None)
+		or (getattr(qr, "destination_contact_name", None) if qr else None),
+		"destination_contact_phone": getattr(shipment, "bol_consignee_contact_phone", None)
+		or (getattr(qr, "destination_contact_phone", None) if qr else None),
+		"destination_contact_email": getattr(qr, "destination_contact_email", None) if qr else None,
 		"bill_to_name": getattr(shipment, "bol_bill_to_name", None),
 		"bill_to_address": getattr(shipment, "bol_bill_to_address1", None),
 		"bill_to_city": getattr(shipment, "bol_bill_to_city", None),

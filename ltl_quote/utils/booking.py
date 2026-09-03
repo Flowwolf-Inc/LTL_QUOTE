@@ -85,19 +85,22 @@ def _absolute_site_url(url: str) -> str:
 
 
 def resolve_shipment_bol_url(shipment_name: str | None = None, quote_request=None) -> str:
-	"""Resolve a browser-openable absolute BOL URL, preferring the Document PNG."""
+	"""Resolve a browser-openable absolute BOL URL, preferring the PDF."""
 	if shipment_name:
 		row = frappe.db.get_value(
 			"LTL Shipment",
 			shipment_name,
-			["bol_image", "bol_document_url", "bol_document"],
+			["bol_document_url", "bol_document", "bol_image"],
 			as_dict=True,
 		)
 		if row:
-			for key in ("bol_image", "bol_document_url", "bol_document"):
+			for key in ("bol_document_url", "bol_document"):
 				url = str(row.get(key) or "").strip()
 				if url:
 					return _absolute_site_url(url)
+			url = str(row.get("bol_image") or "").strip()
+			if url:
+				return _absolute_site_url(url)
 
 	if quote_request:
 		if isinstance(quote_request, str):

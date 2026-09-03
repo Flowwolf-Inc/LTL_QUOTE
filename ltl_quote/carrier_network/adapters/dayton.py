@@ -2088,7 +2088,7 @@ def _resolve_dayton_bol_binary(request_data: dict, bol_result: dict | None = Non
 		if _is_dayton_test_request(request_data, bol_result):
 			base64_pdf = TEST_BOL_PDF_BASE64
 		else:
-			return _dayton_bol_pending_response(bol_result)
+			frappe.throw(DAYTON_BOL_NOT_READY_MESSAGE)
 
 	return {
 		"status": "success",

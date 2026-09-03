@@ -1086,6 +1086,35 @@ def _serialize_tracking_events(shipment_doc) -> list[dict]:
 	return events
 
 
+def _ltl_carrier_connector_type(carrier_name) -> str:
+	name = str(carrier_name or "").strip()
+	if not name:
+		return ""
+	if frappe.db.exists("LTL Carrier", name):
+		return str(frappe.db.get_value("LTL Carrier", name, "connector_type") or "").strip()
+	return name
+
+
+def _is_smc3_connector(connector_type: str, carrier_pref: str | None = None) -> bool:
+	if str(connector_type or "").strip() == "SMC3":
+		return True
+	return str(carrier_pref or "").strip().upper() == "SMC3"
+
+
+def _smc3_track_by_number(request: dict, shipment=None, pro: str | None = None, persist: bool = False) -> dict:
+	from ltl_quote.api.smc3 import get_smc3_status
+
+	return get_smc3_status(
+		shipment=getattr(shipment, "name", None) if shipment is not None else None,
+		pro_number=pro,
+		carrier=(getattr(shipment, "carrier", None) if shipment is not None else None)
+		or request.get("carrier")
+		or request.get("carrier_preference"),
+		scac=request.get("scac") or request.get("quoted_scac"),
+		persist=1 if persist else 0,
+	)
+
+
 def _enrich_dayton_results_with_local_shipments(results: list) -> list:
 	"""Attach matching local LTL Shipment ids to Dayton result rows when PRO matches."""
 	enriched = []
@@ -1119,7 +1148,10 @@ def _enrich_dayton_results_with_local_shipments(results: list) -> list:
 @frappe.whitelist(allow_guest=False)
 def track_by_number(payload=None, **kwargs):
 	"""
-	Live Dayton Track-by-Number (PRO) and persist events when a local shipment matches.
+	Live Track-by-Number (PRO) and persist events when a local shipment matches.
+
+	Routes SMC3 carriers to Status v1 (`get_smc3_status`). Dayton / TForce
+	keep their native adapters.
 
 	POST /api/method/ltl_quote.api.flowwolf.track_by_number
 
@@ -1127,6 +1159,7 @@ def track_by_number(payload=None, **kwargs):
 	    { "pro_number": "09019812894" }
 	    { "shipment": "LTL-SHP-2026-00095" }
 	    { "quote_request_id": "LTL-QR-2026-00201" }
+	    { "pro_number": "204380071201", "carrier": "SMC3" }
 	"""
 	headers, body = _read_request_context()
 	request = _merge_flowwolf_request(payload, **kwargs)
@@ -1159,59 +1192,122 @@ def track_by_number(payload=None, **kwargs):
 			if not pro:
 				frappe.throw(f"Shipment {shipment_name} has no PRO / tracking number yet.")
 			carrier_id = shipment.carrier or "DAYTON"
-			from ltl_quote.visibility.tracker import ShipmentTracker
+			connector_type = _ltl_carrier_connector_type(shipment.carrier)
+			if _is_smc3_connector(connector_type, shipment.carrier):
+				status_result = _smc3_track_by_number(request, shipment=shipment, pro=pro, persist=True)
+				shipment.reload()
+				events = status_result.get("events") or _serialize_tracking_events(shipment)
+				response_payload = {
+					"status": "success",
+					"engine": FLOWWOLF_ENGINE,
+					"shipment": shipment.name,
+					"quote_request_id": shipment.quote_request,
+					"pro_number": pro,
+					"carrier_code": shipment.carrier,
+					"shipment_status": shipment.status,
+					"current_status": shipment.current_status,
+					"current_location": shipment.current_location,
+					"has_exception": bool(
+						status_result.get("has_exception") or shipment.has_exception
+					),
+					"events": events,
+					"message": (
+						"Tracking details synchronized successfully."
+						if events
+						else "Shipment registered, but transit tracking events are not populated yet."
+					),
+				}
+			else:
+				from ltl_quote.visibility.tracker import ShipmentTracker
 
-			result = ShipmentTracker(shipment).refresh()
-			shipment.reload()
-			events = result.get("events") or _serialize_tracking_events(shipment)
-			response_payload = {
-				"status": "success",
-				"engine": FLOWWOLF_ENGINE,
-				"shipment": shipment.name,
-				"quote_request_id": shipment.quote_request,
-				"pro_number": pro,
-				"carrier_code": shipment.carrier,
-				"shipment_status": shipment.status,
-				"current_status": shipment.current_status,
-				"current_location": shipment.current_location,
-				"has_exception": bool(result.get("has_exception") or shipment.has_exception),
-				"events": events,
-				"message": (
-					"Tracking details synchronized successfully."
-					if events
-					else "Shipment registered, but transit tracking events are not populated yet."
-				),
-			}
+				result = ShipmentTracker(shipment).refresh()
+				shipment.reload()
+				events = result.get("events") or _serialize_tracking_events(shipment)
+				if not isinstance(events, list):
+					events = _serialize_tracking_events(shipment)
+				response_payload = {
+					"status": "success",
+					"engine": FLOWWOLF_ENGINE,
+					"shipment": shipment.name,
+					"quote_request_id": shipment.quote_request,
+					"pro_number": pro,
+					"carrier_code": shipment.carrier,
+					"shipment_status": shipment.status,
+					"current_status": shipment.current_status,
+					"current_location": shipment.current_location,
+					"has_exception": bool(result.get("has_exception") or shipment.has_exception),
+					"events": events,
+					"message": (
+						"Tracking details synchronized successfully."
+						if events
+						else "Shipment registered, but transit tracking events are not populated yet."
+					),
+				}
 		else:
 			from ltl_quote.api.carrier_mapping import resolve_carrier_id
 
 			carrier_pref = resolve_carrier_id(
 				request.get("carrier_preference") or request.get("carrier") or request.get("carrier_code")
 			)
-			if carrier_pref == "TFORCE":
+			connector_type = _ltl_carrier_connector_type(carrier_pref) or str(
+				request.get("connector_type") or ""
+			).strip()
+			if _is_smc3_connector(connector_type, carrier_pref):
+				status_result = _smc3_track_by_number(request, pro=pro, persist=False)
+				carrier_id = "SMC3"
+				events = status_result.get("events") or []
+				response_payload = {
+					"status": "success",
+					"engine": FLOWWOLF_ENGINE,
+					"shipment": None,
+					"pro_number": pro,
+					"carrier_code": carrier_id,
+					"scac": status_result.get("scac") or "",
+					"events": events,
+					"message": (
+						"Live tracking events retrieved (no local shipment matched)."
+						if events
+						else "No tracking events returned for this PRO yet."
+					),
+				}
+			elif carrier_pref == "TFORCE":
 				from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
 
 				adapter = TForceCarrierAdapter()
 				carrier_id = "TFORCE"
+				events = adapter.get_tracking(pro)
+				response_payload = {
+					"status": "success",
+					"engine": FLOWWOLF_ENGINE,
+					"shipment": None,
+					"pro_number": pro,
+					"carrier_code": carrier_id,
+					"events": events,
+					"message": (
+						"Live tracking events retrieved (no local shipment matched)."
+						if events
+						else "No tracking events returned for this PRO yet."
+					),
+				}
 			else:
 				from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
 
 				adapter = DaytonCarrierAdapter()
 				carrier_id = "DAYTON"
-			events = adapter.get_tracking(pro)
-			response_payload = {
-				"status": "success",
-				"engine": FLOWWOLF_ENGINE,
-				"shipment": None,
-				"pro_number": pro,
-				"carrier_code": carrier_id,
-				"events": events,
-				"message": (
-					"Live tracking events retrieved (no local shipment matched)."
-					if events
-					else "No tracking events returned for this PRO yet."
-				),
-			}
+				events = adapter.get_tracking(pro)
+				response_payload = {
+					"status": "success",
+					"engine": FLOWWOLF_ENGINE,
+					"shipment": None,
+					"pro_number": pro,
+					"carrier_code": carrier_id,
+					"events": events,
+					"message": (
+						"Live tracking events retrieved (no local shipment matched)."
+						if events
+						else "No tracking events returned for this PRO yet."
+					),
+				}
 		status = "Quotes Received" if response_payload.get("events") else "No Quotes Received"
 
 	except frappe.ValidationError as e:
@@ -1234,8 +1330,9 @@ def track_history(payload=None, **kwargs):
 	"""
 	Return tracking history events for a shipment/PRO.
 
-	Uses Dayton ByNumber under the hood (no separate History URL). Refreshes then
-	returns persisted LTL Shipment.tracking_events when a local shipment exists.
+	SMC3 shipments use Status v1 (`get_smc3_status`). Other carriers refresh via
+	their adapter, then return persisted LTL Shipment.tracking_events when a
+	local shipment exists.
 
 	POST /api/method/ltl_quote.api.flowwolf.track_history
 	"""
@@ -1270,12 +1367,23 @@ def track_history(payload=None, **kwargs):
 			if not pro:
 				frappe.throw(f"Shipment {shipment_name} has no PRO / tracking number yet.")
 			carrier_id = shipment.carrier or "DAYTON"
-			if refresh:
-				from ltl_quote.visibility.tracker import ShipmentTracker
+			connector_type = _ltl_carrier_connector_type(shipment.carrier)
+			if _is_smc3_connector(connector_type, shipment.carrier):
+				if refresh:
+					status_result = _smc3_track_by_number(
+						request, shipment=shipment, pro=pro, persist=True
+					)
+					shipment.reload()
+					events = status_result.get("events") or _serialize_tracking_events(shipment)
+				else:
+					events = _serialize_tracking_events(shipment)
+			else:
+				if refresh:
+					from ltl_quote.visibility.tracker import ShipmentTracker
 
-				ShipmentTracker(shipment).refresh()
-				shipment.reload()
-			events = _serialize_tracking_events(shipment)
+					ShipmentTracker(shipment).refresh()
+					shipment.reload()
+				events = _serialize_tracking_events(shipment)
 			response_payload = {
 				"status": "success",
 				"engine": FLOWWOLF_ENGINE,
@@ -1290,16 +1398,30 @@ def track_history(payload=None, **kwargs):
 				"events": events,
 			}
 		else:
-			from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+			from ltl_quote.api.carrier_mapping import resolve_carrier_id
 
-			adapter = DaytonCarrierAdapter()
-			events = adapter.get_tracking(pro)
+			carrier_pref = resolve_carrier_id(
+				request.get("carrier_preference") or request.get("carrier") or request.get("carrier_code")
+			)
+			connector_type = _ltl_carrier_connector_type(carrier_pref) or str(
+				request.get("connector_type") or ""
+			).strip()
+			if _is_smc3_connector(connector_type, carrier_pref):
+				status_result = _smc3_track_by_number(request, pro=pro, persist=False)
+				carrier_id = "SMC3"
+				events = status_result.get("events") or []
+			else:
+				from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
+
+				adapter = DaytonCarrierAdapter()
+				carrier_id = "DAYTON"
+				events = adapter.get_tracking(pro)
 			response_payload = {
 				"status": "success",
 				"engine": FLOWWOLF_ENGINE,
 				"shipment": None,
 				"pro_number": pro,
-				"carrier_code": "DAYTON",
+				"carrier_code": carrier_id,
 				"events": events,
 			}
 		status = "Quotes Received" if response_payload.get("events") else "No Quotes Received"
@@ -1604,6 +1726,7 @@ def _persist_carrier_quotes(quote_request, quotes, errors: list | None = None) -
 				"carrier": q.carrier_code,
 				"carrier_name": q.carrier_name,
 				"carrier_quote_id": q.carrier_quote_id,
+				"quoted_scac": q.quoted_scac or "",
 				"status": "Received",
 				"total_charge": q.total_charge,
 				"currency": q.currency or quote_currency,

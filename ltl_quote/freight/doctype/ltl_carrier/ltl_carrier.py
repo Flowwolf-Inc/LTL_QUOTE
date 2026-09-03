@@ -36,6 +36,19 @@ class LTLCarrier(Document):
 
 		return sync_smc3_dispatch_response_messages(carrier=self.name)
 
+	@frappe.whitelist()
+	def register_status_callback(self, endpoint=None, effective_date=None):
+		"""Tell SMC3 to POST STATUS updates to this site's webhook."""
+		from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
+
+		if str(self.connector_type or "").strip() != "SMC3" and str(self.carrier_code or "").upper() != "SMC3":
+			frappe.throw("Status webhook registration is only available for SMC3.")
+		adapter = SMC3CarrierAdapter(self)
+		return adapter.create_status_callback_endpoint(
+			endpoint=endpoint,
+			effective_date=effective_date,
+		)
+
 	def _sync_dayton_catalogs(self) -> str:
 		"""Best-effort sync of Dayton Accessorial + Response Accessorial + Service Center DocTypes."""
 		from ltl_quote.api.shipping import (

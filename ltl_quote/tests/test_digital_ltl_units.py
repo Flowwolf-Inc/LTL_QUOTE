@@ -132,9 +132,69 @@ class TestDigitalLtlUnits(unittest.TestCase):
 		self.assertEqual(payload["shipmentTotals"]["cubeDimensionsUnit"], "Feet")
 
 
+class TestRequiredPartyFields(unittest.TestCase):
+	def test_bol_payload_keeps_real_party_fields(self):
+		from ltl_quote.carrier_network.smc3_bol import build_bol_payload
+
+		payload = build_bol_payload(FAILED_TXN_QUOTE, is_test=True, account="12345")
+		self.assertEqual(payload["origin"]["name"], "Main Warehouse Dispatch")
+		self.assertEqual(payload["origin"]["contact"]["name"], "Alex Rivera")
+		self.assertEqual(payload["destination"]["contact"]["name"], "Jordan Lee")
+		self.assertNotIn("John Doe", str(payload))
+		self.assertNotIn("12 S. Main", str(payload))
+
+	def test_bol_payload_requires_shipper_contact_name(self):
+		from ltl_quote.carrier_network.smc3_bol import build_bol_payload
+
+		quote = dict(FAILED_TXN_QUOTE)
+		quote.pop("contact_name")
+		with self.assertRaises(Exception) as ctx:
+			build_bol_payload(quote, is_test=False, account="12345")
+		self.assertIn("Shipper Contact Name", str(ctx.exception))
+
+	def test_bol_production_requires_account(self):
+		from ltl_quote.carrier_network.smc3_bol import build_bol_payload
+
+		with self.assertRaises(Exception) as ctx:
+			build_bol_payload(FAILED_TXN_QUOTE, is_test=False, account="")
+		self.assertIn("account number", str(ctx.exception).lower())
+
+	def test_bol_sandbox_allows_default_account(self):
+		from ltl_quote.carrier_network.smc3_bol import DEFAULT_SANDBOX_ACCOUNT, build_bol_payload
+
+		payload = build_bol_payload(FAILED_TXN_QUOTE, is_test=True, account="")
+		self.assertEqual(payload["origin"]["account"], DEFAULT_SANDBOX_ACCOUNT)
+
+	def test_dispatch_payload_requires_shipper_email(self):
+		from types import SimpleNamespace
+
+		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
+
+		quote = dict(FAILED_TXN_QUOTE)
+		quote.pop("origin_contact_email")
+		with self.assertRaises(Exception) as ctx:
+			build_dispatch_payload(SimpleNamespace(pickup_date="2026-09-08"), quote)
+		self.assertIn("Shipper Contact Email", str(ctx.exception))
+
+	def test_dispatch_payload_uses_quote_contacts(self):
+		from types import SimpleNamespace
+
+		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
+
+		payload = build_dispatch_payload(SimpleNamespace(pickup_date="2026-09-08"), FAILED_TXN_QUOTE)
+		self.assertEqual(payload["origin"]["contact"]["name"], "Alex Rivera")
+		self.assertEqual(payload["origin"]["contact"]["email"], "alex@warehouse.example")
+		self.assertEqual(payload["destination"]["contact"]["name"], "Jordan Lee")
+		self.assertNotIn("Jane Doe", str(payload))
+		self.assertNotIn("shipperContactPerson@email.com", str(payload))
+
+
 def run_checks():
 	"""Run this module's unit tests via `bench execute` (no site allow_tests flag)."""
-	suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestDigitalLtlUnits)
+	loader = unittest.defaultTestLoader
+	suite = unittest.TestSuite()
+	suite.addTests(loader.loadTestsFromTestCase(TestDigitalLtlUnits))
+	suite.addTests(loader.loadTestsFromTestCase(TestRequiredPartyFields))
 	result = unittest.TextTestRunner(verbosity=2).run(suite)
 	if not result.wasSuccessful():
 		raise AssertionError(f"failures={result.failures} errors={result.errors}")
@@ -157,6 +217,12 @@ FAILED_TXN_QUOTE = {
 	"shipper_address": "123 Logistics Way",
 	"consignee_name": "Destination Receiver",
 	"consignee_address": "456 Customer Ave",
+	"contact_name": "Alex Rivera",
+	"contact_phone": "3125550199",
+	"origin_contact_email": "alex@warehouse.example",
+	"destination_contact_name": "Jordan Lee",
+	"destination_contact_phone": "2145550188",
+	"destination_contact_email": "jordan@receiver.example",
 	"items": [
 		{
 			"description": "materials",

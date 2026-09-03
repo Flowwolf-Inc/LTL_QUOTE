@@ -522,9 +522,151 @@ ltl_quote.Dashboard = class Dashboard {
 
 	build() {
 		this.render();
+		this.apply_theme(this.saved_theme());
 		this.bind_events();
 		this.refresh_line_items_table();
 		this.load_recent_requests();
+	}
+
+	theme_storage_key() {
+		return "ltl_quote_theme";
+	}
+
+	available_themes() {
+		const v = this.theme_icon_version();
+		return [
+			{
+				id: "theme-1",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/images/theme-icon-01.png?v=${v}`,
+				enabled: false,
+			},
+			{
+				id: "theme-2",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/images/theme-icon-02.png?v=${v}`,
+				enabled: false,
+			},
+			{
+				id: "compact-purple",
+				label: __("Compact Purple"),
+				icon: `/assets/ltl_quote/images/theme-icon-compact-purple.png?v=${v}`,
+				enabled: true,
+			},
+			{
+				id: "theme-4",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/images/theme-icon-04.png?v=${v}`,
+				enabled: false,
+			},
+		];
+	}
+
+	theme_icon_version() {
+		return "4";
+	}
+
+	theme_icon_url(theme_id) {
+		const theme = this.available_themes().find((item) => item.id === theme_id);
+		if (theme && theme.icon) return theme.icon;
+		return `/assets/ltl_quote/images/theme-icon-compact-purple.png?v=${this.theme_icon_version()}`;
+	}
+
+	default_theme() {
+		return "compact-purple";
+	}
+
+	normalize_theme(theme) {
+		const match = this.available_themes().find((item) => item.id === theme && item.enabled !== false);
+		return match ? match.id : this.default_theme();
+	}
+
+	saved_theme() {
+		try {
+			return this.normalize_theme(localStorage.getItem(this.theme_storage_key()));
+		} catch (e) {
+			return this.default_theme();
+		}
+	}
+
+	apply_theme(theme) {
+		const id = this.normalize_theme(theme);
+		const icon = this.theme_icon_url(id);
+		const label = (this.available_themes().find((item) => item.id === id) || {}).label || __("Theme");
+		this.body.attr("data-ltl-theme", id);
+		this.body.find(".ltl-theme-btn-icon").attr({
+			src: id === "compact-purple" ? `/assets/ltl_quote/images/theme-trigger.png?v=${this.theme_icon_version()}` : icon,
+			alt: label,
+		});
+		this.body.find(".ltl-theme-btn").attr("aria-label", __("Theme: {0}", [label]));
+		this.body.find(".ltl-theme-option").each((_, el) => {
+			const selected = el.getAttribute("data-theme") === id;
+			el.classList.toggle("is-selected", selected);
+			el.setAttribute("aria-selected", selected ? "true" : "false");
+		});
+		try {
+			localStorage.setItem(this.theme_storage_key(), id);
+		} catch (e) {
+			/* ignore quota / private mode */
+		}
+	}
+
+	render_theme_picker() {
+		const current = this.normalize_theme(this.saved_theme());
+		const current_icon =
+			current === "compact-purple"
+				? `/assets/ltl_quote/images/theme-trigger.png?v=${this.theme_icon_version()}`
+				: this.theme_icon_url(current);
+		const current_label = (this.available_themes().find((item) => item.id === current) || {}).label || __("Theme");
+		const options = this.available_themes()
+			.map((theme) => {
+				const enabled = theme.enabled !== false;
+				const disabled_attr = enabled ? "" : "disabled";
+				const disabled_class = enabled ? "" : " is-disabled";
+				return `<button type="button" class="ltl-theme-option${disabled_class}" role="option" data-theme="${frappe.utils.escape_html(
+					theme.id
+				)}" title="${frappe.utils.escape_html(theme.label)}" aria-label="${frappe.utils.escape_html(
+					theme.label
+				)}" aria-selected="false" ${disabled_attr}>
+						<img class="ltl-theme-option-icon" src="${frappe.utils.escape_html(theme.icon)}" alt="">
+					</button>`;
+			})
+			.join("");
+		return `
+			<div class="ltl-theme-picker">
+				<button type="button" class="ltl-theme-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="${frappe.utils.escape_html(
+					__("Theme: {0}", [current_label])
+				)}">
+					<img class="ltl-theme-btn-icon" src="${frappe.utils.escape_html(current_icon)}" alt="${frappe.utils.escape_html(
+						current_label
+					)}">
+				</button>
+				<div class="ltl-theme-menu" role="listbox">
+					<div class="ltl-theme-menu-label">${__("Available themes")}</div>
+					<div class="ltl-theme-grid">
+						${options}
+					</div>
+				</div>
+			</div>`;
+	}
+
+	theme_menu_open() {
+		return this.body.find(".ltl-theme-picker").hasClass("is-open");
+	}
+
+	open_theme_menu() {
+		this.body.find(".ltl-theme-picker").addClass("is-open");
+		this.body.find(".ltl-theme-btn").attr("aria-expanded", "true");
+	}
+
+	close_theme_menu() {
+		this.body.find(".ltl-theme-picker").removeClass("is-open");
+		this.body.find(".ltl-theme-btn").attr("aria-expanded", "false");
+	}
+
+	toggle_theme_menu() {
+		if (this.theme_menu_open()) this.close_theme_menu();
+		else this.open_theme_menu();
 	}
 
 	render() {
@@ -539,6 +681,7 @@ ltl_quote.Dashboard = class Dashboard {
 							<span class="current">New Carrier Quote</span>
 						</div>
 						<div class="ltl-topbar-right">
+							${this.render_theme_picker()}
 							<span class="ltl-bell"><i class="fa fa-bell-o"></i></span>
 							<span class="ltl-user">
 								<span class="ltl-avatar">${(frappe.session.user_fullname || "U").slice(0, 2).toUpperCase()}</span>
@@ -1200,7 +1343,10 @@ ltl_quote.Dashboard = class Dashboard {
 			<div class="ltl-card ltl-ship-card">
 				<div class="ltl-card-head ltl-ship-head" data-action="toggle-ship">
 					<span>
-						<i class="fa fa-chevron-down ltl-chevron"></i> ${__("Shipment Details")}
+						<span class="ltl-ship-head-title">
+							<i class="fa fa-chevron-down ltl-chevron"></i>
+							${__("Shipment Details")}
+						</span>
 						<label class="ltl-quick-quotes">
 							<input type="checkbox" class="ltl-quick-quotes-check" checked />
 							${__("Quick Quotes")}
@@ -1213,6 +1359,26 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	bind_events() {
+		this.body.on("click", ".ltl-theme-btn", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggle_theme_menu();
+		});
+		this.body.on("click", ".ltl-theme-option", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const $option = $(e.currentTarget);
+			if ($option.hasClass("is-disabled") || $option.prop("disabled")) return;
+			this.apply_theme($option.attr("data-theme"));
+			this.close_theme_menu();
+		});
+		this.body.on("click", (e) => {
+			if (!$(e.target).closest(".ltl-theme-picker").length) this.close_theme_menu();
+		});
+		this.body.on("keydown", ".ltl-theme-btn, .ltl-theme-option", (e) => {
+			if (e.key === "Escape") this.close_theme_menu();
+		});
+
 		this.body.on("click", "[data-action='fetch']", () => this.fetch_rates());
 		this.body.on("click", "[data-action='clear']", () => this.clear_form());
 		this.body.on("click", "[data-action='new_quote']", () => this.clear_form());
@@ -1442,8 +1608,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 		this.body.on("click", ".ltl-detail-track-shipment", (e) => {
 			e.stopPropagation();
-			const shipment = $(e.currentTarget).attr("data-shipment");
-			if (shipment) this.open_tracking_detail(shipment);
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			if (!shipment) return;
+			this.tracking_return_view =
+				$btn.attr("data-from") ||
+				($btn.closest(".ltl-pickup-detail").length ? "pickup" : "shipment");
+			this.open_tracking_detail(shipment);
 		});
 
 		this.body.on("click", ".ltl-detail-get-next-pro", (e) => {
@@ -1482,6 +1654,55 @@ ltl_quote.Dashboard = class Dashboard {
 			}
 		});
 
+		this.body.on("click", ".ltl-detail-get-pod", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			const status = String($btn.attr("data-status") || "").trim();
+			if (!shipment) return;
+			if (status !== "Delivered") {
+				frappe.msgprint({
+					title: __("Proof of Delivery"),
+					indicator: "orange",
+					message: __("POD is only available for Delivered shipments"),
+				});
+				return;
+			}
+			this.fetch_smc3_document(shipment, {
+				scac: $btn.attr("data-scac") || "",
+				pro_number: $btn.attr("data-pro") || "",
+				document_type: "POD",
+				status,
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-get-dr", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			if (!shipment) return;
+			this.fetch_smc3_document(shipment, {
+				scac: $btn.attr("data-scac") || "",
+				pro_number: $btn.attr("data-pro") || "",
+				document_type: "DR",
+				status: $btn.attr("data-status") || "",
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-terminal-lookup", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			this.lookup_smc3_terminal({
+				shipment: $btn.attr("data-shipment") || "",
+				scac: $btn.attr("data-scac") || "",
+				postal_code: $btn.attr("data-zip") || "",
+				lane: $btn.attr("data-lane") || "origin",
+			});
+		});
+
 		this.body.on("click", ".ltl-detail-cancel-bol", (e) => {
 			e.stopPropagation();
 			const shipment = $(e.currentTarget).attr("data-shipment");
@@ -1506,40 +1727,6 @@ ltl_quote.Dashboard = class Dashboard {
 						});
 					},
 				});
-			});
-		});
-
-		this.body.on("click", ".ltl-detail-fetch-bol-image", (e) => {
-			e.stopPropagation();
-			const shipment = $(e.currentTarget).attr("data-shipment");
-			if (!shipment) return;
-			frappe.call({
-				method: "ltl_quote.carrier_network.adapters.smc3.fetch_bol_image",
-				args: { shipment_name: shipment },
-				freeze: true,
-				freeze_message: __("Fetching BOL Image from SMC3..."),
-				callback: (r) => {
-					const result = r.message || {};
-					if (result.status === "success") {
-						if (result.file_url) {
-							window.open(result.file_url, "_blank", "noopener,noreferrer");
-						}
-						frappe.show_alert({ message: __("BOL image saved"), indicator: "green" });
-						if (this.detail_type === "quote") {
-							const quote = (this.detail_doc && this.detail_doc.doc && this.detail_doc.doc.name) || "";
-							if (quote) this.open_quote_detail(quote);
-							else this.open_shipment_detail(shipment);
-						} else {
-							this.open_shipment_detail(shipment);
-						}
-						return;
-					}
-					frappe.msgprint({
-						title: __("BOL Image Failed"),
-						indicator: "red",
-						message: result.message || __("Could not fetch the BOL image."),
-					});
-				},
 			});
 		});
 
@@ -1601,6 +1788,14 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.on("click", ".ltl-book-btn", (e) => {
 			const idx = parseInt($(e.currentTarget).attr("data-idx"), 10);
 			this.book_shipment(idx);
+		});
+
+		this.body.on("click", ".ltl-view-shipment-btn", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const shipment =
+				$(e.currentTarget).attr("data-shipment") || this.booking_context?.shipment || "";
+			this.open_booked_shipment(shipment);
 		});
 
 		this.body.on("click", ".ltl-recent-view", (e) => {
@@ -2168,36 +2363,51 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_rate_action(q, idx) {
 		const ctx = this.booking_context;
-		const code = this.normalize_carrier_code(q.carrier_code || q.carrier);
-		const booked_norm = ctx?.booked_carrier_code
-			? this.normalize_carrier_code(ctx.booked_carrier_code)
-			: "";
-
-		if (ctx?.shipment && booked_norm && code === booked_norm) {
+		if (ctx?.shipment && this.is_booked_rate_row(q)) {
+			const shipment = frappe.utils.escape_html(q.shipment_name || ctx.shipment);
 			const bol_url = ctx.bol_url || "";
-			const bol_image_url = ctx.bol_image || "";
-			const image_btn = bol_image_url
-				? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-view-bol-image" data-bol-image-url="${frappe.utils.escape_html(
-						bol_image_url
-					)}"><i class="fa fa-picture-o"></i> ${__("View BOL Image")}</button>`
-				: "";
-			const bol_btn = bol_url && !bol_image_url
-				? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
+			const bol_btn = bol_url
+				? `<button type="button" class="ltl-btn ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
 						bol_url
 					)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
-				: bol_url && bol_image_url
-					? `<button type="button" class="ltl-btn ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
-							bol_url
-						)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
-					: "";
-			return `<span class="ltl-rate-actions">${image_btn}${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-book-btn" data-idx="${idx}">${__(
+				: "";
+			return `<span class="ltl-rate-actions">${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-view-shipment-btn" data-idx="${idx}" data-shipment="${shipment}">${__(
 				"View Shipment"
 			)}</button></span>`;
 		}
 		if (ctx?.shipment) {
-			return `<span class="ltl-status ltl-status-grey">${__("Booked")}</span>`;
+			return `<button type="button" class="ltl-btn ltl-btn-light" disabled>${__("Booked")}</button>`;
 		}
 		return `<button class="ltl-btn ltl-btn-primary ltl-book-btn" data-idx="${idx}">${__("Book Shipment")}</button>`;
+	}
+
+	is_booked_rate_row(quote) {
+		const ctx = this.booking_context;
+		if (!ctx?.shipment || !quote) return false;
+
+		const quote_scac = this.quote_scac(quote);
+		const booked_scac = String(ctx.booked_scac || "").trim().toUpperCase();
+		if (quote_scac && booked_scac && quote_scac === booked_scac) {
+			return true;
+		}
+
+		const booked_qid = String(ctx.booked_carrier_quote_id || "").trim();
+		if (booked_qid && String(quote.carrier_quote_id || "").trim() === booked_qid) {
+			return true;
+		}
+
+		const booked_norm = ctx.booked_carrier_code
+			? this.normalize_carrier_code(ctx.booked_carrier_code)
+			: "";
+		const code = this.normalize_carrier_code(quote.carrier_code || quote.carrier);
+		if (!booked_norm || !code || booked_norm !== code) {
+			return false;
+		}
+		// SMC3 network quotes all share connector SMC3 — never treat every row as booked.
+		if (booked_norm === "SMC3" || this.quote_source(quote) === "SMC3") {
+			return false;
+		}
+		return true;
 	}
 
 	load_booking_context(quote_request_id, callback) {
@@ -2216,6 +2426,8 @@ ltl_quote.Dashboard = class Dashboard {
 					this.apply_booking_context({
 						shipment: ctx.shipment,
 						booked_carrier: ctx.booked_carrier,
+						booked_scac: ctx.booked_scac,
+						booked_carrier_quote_id: ctx.booked_carrier_quote_id,
 						bol_document_url: ctx.bol_url,
 						bol_image: ctx.bol_image,
 						bol_number: ctx.bol_number,
@@ -2239,11 +2451,19 @@ ltl_quote.Dashboard = class Dashboard {
 		this.booking_context = {
 			shipment,
 			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
+			booked_scac: res.booked_scac || "",
+			booked_carrier_quote_id: res.booked_carrier_quote_id || "",
 			bol_url: res.bol_document_url || res.bol_url || (res.data && res.data.bol_document_url) || "",
 			bol_image: res.bol_image || res.bol_image_url || (res.data && res.data.bol_image) || "",
 			bol_number: res.bol_number || "",
 		};
 		this.quote_request_status = "Booked";
+		const shipment_name = String(shipment || "").trim();
+		(this.quotes || []).forEach((quote) => {
+			if (this.is_booked_rate_row(quote)) {
+				quote.shipment_name = shipment_name;
+			}
+		});
 		return true;
 	}
 
@@ -2273,15 +2493,19 @@ ltl_quote.Dashboard = class Dashboard {
 
 		if (!this.require_line_items()) return;
 
-		const code = this.normalize_carrier_code(quote.carrier_code || quote.carrier);
-		const booked = this.booking_context?.booked_carrier_code;
 		if (this.booking_context?.shipment) {
-			if (booked && code === this.normalize_carrier_code(booked)) {
-				this.open_shipment_detail(this.booking_context.shipment);
+			if (this.is_booked_rate_row(quote)) {
+				this.open_booked_shipment(this.booking_context.shipment);
 			}
 			return;
 		}
 		this.show_booking_modal(idx);
+	}
+
+	open_booked_shipment(shipmentName) {
+		const name = String(shipmentName || "").trim();
+		if (!name) return;
+		this.open_shipment_detail(name);
 	}
 
 	show_booking_modal(idx) {
@@ -2430,16 +2654,21 @@ ltl_quote.Dashboard = class Dashboard {
 			callback: (r) => {
 				const res = r.message || {};
 				if (res.status === "success" || res.status === "already_booked") {
+					if (!res.booked_scac) {
+						res.booked_scac = this.quote_scac(quote);
+					}
+					if (!res.booked_carrier_quote_id) {
+						res.booked_carrier_quote_id = quote.carrier_quote_id || "";
+					}
 					const booked = this.apply_booking_context(res);
 					if (booked) {
 						this.render_rates();
 						const msg =
 							res.status === "already_booked"
-								? __("Shipment already booked — opening details")
+								? __("Shipment already booked")
 								: __("Shipment booked — PRO {0}", [res.pro_number || res.bol_number || "Pending"]);
 						frappe.show_alert({ message: msg, indicator: "green" }, 8);
 						this.load_recent_requests();
-						this.open_shipment_detail(this.booking_context.shipment);
 						return;
 					}
 				}
@@ -2624,9 +2853,145 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 	}
 
+	fetch_smc3_document(shipment, opts) {
+		opts = opts || {};
+		const document_type = String(opts.document_type || "POD").toUpperCase();
+		const is_dr = document_type === "DR";
+		if (String(opts.status || "").trim() !== "Delivered") {
+			frappe.msgprint({
+				title: is_dr ? __("Delivery Receipt") : __("Proof of Delivery"),
+				indicator: "orange",
+				message: is_dr
+					? __("Delivery receipt is only available for Delivered shipments")
+					: __("POD is only available for Delivered shipments"),
+			});
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.smc3.get_smc3_document",
+			args: {
+				shipment,
+				scac: opts.scac || "",
+				pro_number: opts.pro_number || "",
+				document_type,
+				file_type: "PDF",
+			},
+			freeze: true,
+			freeze_message: is_dr
+				? __("Fetching delivery receipt PDF from SMC3…")
+				: __("Fetching POD PDF from SMC3…"),
+			callback: (r) => {
+				const result = r.message || {};
+				if (result.status === "success") {
+					if (result.file_url) {
+						window.open(result.file_url, "_blank", "noopener,noreferrer");
+					} else if (result.pod_name) {
+						frappe.set_route("Form", "LTL POD", result.pod_name);
+					}
+					frappe.show_alert({
+						message:
+							result.message ||
+							(is_dr
+								? __("Delivery receipt attached.")
+								: result.pod_name
+									? __("POD attached as {0}.", [result.pod_name])
+									: __("POD PDF opened.")),
+						indicator: "green",
+					});
+					this.open_shipment_detail(shipment);
+					return;
+				}
+				frappe.msgprint({
+					title: is_dr ? __("Get DR Failed") : __("Get POD Failed"),
+					indicator: "red",
+					message:
+						result.message ||
+						(is_dr
+							? __("Could not retrieve the delivery receipt.")
+							: __("Could not retrieve the proof of delivery.")),
+				});
+			},
+		});
+	}
+
+	lookup_smc3_terminal(opts) {
+		opts = opts || {};
+		const lane = String(opts.lane || "origin").toLowerCase();
+		const is_dest = lane.indexOf("dest") >= 0;
+		const title = is_dest ? __("Destination Terminal") : __("Origin Terminal");
+		const postal_code = String(opts.postal_code || "").trim();
+		if (!postal_code) {
+			frappe.msgprint({
+				title,
+				indicator: "orange",
+				message: __("A {0} ZIP is required to look up the carrier terminal.", [
+					is_dest ? __("destination") : __("origin"),
+				]),
+			});
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.smc3.get_carrier_terminal_info",
+			args: {
+				scac: opts.scac || "",
+				postal_code,
+				shipment: opts.shipment || "",
+				lane: is_dest ? "destination" : "origin",
+			},
+			freeze: true,
+			freeze_message: __("Looking up {0}…", [title]),
+			callback: (r) => this.show_smc3_terminal_dialog(title, r.message || {}),
+		});
+	}
+
+	show_smc3_terminal_dialog(title, result) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null || v === "" ? "—" : v));
+		const terminals = Array.isArray(result.terminals) ? result.terminals : [];
+		if (!terminals.length) {
+			frappe.msgprint({
+				title,
+				indicator: "orange",
+				message: __("No terminal locations were returned for ZIP {0}.", [result.postal_code || "—"]),
+			});
+			return;
+		}
+		const cards = terminals
+			.map((row) => {
+				const city_line = [row.city, row.state].filter(Boolean).join(", ");
+				const loc = `${city_line}${row.zip ? ` ${row.zip}` : ""}`.trim() || "—";
+				return `
+					<div class="ltl-terminal-card">
+						<div class="ltl-terminal-card-head">
+							<strong>${esc(row.name || __("Carrier Terminal"))}</strong>
+							<span class="ltl-terminal-scac">${__("SCAC")}: ${esc(row.scac)}</span>
+						</div>
+						<div class="ltl-terminal-row"><span>${__("Address")}</span><strong>${esc(row.address)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("City / State / ZIP")}</span><strong>${esc(loc)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Phone")}</span><strong>${esc(row.phone)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Contact")}</span><strong>${esc(row.contact)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Operating Hours")}</span><strong>${esc(row.hours)}</strong></div>
+					</div>`;
+			})
+			.join("");
+		const dialog = new frappe.ui.Dialog({
+			title,
+			size: "large",
+			fields: [{ fieldtype: "HTML", fieldname: "terminal_info" }],
+		});
+		dialog.fields_dict.terminal_info.$wrapper.html(
+			`<div class="ltl-terminal-dialog">
+				<div class="ltl-terminal-meta">${__("ZIP")} ${esc(result.postal_code)} · ${__("SCAC")} ${esc(result.scac)}</div>
+				${cards}
+			</div>`
+		);
+		dialog.show();
+	}
+
 	open_shipment_detail(name) {
 		if (!name) return;
-		this.detail_return_view = "shipments";
+		if (this.detail_type !== "quote") {
+			this.detail_return_view = "shipments";
+		}
 		this.detail_type = "shipment";
 		this.body.find(".ltl-nav-item").removeClass("active");
 		this.body.find('.ltl-nav-item[data-view="shipments"]').addClass("active");
@@ -2644,6 +3009,7 @@ ltl_quote.Dashboard = class Dashboard {
 				}
 				this.detail_doc = r.message;
 				container.html(this.render_shipment_detail(r.message));
+				this.bind_barcode_popovers(container);
 			},
 			error: () => {
 				container.html('<div class="ltl-empty">Unable to load shipment.</div>');
@@ -2723,8 +3089,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 	close_tracking_view() {
 		const shipment = this.tracking_shipment_name;
+		const back = this.tracking_return_view;
 		this.destroy_tracking_map();
 		this.tracking_doc = null;
+		this.tracking_return_view = null;
+		if (shipment && back === "pickup") {
+			this.open_pickup_detail(shipment);
+			return;
+		}
 		if (shipment) {
 			this.open_shipment_detail(shipment);
 			return;
@@ -2903,8 +3275,7 @@ ltl_quote.Dashboard = class Dashboard {
 		} else {
 			preview = `<iframe class="ltl-bol-iframe" src="${esc(bol_url)}" title="${__("Bill of Lading")}"></iframe>`;
 		}
-		return `
-			<section class="ltl-detail-card ltl-bol-preview-card">
+		const inner = `
 				<div class="ltl-detail-card-head">
 					<span><i class="fa ${is_image ? "fa-file-image-o" : "fa-file-pdf-o"}"></i> ${__("Bill of Lading")}</span>
 					<div class="ltl-bol-preview-meta">
@@ -2913,7 +3284,31 @@ ltl_quote.Dashboard = class Dashboard {
 						${open_btn}
 					</div>
 				</div>
-				${preview}
+				${preview}`;
+		if (opts.embedded) {
+			return `<div class="ltl-bol-preview-embed">${inner}</div>`;
+		}
+		return `
+			<section class="ltl-detail-card ltl-bol-preview-card">
+				${inner}
+			</section>`;
+	}
+
+	render_shipment_connections_card(opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const bol_url = String(opts.bol_url || "").trim();
+		const bol_number = String(opts.bol_number || "").trim();
+		const chip = bol_url
+			? `<button type="button" class="ltl-detail-conn-tab active ltl-view-bol-btn"
+					data-bol-url="${esc(bol_url)}"
+					title="${esc(bol_number ? __("Open BOL {0}", [bol_number]) : __("Open Bill of Lading"))}">
+					1 ${__("Bill of Lading")}
+				</button>`
+			: `<span class="ltl-detail-conn-empty">${__("No BOL attached")}</span>`;
+		return `
+			<section class="ltl-detail-card ltl-ship-connections-card">
+				<div class="ltl-detail-card-head"><i class="fa fa-link"></i> ${__("CONNECTIONS")}</div>
+				<div class="ltl-detail-conn-row">${chip}</div>
 			</section>`;
 	}
 
@@ -2923,10 +3318,46 @@ ltl_quote.Dashboard = class Dashboard {
 		const printing = String(data.printing_requirements || "").trim();
 		if (!symbology && !printing) return "";
 		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const spec = [symbology, printing].filter(Boolean).join("\n\n");
 		return `<div class="ltl-barcode-note">
-			${symbology ? `<div><strong>${__("Barcode")}</strong> ${esc(symbology)}</div>` : ""}
-			${printing ? `<div class="ltl-barcode-print">${esc(printing)}</div>` : ""}
+			<span>${__("GS1-128 / UCC-128 compliant carrier tracking barcode.")}</span>
+			<i class="fa fa-info-circle ltl-pro-barcode-info" tabindex="0" role="img"
+				aria-label="${esc(__("Barcode specification"))}"
+				data-barcode-spec="${esc(spec)}"></i>
 		</div>`;
+	}
+
+	bind_barcode_popovers($root) {
+		const $icons = ($root || this.body).find(".ltl-pro-barcode-info");
+		$icons.each(function () {
+			const $el = $(this);
+			if (typeof $el.popover !== "function") {
+				$el.attr("title", $el.attr("data-barcode-spec") || "");
+				return;
+			}
+			if ($el.data("bs.popover") || $el.data("popover")) {
+				try {
+					$el.popover("dispose");
+				} catch (e) {
+					try {
+						$el.popover("destroy");
+					} catch (e2) {
+						/* ignore */
+					}
+				}
+			}
+			const spec = String($el.attr("data-barcode-spec") || "").trim();
+			const html = frappe.utils.escape_html(spec).replace(/\n/g, "<br>");
+			$el.popover({
+				trigger: "hover focus",
+				placement: "auto",
+				container: "body",
+				html: true,
+				sanitize: false,
+				title: __("Barcode specification"),
+				content: html,
+			});
+		});
 	}
 
 	render_quote_detail(payload) {
@@ -2938,39 +3369,27 @@ ltl_quote.Dashboard = class Dashboard {
 		const readonly = ["Booked", "Cancelled"].includes(doc.status);
 		const ro = readonly ? "readonly" : "";
 		const dis = readonly ? "disabled" : "";
-		const linked = shipments[0] || {};
-		const bol_url =
-			payload.bol_image
-			|| resolve_bol_image_url(linked)
-			|| payload.bol_url
-			|| resolve_bol_url(doc)
-			|| resolve_bol_url(linked);
-		const view_bol_btn = bol_url
-			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(bol_url)}">
-					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
+		const final_carrier = String(doc.final_carrier || "").trim().toUpperCase();
+		const linked =
+			(final_carrier
+				? shipments.find((s) => String(s.carrier || "").trim().toUpperCase() === final_carrier)
+				: null) ||
+			shipments[0] ||
+			{};
+		const linked_shipment = String(linked.name || "").trim();
+		const view_shipment_btn = linked_shipment
+			? `<button type="button" class="ltl-btn ltl-detail-view-shipment ltl-view-shipment-btn" data-shipment="${esc(linked_shipment)}">
+					<i class="fa fa-truck"></i> ${__("View Shipment")}
 				</button>`
 			: doc.status === "Booked"
-				? `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__(
-						"No BOL attached"
+				? `<button type="button" class="ltl-btn ltl-detail-view-shipment ltl-detail-view-shipment-muted" disabled title="${__(
+						"No linked shipment"
 					)}">
-					<i class="fa fa-file-pdf-o"></i> ${__("View BOL")}
+					<i class="fa fa-truck"></i> ${__("View Shipment")}
 				</button>`
 				: "";
-		const can_fetch_bol_image =
-			Boolean(linked.name)
-			&& ltl_supports_smc3_bol(linked.carrier || doc.final_carrier)
-			&& !["Cancelled", "Delivered"].includes(String(linked.status || ""))
-			&& Boolean(String(linked.pro_number || linked.bol_number || doc.pro_number || doc.bol_number || "").trim());
-		const fetch_bol_image_btn = can_fetch_bol_image
-			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(linked.name)}">
-					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
-				</button>`
-			: "";
-		const bol_preview = this.render_bol_preview_card({
-			bol_url,
-			bol_number: doc.bol_number || linked.bol_number,
-			pro_number: doc.pro_number || linked.pro_number,
-		});
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
+		const tz = frappe.boot.time_zone?.user || frappe.boot.time_zone || "";
 
 		const class_opts = (this.shipping_class_options || []).length
 			? this.shipping_class_options
@@ -2984,19 +3403,7 @@ ltl_quote.Dashboard = class Dashboard {
 				)}</option>`;
 			})
 			.join("");
-		const shipment_tabs = shipments.length
-			? shipments
-					.map(
-						(s, i) => `
-				<button type="button" class="ltl-detail-conn-tab ${i === 0 ? "active" : ""} ltl-detail-shipment-link"
-					data-shipment="${esc(s.name)}">${i + 1} LTL Shipment</button>`
-					)
-					.join("")
-			: `<span class="ltl-detail-conn-empty">No linked shipments</span>`;
-
 		const acc_rows = this.render_accessorial_detail_rows(accessorials);
-
-		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
 
 		return `
 			<div class="ltl-detail">
@@ -3010,18 +3417,12 @@ ltl_quote.Dashboard = class Dashboard {
 					</div>
 					<div class="ltl-detail-hero-right">
 						<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
-						${view_bol_btn}
-						${fetch_bol_image_btn}
+						${view_shipment_btn}
 					</div>
 				</div>
 
 				<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-link"></i> 1. CONNECTIONS</div>
-					<div class="ltl-detail-conn-row">
-						${shipment_tabs}
-						<button type="button" class="ltl-detail-conn-add" data-action="open-desk-form"
-							data-name="${esc(doc.name)}" title="Open in Desk">+</button>
-					</div>
 					<div class="ltl-detail-grid ltl-detail-grid-3">
 						<div class="ltl-field">
 							<label>Status</label>
@@ -3030,12 +3431,12 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-field">
 							<label>Requested On</label>
 							<input class="ltl-input" value="${val(fmt_dt(doc.requested_on))}" readonly />
-							<small class="ltl-tz">${frappe.boot.time_zone?.user || frappe.boot.time_zone || ""}</small>
+							<small class="ltl-tz">${esc(tz)}</small>
 						</div>
 						<div class="ltl-field">
 							<label>Rates Aggregated On</label>
 							<input class="ltl-input" value="${val(fmt_dt(doc.aggregated_on))}" readonly />
-							<small class="ltl-tz">${frappe.boot.time_zone?.user || frappe.boot.time_zone || ""}</small>
+							<small class="ltl-tz">${esc(tz)}</small>
 						</div>
 						<div class="ltl-field">
 							<label>${__("BOL Number")}</label>
@@ -3047,8 +3448,6 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 					</div>
 				</section>
-
-				${bol_preview}
 
 				<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> 2. LANE &amp; LOCATIONS</div>
@@ -3281,6 +3680,9 @@ ltl_quote.Dashboard = class Dashboard {
 		const psid = pickup.psid || doc.pickup_psid || "";
 		const is_cancelled = status === "Cancelled";
 		const has_pickup = is_smc3 ? Boolean(status) : Boolean(pickup_number);
+		const tracking_btn = `<button type="button" class="ltl-btn ltl-pickup-hero-track ltl-detail-track-shipment" data-shipment="${shipment}" data-from="pickup" title="${__("Open shipment tracking")}">
+							<i class="fa fa-map-marker"></i> ${__("Shipment Tracking")}
+						</button>`;
 		const shipper = raw.shipper || {};
 		const shipper_addr = shipper.address || {};
 		const contact = raw.contact || {};
@@ -3500,6 +3902,7 @@ ltl_quote.Dashboard = class Dashboard {
 					<div class="ltl-detail-hero-right">
 						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
 						${has_pickup ? `<div class="ltl-detail-hero-badge">${__("Pickup")}: ${esc(pickup_number)}</div>` : ""}
+						${has_pickup ? tracking_btn : ""}
 					</div>
 				</div>
 
@@ -3627,12 +4030,13 @@ ltl_quote.Dashboard = class Dashboard {
 		const pieces = quote.pieces != null ? quote.pieces : "—";
 		const weight = quote.total_weight != null ? quote.total_weight : "—";
 		const freight_class = quote.freight_class || "—";
+		const back_label = this.tracking_return_view === "pickup" ? __("Back to Pickup") : __("Back to Shipment");
 
 		return `
 			<div class="ltl-detail ltl-tracking-detail">
 				<div class="ltl-detail-hero">
 					<div class="ltl-detail-hero-left">
-						<button type="button" class="ltl-btn ltl-tracking-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
+						<button type="button" class="ltl-btn ltl-tracking-back"><i class="fa fa-arrow-left"></i> ${back_label}</button>
 						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
 						<div class="ltl-detail-hero-text">
 							<div class="ltl-detail-hero-title">${__("LTL Shipment Tracking")}</div>
@@ -3811,17 +4215,50 @@ ltl_quote.Dashboard = class Dashboard {
 
 		const acc_rows = this.render_accessorial_detail_rows(accessorials);
 
+		const quote = payload.quote || {};
+		const origin_zip = String(doc.bol_shipper_postal_code || quote.origin_zip || "").trim();
+		const destination_zip = String(doc.bol_consignee_postal_code || quote.destination_zip || "").trim();
+		const show_terminals = ltl_supports_smc3_bol(payload.carrier || doc.carrier);
+		const terminal_btn = (lane, zip, label) =>
+			`<button type="button" class="ltl-btn ltl-detail-terminal-lookup" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || doc.bol_scac || "")}" data-zip="${esc(zip)}" data-lane="${lane}" ${
+				zip ? "" : "disabled"
+			} title="${zip ? __("Look up the {0} terminal", [label]) : __("A ZIP is required")}">
+				<i class="fa fa-building-o"></i> ${label}
+			</button>`;
+
 		const bol_url = resolve_bol_url(doc);
-		const bol_image_url = resolve_bol_image_url(doc);
-		const preview_url = bol_image_url || bol_url;
 		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
 		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup, payload.carrier);
-		const view_bol_btn = preview_url
-			? `<button type="button" class="ltl-btn ltl-detail-view-bol" data-bol-url="${esc(preview_url)}">
-					<i class="fa fa-file-pdf-o"></i> View BOL
+		const quote_name = String(doc.quote_request || quote.name || "").trim();
+		const view_quote_btn = quote_name
+			? `<button type="button" class="ltl-btn ltl-detail-view-quote ltl-detail-quote-link" data-quote="${esc(quote_name)}">
+					<i class="fa fa-file-text-o"></i> ${__("View Quote")}
 				</button>`
-			: `<button type="button" class="ltl-btn ltl-detail-view-bol ltl-detail-view-bol-muted" disabled title="${__("No BOL attached")}">
-					<i class="fa fa-file-pdf-o"></i> View BOL
+			: `<button type="button" class="ltl-btn ltl-detail-view-quote ltl-detail-view-quote-muted" disabled title="${__(
+					"No linked quote request"
+				)}">
+					<i class="fa fa-file-text-o"></i> ${__("View Quote")}
+				</button>`;
+		const can_track =
+			ltl_supports_tracking(payload.carrier || doc.carrier)
+			&& Boolean(String(doc.pro_number || "").trim())
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const track_btn = can_track
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-map-marker"></i> ${__("Tracking")}
+				</button>`
+			: `<button type="button" class="ltl-btn" disabled title="${__("Tracking is not available yet")}">
+					<i class="fa fa-map-marker"></i> ${__("Tracking")}
+				</button>`;
+		const can_get_pro =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const get_pro_btn = can_get_pro
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-get-next-pro" data-shipment="${esc(doc.name)}" data-pro="${esc(doc.pro_number || "")}">
+					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
+				</button>`
+			: `<button type="button" class="ltl-btn" disabled title="${__("Get Next PRO is not available for this carrier")}">
+					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
 				</button>`;
 		const can_cancel_bol =
 			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
@@ -3832,32 +4269,41 @@ ltl_quote.Dashboard = class Dashboard {
 					<i class="fa fa-times"></i> ${__("Cancel BOL")}
 				</button>`
 			: "";
-		const fetch_bol_image_btn = can_cancel_bol
-			? `<button type="button" class="ltl-btn ltl-detail-fetch-bol-image" data-shipment="${esc(doc.name)}">
-					<i class="fa fa-file-image-o"></i> ${__("Get BOL Image")}
-				</button>`
-			: "";
-		const can_track =
-			ltl_supports_tracking(payload.carrier || doc.carrier)
-			&& Boolean(String(doc.pro_number || "").trim())
-			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
-		const track_btn = can_track
-			? `<button type="button" class="ltl-btn ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
-					<i class="fa fa-map-marker"></i> ${__("Tracking")}
-				</button>`
-			: "";
-		const can_get_pro =
+		const can_get_pod =
 			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
-			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
-		const get_pro_btn = can_get_pro
-			? `<button type="button" class="ltl-btn ltl-detail-get-next-pro" data-shipment="${esc(doc.name)}" data-pro="${esc(doc.pro_number || "")}">
-					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
+			&& Boolean(String(doc.pro_number || doc.bol_number || "").trim());
+		const pod_delivered = String(doc.status || "") === "Delivered";
+		const get_pod_btn = can_get_pod
+			? `<button type="button" class="ltl-btn ${pod_delivered ? "ltl-btn-primary" : ""} ltl-detail-get-pod" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || "")}" data-pro="${esc(doc.pro_number || "")}" data-status="${esc(doc.status || "")}" ${pod_delivered ? "" : `title="${__("POD is only available for Delivered shipments")}"`}>
+					<i class="fa fa-file-text-o"></i> ${__("Get POD")}
 				</button>`
 			: "";
-		const bol_preview = this.render_bol_preview_card({
-			bol_url: preview_url,
+		const can_get_dr =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& pod_delivered
+			&& Boolean(String(doc.pro_number || "").trim());
+		const get_dr_btn = can_get_dr
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-get-dr" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || "")}" data-pro="${esc(doc.pro_number || "")}" data-status="${esc(doc.status || "")}">
+					<i class="fa fa-file-text-o"></i> ${__("Get DR")}
+				</button>`
+			: "";
+		const extra_action_fields = [
+			can_get_pod ? `<div class="ltl-field"><label>${__("Get POD")}</label>${get_pod_btn}</div>` : "",
+			can_get_dr ? `<div class="ltl-field"><label>${__("Get DR")}</label>${get_dr_btn}</div>` : "",
+			can_cancel_bol ? `<div class="ltl-field"><label>${__("Cancel BOL")}</label>${cancel_bol_btn}</div>` : "",
+		].filter(Boolean).join("");
+		const actions_card = `
+			<section class="ltl-detail-card ltl-ship-actions-card">
+				<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Actions")}</div>
+				<div class="ltl-detail-grid ltl-detail-grid-2">
+					<div class="ltl-field"><label>${__("Get Next PRO")}</label>${get_pro_btn}</div>
+					<div class="ltl-field"><label>${__("Tracking")}</label>${track_btn}</div>
+					${extra_action_fields}
+				</div>
+			</section>`;
+		const connections_card = this.render_shipment_connections_card({
+			bol_url,
 			bol_number: doc.bol_number,
-			pro_number: doc.pro_number,
 		});
 
 		return `
@@ -3868,6 +4314,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-detail-hero-text">
 							<div class="ltl-detail-hero-title">LTL Shipment</div>
 							<div class="ltl-detail-hero-sub">Track booked shipments, BOL details, and delivery status</div>
+							<div class="ltl-detail-hero-badge ltl-detail-hero-id">Shipment ID: ${esc(doc.name)}</div>
 							<div class="ltl-detail-hero-status-row">
 								${dayton_pickup_ui.badge}
 								${dayton_bol_ui.badge}
@@ -3875,17 +4322,15 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 					</div>
 					<div class="ltl-detail-hero-right">
-						<div class="ltl-detail-hero-badge">Shipment ID: ${esc(doc.name)}</div>
-						${view_bol_btn}
-						${cancel_bol_btn}
-						${fetch_bol_image_btn}
+						${view_quote_btn}
 						${dayton_pickup_ui.actions}
-						${get_pro_btn}
-						${track_btn}
 					</div>
 				</div>
 
-				${bol_preview}
+				<div class="ltl-ship-detail-parties ltl-ship-actions-connections">
+					${connections_card}
+					${actions_card}
+				</div>
 
 				<div class="ltl-ship-detail-columns">
 					<div class="ltl-ship-detail-col">
@@ -4048,7 +4493,9 @@ ltl_quote.Dashboard = class Dashboard {
 							<div class="ltl-field"><label>State</label>
 								<input class="ltl-input" data-detail="bol_shipper_state" value="${val(doc.bol_shipper_state)}" ${ro} /></div>
 							<div class="ltl-field"><label>ZIP</label>
-								<input class="ltl-input" data-detail="bol_shipper_postal_code" value="${val(doc.bol_shipper_postal_code)}" ${ro} /></div>
+								<input class="ltl-input" data-detail="bol_shipper_postal_code" value="${val(doc.bol_shipper_postal_code)}" ${ro} />
+								${show_terminals ? `<div class="ltl-field-action">${terminal_btn("origin", origin_zip, __("Origin Terminal"))}</div>` : ""}
+							</div>
 						</div>
 					</section>
 
@@ -4068,10 +4515,30 @@ ltl_quote.Dashboard = class Dashboard {
 							<div class="ltl-field"><label>State</label>
 								<input class="ltl-input" data-detail="bol_consignee_state" value="${val(doc.bol_consignee_state)}" ${ro} /></div>
 							<div class="ltl-field"><label>ZIP</label>
-								<input class="ltl-input" data-detail="bol_consignee_postal_code" value="${val(doc.bol_consignee_postal_code)}" ${ro} /></div>
+								<input class="ltl-input" data-detail="bol_consignee_postal_code" value="${val(doc.bol_consignee_postal_code)}" ${ro} />
+								${show_terminals ? `<div class="ltl-field-action">${terminal_btn("destination", destination_zip, __("Destination Terminal"))}</div>` : ""}
+							</div>
 						</div>
 					</section>
 				</div>
+
+				${show_terminals ? `
+				<section class="ltl-detail-card ltl-terminal-info-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-building-o"></i> ${__("Terminal Info")}</div>
+					<p class="ltl-terminal-info-desc">${__("Look up the SMC3 origin and destination terminals for this shipment.")}</p>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field">
+							<label>${__("Origin ZIP")}</label>
+							<input class="ltl-input" value="${esc(origin_zip || "—")}" readonly />
+							<div class="ltl-field-action">${terminal_btn("origin", origin_zip, __("Origin Terminal"))}</div>
+						</div>
+						<div class="ltl-field">
+							<label>${__("Destination ZIP")}</label>
+							<input class="ltl-input" value="${esc(destination_zip || "—")}" readonly />
+							<div class="ltl-field-action">${terminal_btn("destination", destination_zip, __("Destination Terminal"))}</div>
+						</div>
+					</div>
+				</section>` : ""}
 
 				<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-list-alt"></i> BOL Commodity / Line Items</div>

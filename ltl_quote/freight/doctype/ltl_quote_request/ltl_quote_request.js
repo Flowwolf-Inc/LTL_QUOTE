@@ -45,14 +45,14 @@ function render_smc3_actions(frm) {
 						method: "ltl_quote.carrier_network.adapters.smc3.fetch_bol_image",
 						args: { shipment_name: shipment.name },
 						freeze: true,
-						freeze_message: __("Fetching BOL Image from SMC3..."),
+						freeze_message: __("Fetching BOL PDF from SMC3..."),
 						callback(r) {
 							if (r.message?.status === "success") {
 								if (r.message.file_url) {
 									window.open(r.message.file_url, "_blank", "noopener,noreferrer");
 								}
 								frappe.show_alert({
-									message: __("BOL image saved."),
+									message: __("BOL PDF opened."),
 									indicator: "green",
 								});
 							}

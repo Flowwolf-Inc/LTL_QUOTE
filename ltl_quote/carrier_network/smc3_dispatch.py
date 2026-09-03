@@ -7,15 +7,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import frappe
 from frappe.utils import flt, get_datetime
 
 from ltl_quote.api.payload import freight_class_lookup_key, line_item_freight_class
 from ltl_quote.carrier_network.pickup import resolve_pickup_window
 from ltl_quote.carrier_network.smc3_bol import (
-	DEFAULT_DOCUMENT_DEMO_BOL,
-	_phone,
 	canonical_bol_number,
 	quote_data_from_shipment,
+	require_email,
+	require_phone,
+	require_text,
 )
 from ltl_quote.carrier_network.tracking import (
 	activity_label,
@@ -27,10 +29,6 @@ from ltl_quote.carrier_network.tracking import (
 
 DEFAULT_DISPATCH_BASE = "https://dispatch.smc3.com/dispatch/v3/app"
 DEFAULT_STATUS_BASE = "https://status.smc3.com/status/v1/app"
-DEFAULT_STATUS_DEMO_BOL = DEFAULT_DOCUMENT_DEMO_BOL
-DEFAULT_STATUS_DEMO_PICKUP_DATE = "20260907"
-DEFAULT_STATUS_DEMO_ORIGIN = "30269"
-DEFAULT_STATUS_DEMO_DEST = "40213"
 
 SCHEDULED_PICKUP_STATUSES = {
 	"Scheduled",
@@ -63,29 +61,29 @@ def build_dispatch_payload(
 	quote_data = quote_data or quote_data_from_shipment(shipment)
 	origin = _dispatch_party(
 		quote_data,
-		name=quote_data.get("shipper_name") or "Demo Shipper Company",
-		address=quote_data.get("shipper_address") or "123 Demo Shipper way",
+		name=quote_data.get("shipper_name"),
+		address=quote_data.get("shipper_address"),
 		city=quote_data.get("origin_city"),
 		state=quote_data.get("origin_state"),
 		postal=quote_data.get("origin_zip"),
 		country=quote_data.get("origin_country"),
-		contact_name=quote_data.get("origin_contact_name") or quote_data.get("contact_name") or "John Doe",
+		contact_name=quote_data.get("origin_contact_name") or quote_data.get("contact_name"),
 		contact_phone=quote_data.get("origin_contact_phone") or quote_data.get("contact_phone"),
 		contact_email=quote_data.get("origin_contact_email") or quote_data.get("contact_email"),
-		email_fallback="shipperContactPerson@email.com",
+		party_label="Shipper",
 	)
 	destination = _dispatch_party(
 		quote_data,
-		name=quote_data.get("consignee_name") or "Demo Consignee Company",
-		address=quote_data.get("consignee_address") or "456 Demo Consignee way",
+		name=quote_data.get("consignee_name"),
+		address=quote_data.get("consignee_address"),
 		city=quote_data.get("destination_city"),
 		state=quote_data.get("destination_state"),
 		postal=quote_data.get("destination_zip"),
 		country=quote_data.get("destination_country"),
-		contact_name=quote_data.get("destination_contact_name") or "Jane Doe",
+		contact_name=quote_data.get("destination_contact_name"),
 		contact_phone=quote_data.get("destination_contact_phone"),
 		contact_email=quote_data.get("destination_contact_email") or quote_data.get("consignee_email"),
-		email_fallback="consigneeContactPerson@email.com",
+		party_label="Consignee",
 	)
 	ready_dt, close_dt = resolve_pickup_window(shipment)
 	code = str(dispatch_code or "CREATE").strip().upper() or "CREATE"
@@ -102,7 +100,7 @@ def build_dispatch_payload(
 		"destination": destination,
 		"requestor": _dispatch_requestor(quote_data, origin),
 	}
-	if code == "CANCEL":
+	if code in {"CANCEL", "UPDATE"}:
 		pickup = str(
 			pickup_number or getattr(shipment, "pickup_number", None) or ""
 		).strip()
@@ -168,22 +166,20 @@ def _dispatch_party(
 	contact_name,
 	contact_phone,
 	contact_email=None,
-	email_fallback: str = "",
+	party_label: str,
 ) -> dict:
-	postal_code = str(postal or "").strip()
+	postal_code = require_text(postal, f"{party_label} Postal Code")
 	return {
-		"name": str(name or "").strip() or "Shipper Co",
-		"address": str(address or "12 S. Main").strip() or "12 S. Main",
-		"city": str(city or "").strip() or "Unknown",
-		"stateProvince": str(state or "").strip() or "XX",
+		"name": require_text(name, f"{party_label} Company Name"),
+		"address": require_text(address, f"{party_label} Address"),
+		"city": require_text(city, f"{party_label} City"),
+		"stateProvince": require_text(state, f"{party_label} State"),
 		"postalCode": postal_code,
 		"country": _dispatch_country(country, postal_code),
 		"contact": {
-			"name": str(contact_name or name or "Shipping Desk").strip() or "Shipping Desk",
-			"phone": _phone(contact_phone) if contact_phone else "8002723425",
-			"email": str(contact_email or email_fallback or "shipperContactPerson@email.com").strip()
-			or email_fallback
-			or "shipperContactPerson@email.com",
+			"name": require_text(contact_name, f"{party_label} Contact Name"),
+			"phone": require_phone(contact_phone, f"{party_label} Contact Phone"),
+			"email": require_email(contact_email, f"{party_label} Contact Email"),
 		},
 	}
 
@@ -191,21 +187,23 @@ def _dispatch_party(
 def _dispatch_requestor(quote_data: dict, origin: dict) -> dict:
 	contact = origin.get("contact") if isinstance(origin.get("contact"), dict) else {}
 	return {
-		"name": str(
-			quote_data.get("requestor_name") or quote_data.get("shipper_name") or origin.get("name") or "Demo Requestor Company"
-		).strip()
-		or "Demo Requestor Company",
+		"name": require_text(
+			quote_data.get("requestor_name") or quote_data.get("shipper_name") or origin.get("name"),
+			"Requestor Company Name",
+		),
 		"contact": {
-			"name": str(
-				quote_data.get("requestor_contact_name") or contact.get("name") or "Joe Murphy"
-			).strip()
-			or "Joe Murphy",
-			"phone": str(quote_data.get("requestor_phone") or contact.get("phone") or "8002723425").strip()
-			or "8002723425",
-			"email": str(
-				quote_data.get("requestor_email") or contact.get("email") or "requestorContactPerson@email.com"
-			).strip()
-			or "requestorContactPerson@email.com",
+			"name": require_text(
+				quote_data.get("requestor_contact_name") or contact.get("name"),
+				"Requestor Contact Name",
+			),
+			"phone": require_phone(
+				quote_data.get("requestor_phone") or contact.get("phone"),
+				"Requestor Contact Phone",
+			),
+			"email": require_email(
+				quote_data.get("requestor_email") or contact.get("email"),
+				"Requestor Contact Email",
+			),
 		},
 	}
 
@@ -241,17 +239,47 @@ def parse_dispatch_response(data: dict, *, ready=None, close=None) -> dict:
 	message_status = data.get("messageStatus") if isinstance(data.get("messageStatus"), dict) else {}
 	if str(message_status.get("status") or "").upper() == "PASS" and not pickup:
 		pickup = str(data.get("transactionId") or "").strip()
+	avail_ready, avail_close = _availability_datetimes(data)
 	return {
 		"ok": True,
 		"pickup_number": str(pickup or "").strip(),
 		"pickup_status": str(status or "Scheduled").strip() or "Scheduled",
 		"pro_number": str(pro or "").strip(),
-		"ready": ready,
-		"close": close,
+		"ready": ready or avail_ready,
+		"close": close or avail_close,
 		"transaction_id": str(data.get("transactionId") or "").strip(),
 		"raw": data,
 		"status": "acknowledged",
 	}
+
+
+def _availability_datetimes(data: dict) -> tuple:
+	avail = data.get("pickupAvailability") if isinstance(data.get("pickupAvailability"), dict) else {}
+	date = str(avail.get("date") or "").strip()
+	if len(date) == 8 and date.isdigit():
+		date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+	ready_raw = _normalize_dispatch_time(
+		avail.get("readyTime") or avail.get("openTime") or avail.get("startTime")
+	)
+	close_raw = _normalize_dispatch_time(avail.get("closeTime"))
+	if not date:
+		return None, None
+	try:
+		ready = get_datetime(f"{date} {ready_raw}") if ready_raw else get_datetime(date)
+		close = get_datetime(f"{date} {close_raw}") if close_raw else None
+		return ready, close
+	except Exception:
+		return None, None
+
+
+def _normalize_dispatch_time(value) -> str:
+	raw = str(value or "").strip()
+	if not raw:
+		return ""
+	digits = "".join(ch for ch in raw if ch.isdigit())
+	if len(digits) >= 4:
+		return f"{digits[:2]}:{digits[2:4]}:{digits[4:6] or '00'}"
+	return raw
 
 
 def _dispatch_reference_map(raw) -> dict:
@@ -327,35 +355,69 @@ def parse_status_events(data: dict) -> list[dict]:
 				"delivery_signature": signature,
 			}
 		)
+	events.sort(key=lambda ev: ev.get("event_datetime") or datetime.min)
 	return events
 
 
 def _status_history_rows(data: dict) -> list:
-	"""SMC3 Status v1 returns statusHistory plus a current status object."""
+	"""Merge statusHistory with the current status object without duplicating the latest scan."""
+	rows = []
+	seen = set()
+
+	def add(row):
+		if isinstance(row, str):
+			text = row.strip()
+			if not text:
+				return
+			code = text.upper()
+			if any(
+				str(existing.get("code") or existing.get("statusCode") or existing.get("status") or "").strip().upper()
+				== code
+				for existing in rows
+			):
+				return
+			key = ("code", code)
+			if key in seen:
+				return
+			seen.add(key)
+			rows.append({"code": text, "description": text})
+			return
+		if not isinstance(row, dict):
+			return
+		key = (
+			str(row.get("code") or row.get("statusCode") or row.get("status") or "").strip().upper(),
+			str(row.get("utc") or "").strip()
+			or _combine_smc3_date_time(row.get("date"), row.get("time")),
+		)
+		if key in seen:
+			return
+		seen.add(key)
+		rows.append(row)
+
 	history = data.get("statusHistory")
-	if isinstance(history, list) and history:
-		return history
-	if isinstance(history, dict):
-		return [history]
+	if isinstance(history, list):
+		for item in history:
+			add(item)
+	elif isinstance(history, dict):
+		add(history)
 
-	raw = (
-		data.get("shipmentStatus")
-		or data.get("statuses")
-		or data.get("events")
-		or data.get("trackingEvents")
-		or []
-	)
-	if isinstance(raw, dict):
-		raw = [raw]
-	if raw:
-		return list(raw)
+	for extra in (
+		data.get("shipmentStatus"),
+		data.get("statuses"),
+		data.get("events"),
+		data.get("trackingEvents"),
+		data.get("currentStatus"),
+		data.get("status"),
+	):
+		if extra is None or extra is history:
+			continue
+		if isinstance(extra, list):
+			for item in extra:
+				add(item)
+		else:
+			add(extra)
 
-	current = data.get("currentStatus") or data.get("status")
-	if isinstance(current, dict):
-		return [current]
-	if isinstance(current, str) and current.strip():
-		return [{"code": current, "description": current}]
-	return []
+	return rows
 
 
 def _parse_status_row(row) -> dict | None:
@@ -410,8 +472,26 @@ def _parse_status_row(row) -> dict | None:
 		"status_description": description or activity_label(code),
 		"location": location,
 		"is_exception": 1 if exception else 0,
-		"exception_type": str(row.get("exceptionType") or "").strip() if exception else None,
+		"exception_type": _exception_type_for_row(row, description, exception),
 	}
+
+
+def _exception_type_for_row(row: dict, description: str, exception: bool) -> str | None:
+	if not exception:
+		return None
+	explicit = str(row.get("exceptionType") or row.get("exception_type") or "").strip()
+	if explicit:
+		return explicit
+	text = f"{description} {row.get('code') or ''}".lower()
+	if "weather" in text:
+		return "Weather"
+	if "damage" in text or "damaged" in text:
+		return "Damage"
+	if "missed pickup" in text:
+		return "Missed Pickup"
+	if "delay" in text:
+		return "Delay"
+	return "Other"
 
 
 def _status_event_datetime(row: dict):
@@ -517,14 +597,14 @@ def _as_string_number(value) -> str:
 def status_query_params(pro_number: str, quote_data: dict | None = None, shipment=None) -> dict:
 	"""GET /status query string. SMC3 accepts one lookup mode at a time.
 
+	PRO lookup: proNumber only  (GET /status/v1/app/{SCAC}?proNumber=…)
 	BOL lookup: bol + pickupDate + origin/destination postal + country
-	PRO lookup: proNumber only
 	Mixing keys returns Invalid Query Params.
 	"""
-	bol_params = status_bol_query_params(quote_data, shipment)
-	if bol_params:
-		return bol_params
-	return status_pro_query_params(pro_number, quote_data, shipment)
+	pro_params = status_pro_query_params(pro_number, quote_data, shipment)
+	if pro_params:
+		return pro_params
+	return status_bol_query_params(quote_data, shipment)
 
 
 def status_pro_query_params(pro_number: str, quote_data: dict | None = None, shipment=None) -> dict:
@@ -564,20 +644,13 @@ def status_bol_query_params(quote_data: dict | None = None, shipment=None) -> di
 	}
 
 
-def sandbox_status_query_params(config: dict | None = None) -> dict:
-	"""Canned Status v1 demo query (SMC3 sandbox sample)."""
+def sandbox_status_query_params(config: dict | None = None, pro_number: str = "") -> dict:
+	"""Optional Status v1 lookup from carrier notes. Never invents sample PRO/BOL/ZIP values."""
 	cfg = config or {}
-	return {
-		"bol": str(cfg.get("status_demo_bol") or DEFAULT_STATUS_DEMO_BOL).strip() or DEFAULT_STATUS_DEMO_BOL,
-		"pickupDate": str(cfg.get("status_demo_pickup_date") or DEFAULT_STATUS_DEMO_PICKUP_DATE).strip()
-		or DEFAULT_STATUS_DEMO_PICKUP_DATE,
-		"originPostalCode": str(cfg.get("status_demo_origin") or DEFAULT_STATUS_DEMO_ORIGIN).strip()
-		or DEFAULT_STATUS_DEMO_ORIGIN,
-		"originCountry": "USA",
-		"destinationPostalCode": str(cfg.get("status_demo_dest") or DEFAULT_STATUS_DEMO_DEST).strip()
-		or DEFAULT_STATUS_DEMO_DEST,
-		"destinationCountry": "USA",
-	}
+	pro = str(cfg.get("status_demo_pro") or cfg.get("status_pro") or pro_number or "").strip()
+	if pro:
+		return {"proNumber": pro}
+	return {}
 
 
 def _status_pickup_yyyymmdd(quote_data: dict | None = None, shipment=None) -> str:

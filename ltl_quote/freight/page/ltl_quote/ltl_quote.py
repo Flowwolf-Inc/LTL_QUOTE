@@ -177,11 +177,11 @@ def get_quote_request_detail(name: str) -> dict:
 	from ltl_quote.utils.booking import resolve_shipment_bol_image_url, resolve_shipment_bol_url
 
 	shipment_name = shipments[0].name if shipments else None
-	bol_image = resolve_shipment_bol_image_url(shipment_name=shipment_name)
-	bol_url = bol_image or resolve_shipment_bol_url(
+	bol_url = resolve_shipment_bol_url(
 		shipment_name=shipment_name,
 		quote_request=doc,
 	)
+	bol_image = resolve_shipment_bol_image_url(shipment_name=shipment_name)
 
 	return {
 		"doc": doc.as_dict(),
@@ -286,8 +286,17 @@ def get_shipment_detail(name: str) -> dict:
 		)
 
 	accessorials = []
+	quote_summary = {}
 	if doc.quote_request and frappe.db.exists("LTL Quote Request", doc.quote_request):
 		quote = frappe.get_doc("LTL Quote Request", doc.quote_request)
+		quote_summary = {
+			"origin_zip": quote.origin_zip,
+			"destination_zip": quote.destination_zip,
+			"origin_city": quote.origin_city,
+			"origin_state": quote.origin_state,
+			"destination_city": quote.destination_city,
+			"destination_state": quote.destination_state,
+		}
 		for row in quote.accessorials or []:
 			label = ""
 			if row.accessorial:
@@ -340,6 +349,7 @@ def get_shipment_detail(name: str) -> dict:
 		"line_items": line_items,
 		"tracking_events": tracking_events,
 		"accessorials": accessorials,
+		"quote": quote_summary,
 		"dayton_documents": dayton_documents,
 		"pickup": pickup,
 		"barcode": barcode,

@@ -208,6 +208,8 @@ def _apply_status_update(*, shipment_name: str | None, quote_name: str | None, p
 	from ltl_quote.carrier_network.smc3_dispatch import parse_status_events
 
 	events = parse_status_events(payload) or _events_from_status(parsed.get("status"))
+	if events:
+		events = sorted(events, key=lambda e: str(e.get("event_datetime") or ""))
 	latest = events[-1] if events else None
 	if not isinstance(latest, dict):
 		latest = {

@@ -30,7 +30,7 @@ class ShipmentTracker:
 			self.shipment.append(
 				"tracking_events",
 				{
-					"event_datetime": ev.get("event_datetime"),
+					"event_datetime": ev.get("event_datetime") or now_datetime(),
 					"status_code": ev.get("status_code"),
 					"status_description": ev.get("status_description"),
 					"location": ev.get("location"),
