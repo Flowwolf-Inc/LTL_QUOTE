@@ -81,6 +81,10 @@ frappe.ui.form.on("LTL Shipment", {
 			frm.remove_custom_button(__("Get POD"));
 			frm.remove_custom_button(__("Get DR"), __("SMC3 Actions"));
 			frm.remove_custom_button(__("Get DR"));
+			frm.remove_custom_button(__("Get Invoice"), __("SMC3 Actions"));
+			frm.remove_custom_button(__("Get Invoice"));
+			frm.remove_custom_button(__("Get Weight Certificate"), __("SMC3 Actions"));
+			frm.remove_custom_button(__("Get Weight Certificate"));
 			frm.remove_custom_button(__("Origin Terminal"), __("SMC3 Actions"));
 			frm.remove_custom_button(__("Destination Terminal"), __("SMC3 Actions"));
 			frm.remove_custom_button(__("Terminal Info"), __("SMC3 Actions"));
@@ -298,6 +302,15 @@ frappe.ui.form.on("LTL Shipment", {
 				if ($dr_btn) $dr_btn.addClass("btn-primary");
 				frm.add_custom_button(__("Get DR"), () => {
 					fetch_smc3_delivery_receipt(frm);
+				}, __("SMC3 Actions"));
+			}
+
+			if (is_smc3_carrier(frm.doc.carrier) && (frm.doc.pro_number || frm.doc.bol_number)) {
+				frm.add_custom_button(__("Get Invoice"), () => {
+					fetch_smc3_document(frm, "INV");
+				}, __("SMC3 Actions"));
+				frm.add_custom_button(__("Get Weight Certificate"), () => {
+					fetch_smc3_document(frm, "WC");
 				}, __("SMC3 Actions"));
 			}
 
@@ -700,14 +713,29 @@ function fetch_smc3_document(frm, document_type, opts) {
 		return;
 	}
 	const labels = {
-		POD: { title: __("Proof of Delivery"), fetching: __("Fetching POD PDF from SMC3…") },
+		POD: {
+			title: __("Proof of Delivery"),
+			fetching: __("Fetching POD PDF from SMC3…"),
+			gated: __("POD is only available for Delivered shipments"),
+			delivered_only: true,
+		},
+		INV: {
+			title: __("Invoice"),
+			fetching: __("Fetching invoice PDF from SMC3…"),
+			delivered_only: false,
+		},
+		WC: {
+			title: __("Weight Certificate"),
+			fetching: __("Fetching weight certificate PDF from SMC3…"),
+			delivered_only: false,
+		},
 	};
 	const copy = labels[document_type] || labels.POD;
-	if ((frm.doc.status || "") !== "Delivered") {
+	if (copy.delivered_only && (frm.doc.status || "") !== "Delivered") {
 		frappe.msgprint({
 			title: copy.title,
 			indicator: "orange",
-			message: __("POD is only available for Delivered shipments"),
+			message: copy.gated || __("POD is only available for Delivered shipments"),
 		});
 		return;
 	}
@@ -737,33 +765,59 @@ function open_smc3_pod_result(result, opts) {
 function open_smc3_document_result(result, document_type, opts) {
 	opts = opts || {};
 	document_type = String(document_type || "POD").toUpperCase();
-	const is_dr = document_type === "DR";
+	const copy = {
+		DR: {
+			fail_title: __("Get DR Failed"),
+			fail: __("Could not retrieve the delivery receipt."),
+			title: __("Delivery Receipt"),
+			opened: __("Delivery receipt attached and opened."),
+			attached: __("Delivery receipt attached."),
+		},
+		INV: {
+			fail_title: __("Get Invoice Failed"),
+			fail: __("Could not retrieve the invoice."),
+			title: __("Invoice"),
+			opened: __("Invoice attached and opened."),
+			attached: __("Invoice attached."),
+		},
+		WC: {
+			fail_title: __("Get Weight Certificate Failed"),
+			fail: __("Could not retrieve the weight certificate."),
+			title: __("Weight Certificate"),
+			opened: __("Weight certificate attached and opened."),
+			attached: __("Weight certificate attached."),
+		},
+		POD: {
+			fail_title: __("Get POD Failed"),
+			fail: __("Could not retrieve the proof of delivery."),
+			title: __("Proof of Delivery"),
+			opened: __("POD attached and opened."),
+			attached: __("POD attached."),
+		},
+	}[document_type] || {
+		fail_title: __("Get Document Failed"),
+		fail: __("Could not retrieve the SMC3 document."),
+		title: __("SMC3 Document"),
+		opened: __("Document attached and opened."),
+		attached: __("Document attached."),
+	};
 	if (result.status !== "success") {
 		frappe.msgprint({
-			title: is_dr ? __("Get DR Failed") : __("Get POD Failed"),
+			title: copy.fail_title,
 			indicator: "red",
-			message:
-				result.message ||
-				(is_dr
-					? __("Could not retrieve the delivery receipt.")
-					: __("Could not retrieve the proof of delivery.")),
+			message: result.message || copy.fail,
 		});
 		return;
 	}
-	const title = is_dr ? __("Delivery Receipt") : __("Proof of Delivery");
-	const opened = open_smc3_pdf(result, title);
+	const opened = open_smc3_pdf(result, copy.title);
 	frappe.show_alert({
 		message:
 			result.message ||
 			(opened
-				? is_dr
-					? __("Delivery receipt attached and opened.")
-					: __("POD attached and opened.")
-				: is_dr
-					? __("Delivery receipt attached.")
-					: result.pod_name
-						? __("POD attached as {0}.", [result.pod_name])
-						: __("POD PDF opened.")),
+				? copy.opened
+				: result.pod_name
+					? __("POD attached as {0}.", [result.pod_name])
+					: copy.attached),
 		indicator: "green",
 	});
 	if (typeof opts.on_success === "function") {

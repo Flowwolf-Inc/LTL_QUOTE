@@ -1,7 +1,7 @@
 # Copyright (c) 2026, LTL Quote and contributors
 # For license information, please see license.txt
 
-"""SMC3 Notifications v1 — list and delete callback endpoints."""
+"""SMC3 Notifications v1 — list, delete, and register callback endpoints."""
 
 from __future__ import annotations
 
@@ -40,6 +40,29 @@ def delete_notification_callback(callback_id, carrier=None):
 		"callback_id": callback_id,
 		"transaction_id": str(result.get("transaction_id") or "").strip(),
 		"message": result.get("message") or "Notification callback deleted.",
+		"raw": result.get("raw") or {},
+	}
+
+
+@frappe.whitelist()
+def register_document_callback(scac=None, callback_url=None, carrier=None, effective_date=None):
+	"""POST Notifications v1 callback-endpoint/create with service=DOCUMENT."""
+	adapter = _adapter(carrier)
+	result = adapter.create_status_callback_endpoint(
+		endpoint=callback_url,
+		effective_date=effective_date,
+		service="DOCUMENT",
+		scac=scac,
+	)
+	return {
+		"status": "success",
+		"ok": True,
+		"service": "DOCUMENT",
+		"scac": str(scac or result.get("scac") or "").strip().upper(),
+		"endpoint": result.get("endpoint") or "",
+		"effective_date": result.get("effective_date") or "",
+		"transaction_id": str(result.get("transaction_id") or "").strip(),
+		"message": result.get("message") or "SMC3 DOCUMENT callback registered.",
 		"raw": result.get("raw") or {},
 	}
 

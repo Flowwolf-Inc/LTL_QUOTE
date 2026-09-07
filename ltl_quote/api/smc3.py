@@ -12,7 +12,7 @@ from frappe.utils.file_manager import save_file
 
 from ltl_quote.carrier_network.smc3_token import AUTH_USER_MESSAGE, SMC3AuthError
 
-DOCUMENT_TYPES = ("BL", "POD", "DR")
+DOCUMENT_TYPES = ("BL", "POD", "DR", "INV", "WC")
 FILE_TYPES = ("PDF", "PNG")
 
 
@@ -172,13 +172,14 @@ def format_flowwolf_status_events(events, source: str = "SMC3") -> list[dict]:
 
 @frappe.whitelist()
 def get_smc3_document(shipment=None, document_type="BL", file_type="PDF", scac=None, pro_number=None):
-	"""Fetch an SMC3 Document API file (BL, POD, or DR) as PDF/PNG and attach it."""
+	"""Fetch an SMC3 Document API file (BL, POD, DR, INV, or WC) as PDF/PNG and attach it."""
+	from ltl_quote.carrier_network.adapters.smc3 import allowed_document_types_text
 	from ltl_quote.carrier_network.smc3_bol import quote_data_from_shipment
 
 	document_type = str(document_type or "BL").strip().upper() or "BL"
 	file_type = str(file_type or "PDF").strip().upper() or "PDF"
 	if document_type not in DOCUMENT_TYPES:
-		frappe.throw("document_type must be BL, POD, or DR.")
+		frappe.throw(f"document_type must be {allowed_document_types_text()}.")
 	if file_type not in FILE_TYPES:
 		frappe.throw("file_type must be PDF or PNG.")
 
@@ -518,6 +519,10 @@ def _attach_smc3_document(shipment, result: dict, document_type: str, file_type:
 		payload["message"] = "SMC3 POD attached."
 	elif document_type == "DR":
 		payload["message"] = "SMC3 delivery receipt attached."
+	elif document_type == "INV":
+		payload["message"] = "SMC3 invoice attached."
+	elif document_type == "WC":
+		payload["message"] = "SMC3 weight certificate attached."
 	frappe.db.commit()
 	return payload
 

@@ -50,6 +50,51 @@ class TestSMC3Notifications(unittest.TestCase):
 		self.assertEqual(rows[0]["callback_id"], "only-one")
 		self.assertEqual(rows[0]["service"], "STATUS")
 
+	def test_parse_document_callback_service(self):
+		rows = parse_notification_callbacks(
+			{
+				"callbackEndpoints": [
+					{
+						"id": "doc-1",
+						"endpoint": "https://example.com/api/method/ltl_quote.api.webhooks.smc3_document_update",
+						"effectiveDate": "20260907",
+						"service": "document",
+					}
+				]
+			}
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["callback_id"], "doc-1")
+		self.assertEqual(rows[0]["service"], "DOCUMENT")
+
+	def test_parse_document_payload_types(self):
+		from ltl_quote.api.webhooks import parse_document_payload
+		from ltl_quote.api.smc3 import DOCUMENT_TYPES
+		from ltl_quote.carrier_network.adapters.smc3 import DOCUMENT_TYPES as ADAPTER_TYPES
+
+		parsed = parse_document_payload(
+			{
+				"scac": "CNWY",
+				"documentType": "INV",
+				"fileType": "PDF",
+				"referenceNumbers": {"proNumber": "204380071201", "bol": "444555678"},
+			}
+		)
+		self.assertEqual(parsed["document_type"], "INV")
+		self.assertEqual(parsed["document_types"], ["INV"])
+		self.assertEqual(parsed["file_type"], "PDF")
+		self.assertEqual(parsed["pro"], "204380071201")
+		self.assertEqual(parsed["bol"], "444555678")
+
+		all_types = parse_document_payload(
+			{"documentType": "ALL", "referenceNumbers": {"proNumber": "1"}}
+		)
+		self.assertIn("INV", all_types["document_types"])
+		self.assertIn("WC", all_types["document_types"])
+		self.assertNotIn("BL", all_types["document_types"])
+		self.assertTrue({"INV", "WC"}.issubset(set(DOCUMENT_TYPES)))
+		self.assertTrue({"INV", "WC"}.issubset(ADAPTER_TYPES))
+
 	def test_flowwolf_smc3_connector_detection(self):
 		self.assertTrue(_is_smc3_connector("SMC3"))
 		self.assertTrue(_is_smc3_connector("", "SMC3"))

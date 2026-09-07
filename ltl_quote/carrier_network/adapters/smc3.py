@@ -83,13 +83,28 @@ DEFAULT_APA_BASE = "https://apa.smc3.com/apa/assignment/v2/app/carriers"
 DEFAULT_DOCUMENT_BASE = "https://document.smc3.com/document/v1/app"
 DEFAULT_NOTIFICATIONS_BASE = "https://eva.smc3.com/notifications/v1/app"
 DEFAULT_TERMINALS_BASE = "https://terminals.smc3.com/terminals/v1/app"
-DOCUMENT_TYPES = {"BL", "POD", "DR"}
+DOCUMENT_TYPE_ORDER = ("BL", "POD", "DR", "INV", "WC")
+DOCUMENT_TYPES = set(DOCUMENT_TYPE_ORDER)
 DOCUMENT_FILE_TYPES = {"PDF", "PNG"}
+NOTIFICATION_SERVICES = {"STATUS", "DOCUMENT"}
 
 
 def _document_label(document_type: str) -> str:
-	return {"BL": "BOL", "POD": "POD", "DR": "delivery receipt"}.get(str(document_type or "BL").upper(), "document")
+	return {
+		"BL": "BOL",
+		"POD": "POD",
+		"DR": "delivery receipt",
+		"INV": "invoice",
+		"WC": "weight certificate",
+	}.get(str(document_type or "BL").upper(), "document")
+
+
+def allowed_document_types_text() -> str:
+	return "BL, POD, DR, INV, or WC"
+
+
 STATUS_CALLBACK_METHOD = "ltl_quote.api.webhooks.smc3_status_update"
+DOCUMENT_CALLBACK_METHOD = "ltl_quote.api.webhooks.smc3_document_update"
 DEFAULT_MINOR_VERSION = "1.2"
 DEFAULT_WAIT_SECONDS = 30
 MAX_CARRIERS_PER_REQUEST = 35
@@ -629,11 +644,13 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		file_type: str = "PDF",
 		raise_on_empty: bool = True,
 	) -> dict:
-		"""GET SMC3 Document API for BL, POD, or DR."""
+		"""GET SMC3 Document API for BL, POD, DR, INV, or WC."""
 		document_type = str(document_type or "BL").strip().upper() or "BL"
 		file_type = str(file_type or "PDF").strip().upper() or "PDF"
 		if document_type not in DOCUMENT_TYPES:
-			frappe.throw(f"Unsupported SMC3 document type: {document_type}. Use BL, POD, or DR.")
+			frappe.throw(
+				f"Unsupported SMC3 document type: {document_type}. Use {allowed_document_types_text()}."
+			)
 		if file_type not in DOCUMENT_FILE_TYPES:
 			frappe.throw(f"Unsupported SMC3 file type: {file_type}. Use PDF or PNG.")
 		if document_type == "BL" and file_type == "PDF":
@@ -749,7 +766,9 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		file_type = str(file_type or "PNG").strip().upper() or "PNG"
 		document_type = str(document_type or "BL").strip().upper() or "BL"
 		if document_type not in DOCUMENT_TYPES:
-			document_type = "BL"
+			frappe.throw(
+				f"Unsupported SMC3 document type: {document_type}. Use {allowed_document_types_text()}."
+			)
 		label = _document_label(document_type)
 		params = {
 			"documentType": document_type,
@@ -1403,16 +1422,19 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		endpoint: str | None = None,
 		effective_date: str | None = None,
 		service: str | None = None,
+		scac: str | None = None,
 	) -> dict:
-		"""POST Notifications v1 callback-endpoint/create so SMC3 can push STATUS updates."""
+		"""POST Notifications v1 callback-endpoint/create so SMC3 can push STATUS or DOCUMENT updates."""
+		service = str(service or self._config.get("status_callback_service") or "STATUS").strip().upper() or "STATUS"
+		if service not in NOTIFICATION_SERVICES:
+			frappe.throw(f"Unsupported SMC3 notification service: {service}. Use STATUS or DOCUMENT.")
 		url = self._notifications_create_url()
-		headers = self._notifications_headers()
-		callback = self._resolve_status_callback_url(endpoint)
+		headers = self._notifications_headers(scac)
+		callback = self._resolve_callback_url(endpoint, service)
 		payload = {
 			"endpoint": callback,
 			"effectiveDate": self._callback_effective_date(effective_date),
-			"service": str(service or self._config.get("status_callback_service") or "STATUS").strip().upper()
-			or "STATUS",
+			"service": service,
 		}
 		try:
 			response = self.token_service.request(
@@ -1422,7 +1444,7 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			frappe.throw(AUTH_USER_MESSAGE)
 		except requests.exceptions.RequestException as exc:
 			self._log_apa(url, headers, payload, str(exc), "Connection Failed", {}, None)
-			frappe.throw(f"SMC3 status callback registration connection error: {exc}")
+			frappe.throw(f"SMC3 {service.lower()} callback registration connection error: {exc}")
 
 		data = None
 		try:
@@ -1451,15 +1473,15 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			frappe.throw(self._format_http_error(response))
 		if data is None:
 			frappe.throw(
-				f"SMC3 status callback registration returned non-JSON: {(response.text or '')[:250]}"
+				f"SMC3 {service.lower()} callback registration returned non-JSON: {(response.text or '')[:250]}"
 			)
 		if not isinstance(data, dict):
-			frappe.throw("SMC3 status callback registration returned an unexpected payload.")
+			frappe.throw(f"SMC3 {service.lower()} callback registration returned an unexpected payload.")
 		if not passed:
-			frappe.throw(status.get("message") or "SMC3 status callback registration failed.")
+			frappe.throw(status.get("message") or f"SMC3 {service.lower()} callback registration failed.")
 
 		transaction_id = str(data.get("transactionId") or "").strip()
-		self._remember_status_callback(payload, transaction_id, status)
+		self._remember_callback(payload, transaction_id, status)
 		return {
 			"ok": True,
 			"status": "success",
@@ -1467,8 +1489,9 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			"endpoint": callback,
 			"effective_date": payload["effectiveDate"],
 			"service": payload["service"],
+			"scac": str(scac or "").strip().upper(),
 			"message": status.get("message")
-			or "Default callback endpoint successfully created/updated",
+			or f"Default {service} callback endpoint successfully created/updated",
 			"raw": data,
 		}
 
@@ -1505,32 +1528,52 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 
 	def status_callback_url(self) -> str:
 		"""Public URL SMC3 should POST STATUS updates to."""
-		explicit = str(self._config.get("status_callback_url") or "").strip()
+		return self._callback_url_for_service("STATUS")
+
+	def document_callback_url(self) -> str:
+		"""Public URL SMC3 should POST DOCUMENT updates to."""
+		return self._callback_url_for_service("DOCUMENT")
+
+	def _callback_method_for_service(self, service: str) -> str:
+		return DOCUMENT_CALLBACK_METHOD if str(service or "").upper() == "DOCUMENT" else STATUS_CALLBACK_METHOD
+
+	def _callback_url_for_service(self, service: str) -> str:
+		service = str(service or "STATUS").strip().upper() or "STATUS"
+		if service == "DOCUMENT":
+			explicit = str(self._config.get("document_callback_url") or "").strip()
+			stored = self._config.get("document_webhook") if isinstance(self._config.get("document_webhook"), dict) else {}
+		else:
+			explicit = str(self._config.get("status_callback_url") or "").strip()
+			stored = self._config.get("status_webhook") if isinstance(self._config.get("status_webhook"), dict) else {}
 		if explicit:
 			return explicit
-		stored = self._config.get("status_webhook") if isinstance(self._config.get("status_webhook"), dict) else {}
 		previous = str(stored.get("endpoint") or "").strip()
 		if previous:
 			return previous
 		base = str(self._config.get("public_base_url") or "").strip().rstrip("/")
-		path = f"/api/method/{STATUS_CALLBACK_METHOD}"
+		path = f"/api/method/{self._callback_method_for_service(service)}"
 		if base:
 			return f"{base}{path}"
 		return get_url(path)
 
 	def _resolve_status_callback_url(self, endpoint: str | None) -> str:
-		callback = str(endpoint or "").strip() or self.status_callback_url()
+		return self._resolve_callback_url(endpoint, "STATUS")
+
+	def _resolve_callback_url(self, endpoint: str | None, service: str = "STATUS") -> str:
+		service = str(service or "STATUS").strip().upper() or "STATUS"
+		method = self._callback_method_for_service(service)
+		callback = str(endpoint or "").strip() or self._callback_url_for_service(service)
 		parsed = urlparse(callback)
 		host = str(parsed.hostname or "").strip().lower()
 		if parsed.scheme not in {"http", "https"} or not host:
 			frappe.throw(
 				"A public HTTPS callback URL is required, for example "
-				f"https://your-domain.com/api/method/{STATUS_CALLBACK_METHOD}"
+				f"https://your-domain.com/api/method/{method}"
 			)
 		if host in _PRIVATE_CALLBACK_HOSTS or host.endswith(".localhost"):
 			frappe.throw(
 				"SMC3 cannot reach a localhost callback. Set a public HTTPS URL "
-				f"(ngrok or production) pointing to /api/method/{STATUS_CALLBACK_METHOD}."
+				f"(ngrok or production) pointing to /api/method/{method}."
 			)
 		return callback
 
@@ -1552,13 +1595,17 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 			return override
 		return f"{self._notifications_base()}/callback-endpoint/create"
 
-	def _notifications_headers(self) -> dict:
-		scac = "SMCA" if self._is_sandbox_mode() else ""
-		if not scac:
+	def _notifications_headers(self, scac: str | None = None) -> dict:
+		chosen = str(scac or "").strip().upper()
+		if chosen in {"SMC3", "SMC"}:
+			chosen = ""
+		if not chosen:
+			chosen = "SMCA" if self._is_sandbox_mode() else ""
+		if not chosen:
 			rows = self._network_carriers()
 			if rows:
-				scac = str(rows[0].get("scac") or "").strip().upper()
-		return self._eva_headers(scac)
+				chosen = str(rows[0].get("scac") or "").strip().upper()
+		return self._eva_headers(chosen)
 
 	def _notifications_request(self, method: str, url: str, payload=None) -> dict:
 		method = str(method or "GET").upper()
@@ -1612,34 +1659,49 @@ class SMC3CarrierAdapter(BaseCarrierAdapter):
 		return data
 
 	def _remember_status_callback(self, payload: dict, transaction_id: str, status: dict) -> None:
+		self._remember_callback(payload, transaction_id, status)
+
+	def _remember_callback(self, payload: dict, transaction_id: str, status: dict) -> None:
 		raw = (self.carrier_doc.get("notes") or "").strip()
 		if raw and not raw.startswith("{"):
 			return
 		notes = dict(self._config or {})
-		notes["status_callback_url"] = payload.get("endpoint") or ""
-		notes["status_webhook"] = {
+		service = str(payload.get("service") or "STATUS").strip().upper() or "STATUS"
+		record = {
 			"endpoint": payload.get("endpoint") or "",
 			"effectiveDate": payload.get("effectiveDate") or "",
-			"service": payload.get("service") or "STATUS",
+			"service": service,
 			"transactionId": transaction_id,
 			"registeredAt": str(now_datetime()),
 			"message": str(status.get("message") or "").strip(),
 		}
+		if service == "DOCUMENT":
+			notes["document_callback_url"] = payload.get("endpoint") or ""
+			notes["document_webhook"] = record
+		else:
+			notes["status_callback_url"] = payload.get("endpoint") or ""
+			notes["status_webhook"] = record
 		self.carrier_doc.db_set("notes", frappe.as_json(notes, indent=2), update_modified=False)
 		self._config = notes
 
 	def _forget_status_callback(self, callback_id: str) -> None:
-		stored = self._config.get("status_webhook") if isinstance(self._config.get("status_webhook"), dict) else {}
-		stored_id = str(
-			stored.get("transactionId") or stored.get("id") or stored.get("callbackId") or ""
-		).strip()
-		if stored_id != str(callback_id or "").strip():
-			return
+		callback_id = str(callback_id or "").strip()
 		raw = (self.carrier_doc.get("notes") or "").strip()
 		if raw and not raw.startswith("{"):
 			return
 		notes = dict(self._config or {})
-		notes.pop("status_webhook", None)
+		changed = False
+		for key, url_key in (("status_webhook", "status_callback_url"), ("document_webhook", "document_callback_url")):
+			stored = notes.get(key) if isinstance(notes.get(key), dict) else {}
+			stored_id = str(
+				stored.get("transactionId") or stored.get("id") or stored.get("callbackId") or ""
+			).strip()
+			if stored_id and stored_id == callback_id:
+				notes.pop(key, None)
+				notes.pop(url_key, None)
+				changed = True
+		if not changed:
+			return
 		self.carrier_doc.db_set("notes", frappe.as_json(notes, indent=2), update_modified=False)
 		self._config = notes
 

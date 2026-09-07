@@ -1,7 +1,7 @@
 # Copyright (c) 2026, LTL Quote and contributors
 # For license information, please see license.txt
 
-"""Inbound carrier webhooks (SMC3 Status Push)."""
+"""Inbound carrier webhooks (SMC3 Status and Document Push)."""
 
 from __future__ import annotations
 
@@ -78,6 +78,48 @@ def smc3_status_update(**kwargs):
 		return _http(500, {"status": "error", "message": "Unable to process SMC3 status update."})
 
 
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def smc3_document_update(**kwargs):
+	"""Receive an SMC3 Document webhook and attach the matching shipment file.
+
+	Expected JSON (SMC3 Document Push)::
+
+	    {
+	        "scac": "CNWY",
+	        "documentType": "POD",
+	        "fileType": "PDF",
+	        "referenceNumbers": {"bol": "...", "proNumber": "..."}
+	    }
+
+	When the payload has no binary, the Document API is pulled for BL/POD/DR/INV/WC.
+	"""
+	try:
+		payload = _request_payload(kwargs)
+		parsed = parse_document_payload(payload)
+		if not parsed["bol"] and not parsed["pro"]:
+			return _http(400, {"status": "error", "message": "BOL or PRO number is required."})
+
+		shipment_name, quote_name = _find_quote_documents(parsed["bol"], parsed["pro"])
+		if not shipment_name:
+			return _http(404, {"status": "error", "message": "Shipment not found."})
+
+		result = _apply_document_update(
+			shipment_name=shipment_name,
+			quote_name=quote_name,
+			parsed=parsed,
+			payload=payload,
+		)
+		return _http(200, result)
+	except frappe.DoesNotExistError:
+		return _http(404, {"status": "error", "message": "Shipment not found."})
+	except frappe.ValidationError as exc:
+		return _http(400, {"status": "error", "message": str(exc) or "Invalid SMC3 document notification."})
+	except Exception:
+		frappe.db.rollback()
+		frappe.log_error(title="SMC3 Document Webhook", message=frappe.get_traceback())
+		return _http(500, {"status": "error", "message": "Unable to process SMC3 document update."})
+
+
 def _http(status_code: int, body: dict) -> dict:
 	frappe.local.response["http_status_code"] = int(status_code)
 	return body
@@ -143,6 +185,39 @@ def _parse_status_payload(payload: dict) -> dict:
 		"bol": str(bol or "").strip(),
 		"pro": str(pro or "").strip(),
 		"status": status,
+	}
+
+
+def parse_document_payload(payload: dict) -> dict:
+	"""Normalize an SMC3 Document notification into lookup + attach fields."""
+	from ltl_quote.api.smc3 import DOCUMENT_TYPES
+	from ltl_quote.carrier_network.adapters.smc3 import allowed_document_types_text
+
+	base = _parse_status_payload(payload)
+	raw = payload if isinstance(payload, dict) else {}
+	document_type = str(
+		raw.get("documentType")
+		or raw.get("document_type")
+		or raw.get("type")
+		or ""
+	).strip().upper()
+	if document_type in {"ALL", "*"}:
+		document_types = [code for code in DOCUMENT_TYPES if code != "BL"]
+	elif document_type in DOCUMENT_TYPES:
+		document_types = [document_type]
+	elif not document_type:
+		document_types = ["POD"]
+	else:
+		frappe.throw(f"Unsupported SMC3 document type: {document_type}. Use {allowed_document_types_text()}.")
+
+	file_type = str(raw.get("fileType") or raw.get("file_type") or "PDF").strip().upper() or "PDF"
+	if file_type not in {"PDF", "PNG"}:
+		file_type = "PDF"
+	return {
+		**base,
+		"document_type": document_types[0],
+		"document_types": document_types,
+		"file_type": file_type,
 	}
 
 
@@ -249,6 +324,106 @@ def _apply_status_update(*, shipment_name: str | None, quote_name: str | None, p
 		"quote": updated_quote,
 		"carrier_status": description or mapped_status or status_code,
 		"mapped_status": mapped_status,
+	}
+
+
+def _apply_document_update(*, shipment_name: str | None, quote_name: str | None, parsed: dict, payload: dict) -> dict:
+	from ltl_quote.api.smc3 import _attach_smc3_document
+	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter, _document_label
+	from ltl_quote.carrier_network.smc3_bol import extract_bol_pdf, extract_bol_png_images, is_usable_pdf, quote_data_from_shipment
+
+	if not shipment_name or not frappe.db.exists("LTL Shipment", shipment_name):
+		frappe.throw(_("Shipment not found."), frappe.DoesNotExistError)
+
+	doc = frappe.get_doc("LTL Shipment", shipment_name)
+	file_type = str(parsed.get("file_type") or "PDF").strip().upper() or "PDF"
+	document_types = list(parsed.get("document_types") or [parsed.get("document_type") or "POD"])
+	attached = []
+	errors = []
+
+	raw_pdf = str(payload.get("document_binary") or payload.get("documentBinary") or "").strip()
+	payload_binary = {
+		"document_binary": extract_bol_pdf(payload) or (raw_pdf if is_usable_pdf(raw_pdf) else ""),
+		"images": extract_bol_png_images(payload) if file_type != "PDF" else [],
+		"pro_number": parsed.get("pro") or doc.pro_number,
+		"bol_number": parsed.get("bol") or doc.bol_number,
+		"scac": parsed.get("scac") or "",
+	}
+	has_binary = bool(
+		payload_binary["document_binary"] if file_type == "PDF" else payload_binary["images"]
+	)
+
+	adapter = None
+	quote_data = quote_data_from_shipment(doc)
+	if parsed.get("pro"):
+		quote_data["pro_number"] = parsed["pro"]
+	if parsed.get("scac") and parsed["scac"] not in {"SMC3", "SMC"}:
+		quote_data["quoted_scac"] = parsed["scac"]
+
+	for document_type in document_types:
+		document_type = str(document_type or "").strip().upper()
+		if not document_type:
+			continue
+		try:
+			if has_binary and len(document_types) == 1:
+				result = {**payload_binary, "status": "success", "document_type": document_type, "file_type": file_type}
+			else:
+				if adapter is None:
+					adapter = SMC3CarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier) if doc.carrier else None)
+				result = adapter.get_document(
+					doc,
+					quote_data=quote_data,
+					document_type=document_type,
+					file_type=file_type,
+					raise_on_empty=False,
+				)
+			if result.get("status") != "success":
+				errors.append(result.get("message") or f"SMC3 {_document_label(document_type)} is not available yet.")
+				continue
+			saved = _attach_smc3_document(doc, result, document_type=document_type, file_type=file_type)
+			attached.append(
+				{
+					"document_type": document_type,
+					"file_type": file_type,
+					"file_url": saved.get("file_url") or "",
+					"pod_name": saved.get("pod_name") or "",
+					"message": saved.get("message") or "",
+				}
+			)
+			label = _document_label(document_type)
+			doc.add_comment(
+				"Comment",
+				f"SMC3 document update ({frappe.utils.escape_html(parsed.get('scac') or 'SMC3')}): "
+				f"{frappe.utils.escape_html(label)} attached.",
+			)
+		except Exception:
+			frappe.log_error(title="SMC3 Document Webhook Fetch", message=frappe.get_traceback())
+			errors.append(f"Unable to attach SMC3 {_document_label(document_type)}.")
+
+	if quote_name and frappe.db.exists("LTL Quote Request", quote_name) and attached:
+		quote = frappe.get_doc("LTL Quote Request", quote_name)
+		quote.add_comment(
+			"Comment",
+			f"SMC3 document update: {', '.join(row['document_type'] for row in attached)} attached.",
+		)
+
+	if not attached:
+		frappe.db.commit()
+		return {
+			"status": "ok",
+			"shipment": doc.name,
+			"quote": quote_name,
+			"documents": [],
+			"message": errors[0] if errors else "No SMC3 document was available yet.",
+		}
+
+	frappe.db.commit()
+	return {
+		"status": "ok",
+		"shipment": doc.name,
+		"quote": quote_name,
+		"documents": attached,
+		"message": attached[0]["message"] or "SMC3 document attached.",
 	}
 
 
