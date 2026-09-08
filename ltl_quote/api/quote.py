@@ -37,7 +37,7 @@ from ltl_quote.utils.location import enrich_location_fields, resolve_us_location
 from ltl_quote.utils.transaction_log import log_api_transaction
 
 
-@frappe.whitelist(allow_guest=False)
+@frappe.whitelist(allow_guest=True)
 def get_ltl_rates(payload=None, **kwargs):
 	"""
 	FLOWWOLF Unified Multi-Carrier Rating API
