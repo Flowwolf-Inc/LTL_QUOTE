@@ -17,7 +17,15 @@ import json
 import frappe
 from frappe.utils import add_days, flt, getdate, now_datetime
 
-from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
+from ltl_quote.api.carrier_mapping import (
+	applied_filter_ids,
+	apply_carrier_response_filter,
+	extract_requested_carriers,
+	load_carrier_for_rating,
+	load_carriers_for_rating,
+	parse_carrier_tokens,
+	resolve_carrier_id,
+)
 from ltl_quote.api.payload import parse_rating_payload
 from ltl_quote.api.quote import (
 	_build_shipment_request_from_payload,
@@ -65,14 +73,27 @@ def get_rates(payload=None, **kwargs):
 
 		shipment_request = _build_shipment_request_from_payload(request)
 
-		raw_preference = request.get("carrier_preference") or ""
-		carrier_id = resolve_carrier_id(raw_preference) if raw_preference else None
-		carrier_docs, _ = load_carrier_for_rating(carrier_id)
+		raw_preference = request.get("carrier_preference") or body.get("carrier_preference") or ""
+		raw_carriers = extract_requested_carriers(request, body, kwargs)
+		carrier_docs, filter_warnings, available_carriers = load_carriers_for_rating(
+			requested=raw_carriers,
+			carrier_preference=raw_preference,
+		)
+		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
+		applied_filter = applied_filter_ids(carrier_docs)
+		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None
 
 		quote_request = _create_quote_request({**request, "save_request": request.get("save_request", True)})
 		aggregated_quotes, errors = _broadcast_carrier_rates(carrier_docs, shipment_request)
 		_persist_carrier_quotes(quote_request, aggregated_quotes, errors)
 		ranked_quotes = rank_quotes(aggregated_quotes)
+		ranked_quotes, errors = apply_carrier_response_filter(
+			ranked_quotes,
+			errors,
+			carrier_docs,
+			filter_active,
+			filter_warnings,
+		)
 
 		recommendations = _build_flowwolf_recommendations(ranked_quotes)
 		response_payload = {
@@ -90,6 +111,9 @@ def get_rates(payload=None, **kwargs):
 				"weight": shipment_request.total_weight,
 				"freight_class": shipment_request.freight_class,
 				"quotes": ranked_quotes,
+				"errors": errors,
+				"available_carriers": available_carriers,
+				"applied_filter": applied_filter,
 			},
 			"errors": errors,
 			"recommendations": recommendations,

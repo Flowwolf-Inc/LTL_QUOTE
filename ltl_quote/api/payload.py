@@ -106,6 +106,24 @@ def _coerce_payload(payload: dict | str | None, kwargs: dict) -> dict:
 			for key, value in nested.items():
 				data.setdefault(key, value)
 
+	# Frappe drops query args from form_dict when Content-Type is application/json.
+	req = getattr(frappe, "request", None)
+	query = getattr(req, "args", None) if req is not None else None
+	if query is not None:
+		keys = list(query.keys()) if hasattr(query, "keys") else []
+		getlist = getattr(query, "getlist", None)
+		for key in keys:
+			if key in SKIP_KEYS:
+				continue
+			if callable(getlist):
+				values = [v for v in getlist(key) if v not in (None, "")]
+				value = values[0] if len(values) == 1 else values if values else None
+			else:
+				value = query.get(key)
+			if value in (None, ""):
+				continue
+			data.setdefault(key, value)
+
 	return data
 
 

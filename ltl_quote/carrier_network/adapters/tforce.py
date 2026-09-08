@@ -19,7 +19,7 @@ from ltl_quote.api.payload import (
 	apply_default_handling_dimensions,
 	apply_line_item_freight_class,
 	default_handling_dimensions,
-	format_freight_class_float,
+	freight_class_lookup_key,
 	line_item_freight_class,
 )
 from ltl_quote.carrier_network.accessorials import (
@@ -1299,10 +1299,9 @@ class TForceCarrierAdapter(BaseCarrierAdapter):
 
 		weight_val = flt(item.get("weight") or 0)
 		pieces = max(cint(item.get("pieces") or item.get("qty") or item.get("quantity") or 1), 1)
-		freight_class = line_item_freight_class(item)
-		try:
-			freight_class = format_freight_class_float(freight_class)
-		except ValueError:
+		# TForce Rating API: commodities[].class is a string enum ("70", "77.5"), not a number.
+		freight_class = freight_class_lookup_key(line_item_freight_class(item))
+		if not freight_class:
 			frappe.throw("Missing Freight Class for Row #1", frappe.ValidationError)
 		hazmat = bool(
 			item.get("dangerousGoods")

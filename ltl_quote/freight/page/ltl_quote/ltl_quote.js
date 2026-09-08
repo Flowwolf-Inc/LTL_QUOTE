@@ -214,7 +214,7 @@ const NAV_SECTIONS = [
 	{
 		title: "SETTINGS",
 		items: [
-			{ label: "LTL Carrier", icon: "fa fa-users", view: "carriers" },
+			{ label: "Quote Source", icon: "fa fa-users", view: "carriers" },
 			{ label: "Accessorials", icon: "fa fa-tags", view: "accessorials" },
 		],
 	},
@@ -261,7 +261,7 @@ const LIST_VIEWS = {
 	},
 	carriers: {
 		doctype: "LTL Carrier",
-		title: "LTL Carrier",
+		title: "Quote Source",
 		sub: "Configured carriers and their integrations.",
 		icon: "fa fa-users",
 		fields: ["name", "carrier_code", "carrier_name", "scac", "connector_type", "reliability_score", "enabled"],
@@ -402,6 +402,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.packaging_type_options = [];
 		this.shipping_class_options = FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
 		this.state_province_options = [];
+		this.available_carriers = [];
 		this.acc_options = {
 			pickup: PICKUP_ACCESSORIALS,
 			delivery: DELIVERY_ACCESSORIALS,
@@ -538,38 +539,38 @@ ltl_quote.Dashboard = class Dashboard {
 			{
 				id: "theme-1",
 				label: __("Coming soon"),
-				icon: `/assets/ltl_quote/images/theme-icon-01.png?v=${v}`,
+				icon: `/assets/ltl_quote/image/theme-01.png?v=${v}`,
 				enabled: false,
 			},
 			{
 				id: "theme-2",
 				label: __("Coming soon"),
-				icon: `/assets/ltl_quote/images/theme-icon-02.png?v=${v}`,
+				icon: `/assets/ltl_quote/image/theme-02.png?v=${v}`,
 				enabled: false,
 			},
 			{
 				id: "compact-purple",
-				label: __("Compact Purple"),
-				icon: `/assets/ltl_quote/images/theme-icon-compact-purple.png?v=${v}`,
+				label: __("Purple Theme"),
+				icon: `/assets/ltl_quote/image/purple-theme.png?v=${v}`,
 				enabled: true,
 			},
 			{
 				id: "theme-4",
 				label: __("Coming soon"),
-				icon: `/assets/ltl_quote/images/theme-icon-04.png?v=${v}`,
+				icon: `/assets/ltl_quote/image/theme-04.png?v=${v}`,
 				enabled: false,
 			},
 		];
 	}
 
 	theme_icon_version() {
-		return "4";
+		return "5";
 	}
 
 	theme_icon_url(theme_id) {
 		const theme = this.available_themes().find((item) => item.id === theme_id);
 		if (theme && theme.icon) return theme.icon;
-		return `/assets/ltl_quote/images/theme-icon-compact-purple.png?v=${this.theme_icon_version()}`;
+		return `/assets/ltl_quote/image/purple-theme.png?v=${this.theme_icon_version()}`;
 	}
 
 	default_theme() {
@@ -595,7 +596,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const label = (this.available_themes().find((item) => item.id === id) || {}).label || __("Theme");
 		this.body.attr("data-ltl-theme", id);
 		this.body.find(".ltl-theme-btn-icon").attr({
-			src: id === "compact-purple" ? `/assets/ltl_quote/images/theme-trigger.png?v=${this.theme_icon_version()}` : icon,
+			src: icon,
 			alt: label,
 		});
 		this.body.find(".ltl-theme-btn").attr("aria-label", __("Theme: {0}", [label]));
@@ -613,10 +614,7 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_theme_picker() {
 		const current = this.normalize_theme(this.saved_theme());
-		const current_icon =
-			current === "compact-purple"
-				? `/assets/ltl_quote/images/theme-trigger.png?v=${this.theme_icon_version()}`
-				: this.theme_icon_url(current);
+		const current_icon = this.theme_icon_url(current);
 		const current_label = (this.available_themes().find((item) => item.id === current) || {}).label || __("Theme");
 		const options = this.available_themes()
 			.map((theme) => {
@@ -804,6 +802,142 @@ ltl_quote.Dashboard = class Dashboard {
 		return `<option value="" selected>Select class</option>${options}`;
 	}
 
+	default_carrier_filter_options() {
+		return [
+			{ id: "SMC3", name: "SMC3" },
+			{ id: "DAYTON", name: "Dayton Freight" },
+			{ id: "TFORCE", name: "TForce Freight" },
+			{ id: "ARCB", name: "ArcBest" },
+		];
+	}
+
+	carrier_filter_rows() {
+		return this.available_carriers && this.available_carriers.length
+			? this.available_carriers
+			: this.default_carrier_filter_options();
+	}
+
+	carrier_filter_options_html(selected_ids) {
+		const selected = new Set((selected_ids || []).map(String));
+		return this.carrier_filter_rows()
+			.map((c) => {
+				const raw_id = String(c.id || c.name || "");
+				const raw_name = String(c.name || c.id || "");
+				if (!raw_id) return "";
+				const id = frappe.utils.escape_html(raw_id);
+				const name = frappe.utils.escape_html(raw_name);
+				const checked = selected.has(raw_id) ? "checked" : "";
+				const active = selected.has(raw_id) ? " is-checked" : "";
+				return `<label class="ltl-ms-option${active}">
+					<input type="checkbox" value="${id}" ${checked} />
+					<span class="ltl-ms-option-name">${name}</span>
+				</label>`;
+			})
+			.join("");
+	}
+
+	render_carrier_filter(field) {
+		return `
+			<div class="ltl-field ltl-field-carriers">
+				<label>${__("Source")}</label>
+				<div class="ltl-ms" data-field="${field}">
+					<button type="button" class="ltl-ms-toggle" data-action="toggle-carriers" aria-haspopup="listbox" aria-expanded="false">
+						<span class="ltl-ms-summary">
+							<span class="ltl-ms-placeholder">${__("All enabled carriers")}</span>
+						</span>
+						<i class="fa fa-chevron-down ltl-ms-caret"></i>
+					</button>
+					<div class="ltl-ms-panel">
+						<div class="ltl-ms-options">
+							${this.carrier_filter_options_html()}
+						</div>
+					</div>
+				</div>
+				<div class="ltl-field-hint">${__("Leave empty to quote all enabled carriers.")}</div>
+			</div>`;
+	}
+
+	carrier_ms(field) {
+		return this.body.find(`.ltl-ms[data-field='${field}']`);
+	}
+
+	selected_carriers_from(field) {
+		const ids = [];
+		this.carrier_ms(field)
+			.find(".ltl-ms-option input:checked")
+			.each(function () {
+				const value = ($(this).val() || "").trim();
+				if (value) ids.push(value);
+			});
+		return ids;
+	}
+
+	selected_carriers() {
+		const field = this.expanded ? "exp_carriers" : "carriers";
+		return this.selected_carriers_from(field);
+	}
+
+	update_carrier_filter_summary($ms) {
+		if (!$ms || !$ms.length) return;
+		const chips = [];
+		$ms.find(".ltl-ms-option input:checked").each(function () {
+			const id = ($(this).val() || "").trim();
+			if (!id) return;
+			const name = (
+				$(this).closest(".ltl-ms-option").find(".ltl-ms-option-name").text() || id
+			).trim();
+			const safe_id = frappe.utils.escape_html(id);
+			chips.push(`<span class="ltl-ms-chip" data-carrier-id="${safe_id}">
+				${frappe.utils.escape_html(name)}
+				<button type="button" class="ltl-ms-chip-remove" data-carrier-id="${safe_id}" aria-label="${frappe.utils.escape_html(
+				__("Remove {0}", [name])
+			)}"><i class="fa fa-times"></i></button>
+			</span>`);
+		});
+		$ms.find(".ltl-ms-summary").html(
+			chips.length
+				? chips.join("")
+				: `<span class="ltl-ms-placeholder">${__("All enabled carriers")}</span>`
+		);
+	}
+
+	set_carrier_selection(ids) {
+		const selected = new Set((ids || []).map(String));
+		["carriers", "exp_carriers"].forEach((field) => {
+			const $ms = this.carrier_ms(field);
+			$ms.find(".ltl-ms-option input").each(function () {
+				const checked = selected.has(($(this).val() || "").trim());
+				$(this).prop("checked", checked);
+				$(this).closest(".ltl-ms-option").toggleClass("is-checked", checked);
+			});
+			this.update_carrier_filter_summary($ms);
+		});
+	}
+
+	open_carrier_filter($ms) {
+		if (!$ms || !$ms.length) return;
+		$ms.addClass("is-open");
+		$ms.find(".ltl-ms-toggle").attr("aria-expanded", "true");
+	}
+
+	close_carrier_filter_menus() {
+		this.body.find(".ltl-ms.is-open").removeClass("is-open");
+		this.body.find(".ltl-ms-toggle").attr("aria-expanded", "false");
+	}
+
+	refresh_carrier_filter_options(available) {
+		if (!available || !available.length) return;
+		this.available_carriers = available;
+		const selected = this.selected_carriers();
+		const html = this.carrier_filter_options_html(selected);
+		["carriers", "exp_carriers"].forEach((field) => {
+			const $ms = this.carrier_ms(field);
+			if (!$ms.length) return;
+			$ms.find(".ltl-ms-options").html(html);
+			this.update_carrier_filter_summary($ms);
+		});
+	}
+
 	accessorial_boxes(list, group) {
 		return list
 			.map(
@@ -863,6 +997,9 @@ ltl_quote.Dashboard = class Dashboard {
 						<label>Freight Class${req}</label>
 						<select class="ltl-input" data-field="freight_class">${this.freight_options()}</select>
 					</div>
+				</div>
+				<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+					${this.render_carrier_filter("carriers")}
 				</div>
 			</div>`;
 	}
@@ -939,6 +1076,9 @@ ltl_quote.Dashboard = class Dashboard {
 						<label>Freight Class <span class="req">*</span></label>
 						<select class="ltl-input" data-field="exp_freight_class">${this.freight_options()}</select>
 					</div>
+				</div>
+				<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+					${this.render_carrier_filter("exp_carriers")}
 				</div>
 				<div class="ltl-collapse-card ltl-load-acc-card" style="margin-top:18px;">
 					<div class="ltl-collapse-head" data-action="toggle-load-acc">
@@ -1377,6 +1517,32 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 		this.body.on("keydown", ".ltl-theme-btn, .ltl-theme-option", (e) => {
 			if (e.key === "Escape") this.close_theme_menu();
+		});
+
+		this.body.on("click", "[data-action='toggle-carriers']", (e) => {
+			if ($(e.target).closest(".ltl-ms-chip-remove").length) return;
+			e.preventDefault();
+			e.stopPropagation();
+			const $ms = $(e.currentTarget).closest(".ltl-ms");
+			const opening = !$ms.hasClass("is-open");
+			this.close_carrier_filter_menus();
+			if (opening) this.open_carrier_filter($ms);
+		});
+		this.body.on("click", ".ltl-ms-chip-remove", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).attr("data-carrier-id");
+			this.set_carrier_selection(this.selected_carriers().filter((value) => value !== id));
+		});
+		this.body.on("change", ".ltl-ms-option input", (e) => {
+			const $ms = $(e.currentTarget).closest(".ltl-ms");
+			this.set_carrier_selection(this.selected_carriers_from($ms.attr("data-field")));
+		});
+		this.body.on("click", (e) => {
+			if (!$(e.target).closest(".ltl-ms").length) this.close_carrier_filter_menus();
+		});
+		this.body.on("keydown", ".ltl-ms-toggle, .ltl-ms-option input", (e) => {
+			if (e.key === "Escape") this.close_carrier_filter_menus();
 		});
 
 		this.body.on("click", "[data-action='fetch']", () => this.fetch_rates());
@@ -1960,6 +2126,9 @@ ltl_quote.Dashboard = class Dashboard {
 				set(collapsed, get(expanded));
 			}
 		});
+		this.set_carrier_selection(
+			this.selected_carriers_from(to_expanded ? "carriers" : "exp_carriers")
+		);
 	}
 
 	collect_payload() {
@@ -2045,6 +2214,11 @@ ltl_quote.Dashboard = class Dashboard {
 			}
 		}
 
+		const carriers = this.selected_carriers();
+		if (carriers.length) {
+			payload.carriers = carriers;
+		}
+
 		return payload;
 	}
 
@@ -2073,6 +2247,7 @@ ltl_quote.Dashboard = class Dashboard {
 			callback: (r) => {
 				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
 				const res = r.message || {};
+				this.refresh_carrier_filter_options((res.data || {}).available_carriers);
 				if (res.status !== "success" || !res.data || !(res.data.quotes || []).length) {
 					const err = (res.errors && res.errors.length && (res.errors[0].error || res.errors[0])) || res.error;
 					this.quotes = [];
@@ -4752,6 +4927,8 @@ ltl_quote.Dashboard = class Dashboard {
 			this.value = "";
 		});
 		this.body.find("input[data-acc]").prop("checked", false);
+		this.set_carrier_selection([]);
+		this.close_carrier_filter_menus();
 		this.line_items = [];
 		this.refresh_line_items_table();
 		this.quotes = [];

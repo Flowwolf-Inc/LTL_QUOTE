@@ -11,7 +11,14 @@ import json
 import frappe
 from frappe.utils import cint, flt, now_datetime
 
-from ltl_quote.api.carrier_mapping import load_carrier_for_rating, resolve_carrier_id
+from ltl_quote.api.carrier_mapping import (
+	applied_filter_ids,
+	apply_carrier_response_filter,
+	extract_requested_carriers,
+	load_carriers_for_rating,
+	parse_carrier_tokens,
+	resolve_carrier_id,
+)
 from ltl_quote.api.payload import apply_default_handling_dimensions, default_handling_dimensions, line_item_freight_class, parse_rating_payload
 from ltl_quote.api.shipping import ensure_shipping_class
 from ltl_quote.carrier_network.accessorials import build_accessorial_items_from_payload
@@ -41,6 +48,7 @@ def get_ltl_rates(payload=None, **kwargs):
 	Request body (JSON):
 	    {
 	        "carrier_preference": "Dayton Freight",
+	        "carriers": ["SMC3", "Dayton"],
 	        "origin_zip": "45414",
 	        "destination_zip": "60601",
 	        "accessorial_codes": ["LIFTGATE", "RESIDENTIAL"],
@@ -60,7 +68,7 @@ def get_ltl_rates(payload=None, **kwargs):
 
 	status = "Queued"
 	response_payload = {}
-	carrier_id = "DAYTON" if "Dayton" in body.get("carrier_preference", "") else "MOCK"
+	carrier_id = "DAYTON" if "Dayton" in str(body.get("carrier_preference") or "") else "MOCK"
 
 	try:
 		request = parse_rating_payload(payload or body, **kwargs)
@@ -69,18 +77,22 @@ def get_ltl_rates(payload=None, **kwargs):
 				request[field] = str(body[field]).strip()
 		body = {**body, **request}
 
-		raw_preference = request.get("carrier_preference") or ""
-		if raw_preference:
-			carrier_id = resolve_carrier_id(raw_preference) or carrier_id
-		else:
-			carrier_id = None
+		raw_preference = request.get("carrier_preference") or body.get("carrier_preference") or ""
+		raw_carriers = extract_requested_carriers(request, body, kwargs)
+		carrier_docs, filter_warnings, available_carriers = load_carriers_for_rating(
+			requested=raw_carriers,
+			carrier_preference=raw_preference,
+		)
+		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
+		applied_filter = applied_filter_ids(carrier_docs)
+		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None
 
-		carrier_docs, _log_label = load_carrier_for_rating(carrier_id)
-		if carrier_id and carrier_id != "MOCK":
+		if len(carrier_docs) == 1:
 			carrier_doc = carrier_docs[0]
-			body["carrier_id"] = carrier_doc.name
-			body["carrier_code"] = carrier_doc.carrier_code
-			body["carrier_name"] = carrier_doc.carrier_name
+			if getattr(carrier_doc, "name", None) != "MOCK":
+				body["carrier_id"] = carrier_doc.name
+				body["carrier_code"] = getattr(carrier_doc, "carrier_code", None)
+				body["carrier_name"] = getattr(carrier_doc, "carrier_name", None)
 
 		quote_request = _create_quote_request(request)
 
@@ -88,7 +100,7 @@ def get_ltl_rates(payload=None, **kwargs):
 
 		aggregator = RateAggregator(
 			quote_request,
-			carrier_ids=[carrier_id] if carrier_id else None,
+			carrier_ids=applied_filter or None,
 			shipment_request=shipment_request,
 		)
 		aggregator.resolved_carriers = carrier_docs
@@ -96,8 +108,14 @@ def get_ltl_rates(payload=None, **kwargs):
 		ranked_quotes = rank_quotes(aggregation.get("raw_quotes") or [])
 
 		errors = _public_rate_errors(aggregation.get("errors") or [])
-
 		_enrich_ranked_quotes_from_doc(quote_request, ranked_quotes)
+		ranked_quotes, errors = apply_carrier_response_filter(
+			ranked_quotes,
+			errors,
+			carrier_docs,
+			filter_active,
+			filter_warnings,
+		)
 
 		api_status = "success" if ranked_quotes else "error"
 		response_payload = {
@@ -115,6 +133,9 @@ def get_ltl_rates(payload=None, **kwargs):
 				"weight": request["total_weight"],
 				"freight_class": request["freight_class"],
 				"quotes": ranked_quotes,
+				"errors": errors,
+				"available_carriers": available_carriers,
+				"applied_filter": applied_filter,
 			},
 			"errors": errors,
 			"recommendations": aggregation.get("recommendations") or {},
