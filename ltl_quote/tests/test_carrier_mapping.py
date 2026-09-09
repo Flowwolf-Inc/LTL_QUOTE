@@ -93,3 +93,20 @@ class TestLoadCarriersForRating(unittest.TestCase):
 		)
 		self.assertEqual([doc.name for doc in docs], ["SMC3"])
 		self.assertEqual(warnings, [])
+
+	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=[])
+	def test_empty_enabled_returns_no_docs_or_available(self, _mock_enabled):
+		from ltl_quote.api.carrier_mapping import (
+			NO_ENABLED_CARRIERS_MESSAGE,
+			enabled_carrier_options,
+			require_enabled_carriers,
+		)
+
+		docs, warnings, available = load_carriers_for_rating(requested=None)
+		self.assertEqual(docs, [])
+		self.assertEqual(warnings, [])
+		self.assertEqual(available, [])
+		self.assertEqual(enabled_carrier_options(), [])
+		with patch("ltl_quote.api.carrier_mapping.frappe.throw") as throw:
+			require_enabled_carriers(available)
+			throw.assert_called_once_with(NO_ENABLED_CARRIERS_MESSAGE)

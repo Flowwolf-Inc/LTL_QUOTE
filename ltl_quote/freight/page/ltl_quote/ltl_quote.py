@@ -51,6 +51,14 @@ def get_accessorial_options() -> dict:
 
 
 @frappe.whitelist()
+def get_enabled_carrier_options() -> list[dict]:
+	"""Enabled LTL Carriers for the quote Source dropdown."""
+	from ltl_quote.api.carrier_mapping import enabled_carrier_options
+
+	return enabled_carrier_options()
+
+
+@frappe.whitelist()
 def get_dayton_accessorial_extras(side: str = "pickup") -> list[dict]:
 	"""Unique Dayton catalog options for Origin (pickup) / Destination (delivery) extras.
 

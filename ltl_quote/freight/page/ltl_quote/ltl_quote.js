@@ -403,6 +403,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.shipping_class_options = FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
 		this.state_province_options = [];
 		this.available_carriers = [];
+		this.carriers_loaded = false;
 		this.acc_options = {
 			pickup: PICKUP_ACCESSORIALS,
 			delivery: DELIVERY_ACCESSORIALS,
@@ -426,6 +427,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.load_packaging_type_options();
 		this.load_shipping_class_options();
 		this.load_state_province_options();
+		this.load_enabled_carrier_options();
 		this.load_dayton_accessorial_extras();
 	}
 
@@ -448,6 +450,18 @@ ltl_quote.Dashboard = class Dashboard {
 		const host = this.body.find(`[data-dayton-extras='${od_side}']`);
 		if (!host.length) return;
 		host.html(this.render_dayton_extra_boxes(side, od_side));
+	}
+
+	load_enabled_carrier_options() {
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_enabled_carrier_options",
+			callback: (r) => {
+				this.refresh_carrier_filter_options(r.message || []);
+			},
+			error: () => {
+				this.refresh_carrier_filter_options([]);
+			},
+		});
 	}
 
 	load_packaging_type_options() {
@@ -811,7 +825,32 @@ ltl_quote.Dashboard = class Dashboard {
 		];
 	}
 
+	has_enabled_carriers() {
+		return Boolean(this.available_carriers && this.available_carriers.length);
+	}
+
+	no_enabled_carriers_message() {
+		return __("Enable at least one carrier to get quote rates.");
+	}
+
+	carrier_filter_placeholder() {
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			return this.no_enabled_carriers_message();
+		}
+		return __("All enabled carriers");
+	}
+
+	carrier_filter_hint() {
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			return this.no_enabled_carriers_message();
+		}
+		return __("Leave empty to quote all enabled carriers.");
+	}
+
 	carrier_filter_rows() {
+		if (this.carriers_loaded) {
+			return this.available_carriers || [];
+		}
 		return this.available_carriers && this.available_carriers.length
 			? this.available_carriers
 			: this.default_carrier_filter_options();
@@ -843,7 +882,7 @@ ltl_quote.Dashboard = class Dashboard {
 				<div class="ltl-ms" data-field="${field}">
 					<button type="button" class="ltl-ms-toggle" data-action="toggle-carriers" aria-haspopup="listbox" aria-expanded="false">
 						<span class="ltl-ms-summary">
-							<span class="ltl-ms-placeholder">${__("All enabled carriers")}</span>
+							<span class="ltl-ms-placeholder">${this.carrier_filter_placeholder()}</span>
 						</span>
 						<i class="fa fa-chevron-down ltl-ms-caret"></i>
 					</button>
@@ -853,7 +892,7 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 					</div>
 				</div>
-				<div class="ltl-field-hint">${__("Leave empty to quote all enabled carriers.")}</div>
+				<div class="ltl-field-hint">${this.carrier_filter_hint()}</div>
 			</div>`;
 	}
 
@@ -897,7 +936,7 @@ ltl_quote.Dashboard = class Dashboard {
 		$ms.find(".ltl-ms-summary").html(
 			chips.length
 				? chips.join("")
-				: `<span class="ltl-ms-placeholder">${__("All enabled carriers")}</span>`
+				: `<span class="ltl-ms-placeholder">${this.carrier_filter_placeholder()}</span>`
 		);
 	}
 
@@ -926,7 +965,8 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	refresh_carrier_filter_options(available) {
-		if (!available || !available.length) return;
+		if (!Array.isArray(available)) return;
+		this.carriers_loaded = true;
 		this.available_carriers = available;
 		const selected = this.selected_carriers();
 		const html = this.carrier_filter_options_html(selected);
@@ -935,6 +975,7 @@ ltl_quote.Dashboard = class Dashboard {
 			if (!$ms.length) return;
 			$ms.find(".ltl-ms-options").html(html);
 			this.update_carrier_filter_summary($ms);
+			$ms.closest(".ltl-field-carriers").find(".ltl-field-hint").text(this.carrier_filter_hint());
 		});
 	}
 
@@ -2237,6 +2278,11 @@ ltl_quote.Dashboard = class Dashboard {
 			return;
 		}
 
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			frappe.show_alert({ message: this.no_enabled_carriers_message(), indicator: "orange" }, 6);
+			return;
+		}
+
 		const $btn = this.body.find("[data-action='fetch']");
 		$btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin"></i> Fetching…');
 
@@ -2403,6 +2449,10 @@ ltl_quote.Dashboard = class Dashboard {
 
 	friendly_fetch_error(err) {
 		if (!err) return "";
+		const raw = String((err && err.error) || err || "");
+		if (/Enable at least one carrier/i.test(raw)) {
+			return this.no_enabled_carriers_message();
+		}
 		if (this.is_auth_rate_error(err)) {
 			return __("Could not refresh carrier rates. Please try again.");
 		}

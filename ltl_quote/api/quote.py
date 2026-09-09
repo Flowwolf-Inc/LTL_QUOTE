@@ -17,6 +17,7 @@ from ltl_quote.api.carrier_mapping import (
 	extract_requested_carriers,
 	load_carriers_for_rating,
 	parse_carrier_tokens,
+	require_enabled_carriers,
 	resolve_carrier_id,
 )
 from ltl_quote.api.payload import apply_default_handling_dimensions, default_handling_dimensions, line_item_freight_class, parse_rating_payload
@@ -83,6 +84,7 @@ def get_ltl_rates(payload=None, **kwargs):
 			requested=raw_carriers,
 			carrier_preference=raw_preference,
 		)
+		require_enabled_carriers(available_carriers)
 		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
 		applied_filter = applied_filter_ids(carrier_docs)
 		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None

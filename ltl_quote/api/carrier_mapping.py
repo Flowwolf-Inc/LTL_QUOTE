@@ -10,6 +10,8 @@ from typing import Any
 
 import frappe
 
+NO_ENABLED_CARRIERS_MESSAGE = "Enable at least one carrier to get quote rates."
+
 # User-facing aliases -> LTL Carrier.name (autoname = carrier_code)
 CARRIER_DOC_IDS = {
 	"DAYTON": "DAYTON",
@@ -275,6 +277,17 @@ def load_carriers_for_rating(requested=None, carrier_preference=None) -> tuple[l
 		resolved.append(doc)
 
 	return resolved, warnings, available
+
+
+def enabled_carrier_options() -> list[dict]:
+	"""Enabled LTL Carrier rows for the quote Source dropdown."""
+	return [_carrier_metadata(doc) for doc in (get_enabled_carriers() or [])]
+
+
+def require_enabled_carriers(available_carriers) -> None:
+	"""Raise when no LTL Carrier is enabled for rating."""
+	if not available_carriers:
+		frappe.throw(NO_ENABLED_CARRIERS_MESSAGE)
 
 
 def _carrier_metadata(doc) -> dict[str, str]:

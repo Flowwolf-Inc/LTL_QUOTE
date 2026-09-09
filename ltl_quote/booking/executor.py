@@ -105,8 +105,10 @@ class ShipmentExecutor:
 			"origin_contact_phone": getattr(self.quote_request, "contact_phone", None) or shipper["contact_phone"],
 			"contact_email": contact_email,
 			"origin_contact_email": contact_email,
-			"destination_contact_name": getattr(self.quote_request, "destination_contact_name", None),
-			"destination_contact_phone": getattr(self.quote_request, "destination_contact_phone", None),
+			"destination_contact_name": getattr(self.quote_request, "destination_contact_name", None)
+			or shipper["contact_name"],
+			"destination_contact_phone": getattr(self.quote_request, "destination_contact_phone", None)
+			or shipper["contact_phone"],
 			"destination_contact_email": getattr(
 				self.quote_request, "destination_contact_email", None
 			),

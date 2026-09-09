@@ -117,8 +117,8 @@ def build_bol_payload(quote_data: dict, *, is_test: bool, account: str, function
 		state=quote_data.get("destination_state"),
 		postal=quote_data.get("destination_zip"),
 		country=quote_data.get("destination_country"),
-		contact_name=quote_data.get("destination_contact_name"),
-		contact_phone=quote_data.get("destination_contact_phone"),
+		contact_name=quote_data.get("destination_contact_name") or quote_data.get("contact_name"),
+		contact_phone=quote_data.get("destination_contact_phone") or quote_data.get("contact_phone"),
 		party_label="Consignee",
 		is_test=is_test,
 	)

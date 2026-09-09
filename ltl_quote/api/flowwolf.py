@@ -24,6 +24,7 @@ from ltl_quote.api.carrier_mapping import (
 	load_carrier_for_rating,
 	load_carriers_for_rating,
 	parse_carrier_tokens,
+	require_enabled_carriers,
 	resolve_carrier_id,
 )
 from ltl_quote.api.payload import parse_rating_payload
@@ -79,6 +80,7 @@ def get_rates(payload=None, **kwargs):
 			requested=raw_carriers,
 			carrier_preference=raw_preference,
 		)
+		require_enabled_carriers(available_carriers)
 		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
 		applied_filter = applied_filter_ids(carrier_docs)
 		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None
@@ -756,6 +758,10 @@ def _book_quote_core(
 		_upsert_quote_request_line_items(quote_doc, items)
 		quote_doc.save(ignore_permissions=True)
 		quote_doc.reload()
+
+	wanted_quote_id = _normalize_carrier_quote_id(carrier_quote_id)
+	if wanted_quote_id:
+		_ensure_smc3_quote_line_for_id(quote_doc, wanted_quote_id)
 
 	if not quote_doc.carrier_quotes:
 		frappe.throw("No carrier quotes are available on this request. Fetch rates before booking.")
@@ -1606,6 +1612,124 @@ def _normalize_carrier_quote_id(carrier_quote_id: str | None) -> str | None:
 	return wanted
 
 
+def _parse_smc3_composite_quote_id(carrier_quote_id: str | None) -> dict | None:
+	"""Parse SMC3 aggregate IDs like ``DLDS|DYNAMIC|STND|sandbox-standin``."""
+	wanted = str(carrier_quote_id or "").strip()
+	if "|" not in wanted:
+		return None
+	parts = [part.strip() for part in wanted.split("|") if str(part).strip()]
+	if len(parts) < 2:
+		return None
+	scac = parts[0].upper()
+	if not scac.isalnum() or not (2 <= len(scac) <= 4):
+		return None
+	return {
+		"scac": scac,
+		"pricing_type": parts[1] if len(parts) > 1 else "",
+		"service_level": parts[2] if len(parts) > 2 else "",
+		"quote_id": parts[3] if len(parts) > 3 else "",
+		"raw": wanted,
+	}
+
+
+def _is_smc3_quote_row(row) -> bool:
+	carrier = str(getattr(row, "carrier", None) or "").strip().upper()
+	row_id = str(getattr(row, "carrier_quote_id", None) or "")
+	rate_source = str(getattr(row, "rate_source", None) or "").strip().upper()
+	return carrier == "SMC3" or rate_source == "SMC3" or "|" in row_id
+
+
+def _quote_line_matches_id(row, wanted_quote_id: str, carrier_id: str | None = None) -> bool:
+	if carrier_id and str(getattr(row, "carrier", None) or "") != carrier_id:
+		return False
+	wanted = str(wanted_quote_id or "").strip()
+	if not wanted:
+		return False
+	row_id = str(getattr(row, "carrier_quote_id", None) or "").strip()
+	if row_id == wanted:
+		return True
+	if row_id and row_id.lower() == wanted.lower():
+		return True
+	if row_id and row_id.replace("ABF-", "") == wanted.replace("ABF-", ""):
+		return True
+
+	parsed = _parse_smc3_composite_quote_id(wanted)
+	if not parsed or not _is_smc3_quote_row(row):
+		return False
+	row_scac = str(getattr(row, "quoted_scac", None) or "").strip().upper()
+	if row_id.upper().startswith(parsed["scac"] + "|"):
+		return True
+	if row_scac and row_scac == parsed["scac"]:
+		return True
+	return False
+
+
+def _smc3_carrier_doc_id() -> str | None:
+	if frappe.db.exists("LTL Carrier", "SMC3"):
+		return "SMC3"
+	return frappe.db.get_value("LTL Carrier", {"connector_type": "SMC3"}, "name")
+
+
+def _prior_smc3_quote_line_values(wanted_quote_id: str) -> dict:
+	return (
+		frappe.db.get_value(
+			"LTL Carrier Quote Line",
+			{"carrier_quote_id": wanted_quote_id},
+			["total_charge", "carrier_name", "transit_days", "service_level", "currency"],
+			as_dict=True,
+		)
+		or {}
+	)
+
+
+def _ensure_smc3_quote_line_for_id(quote_doc, wanted_quote_id: str) -> bool:
+	"""Attach an SMC3 network quote line when the payload uses a composite SCAC id.
+
+	Sandbox stand-in IDs (``DLDS|DYNAMIC|STND|sandbox-standin``) are valid booking
+	selectors even if this quote request was rated without SMC3 enabled.
+	"""
+	wanted = _normalize_carrier_quote_id(wanted_quote_id)
+	if not wanted:
+		return False
+	for row in quote_doc.carrier_quotes or []:
+		if _quote_line_matches_id(row, wanted):
+			return False
+
+	parsed = _parse_smc3_composite_quote_id(wanted)
+	if not parsed:
+		return False
+	smc3_id = _smc3_carrier_doc_id()
+	if not smc3_id:
+		return False
+
+	from ltl_quote.carrier_network.smc3_onboarded import carrier_display_name
+
+	prior = _prior_smc3_quote_line_values(wanted)
+	carrier_name = (
+		prior.get("carrier_name")
+		or carrier_display_name(parsed["scac"])
+		or parsed["scac"]
+	)
+	quote_doc.append(
+		"carrier_quotes",
+		{
+			"carrier": smc3_id,
+			"carrier_name": carrier_name,
+			"carrier_quote_id": wanted,
+			"quoted_scac": parsed["scac"],
+			"rate_source": "SMC3",
+			"status": "Received",
+			"service_level": prior.get("service_level") or parsed.get("service_level") or "Standard",
+			"total_charge": flt(prior.get("total_charge")) if prior else 0,
+			"transit_days": prior.get("transit_days"),
+			"currency": prior.get("currency") or getattr(quote_doc, "currency", None) or "USD",
+		},
+	)
+	quote_doc.save(ignore_permissions=True)
+	quote_doc.reload()
+	return True
+
+
 def _resolve_quote_row_index(
 	quote_doc,
 	carrier_code: str | None = None,
@@ -1618,14 +1742,7 @@ def _resolve_quote_row_index(
 	if wanted_quote_id:
 		matches = []
 		for idx, row in enumerate(quote_doc.carrier_quotes):
-			row_id = str(row.carrier_quote_id or "").strip()
-			if not row_id:
-				continue
-			if row_id == wanted_quote_id or row_id.replace("ABF-", "") == wanted_quote_id.replace(
-				"ABF-", ""
-			):
-				if carrier_id and row.carrier != carrier_id:
-					continue
+			if _quote_line_matches_id(row, wanted_quote_id, carrier_id):
 				matches.append(idx)
 		if len(matches) == 1:
 			if quote_row_idx is not None and int(quote_row_idx) != matches[0]:
