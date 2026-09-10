@@ -360,10 +360,29 @@ body.ltl-fullscreen .layout-side-section {
 	color: var(--ltl-muted);
 	font-size: 16px;
 }
+.ltl-user-picker {
+	position: relative;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+}
 .ltl-user {
+	appearance: none;
+	border: 0;
+	background: transparent;
+	padding: 0;
+	margin: 0;
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	cursor: pointer;
+	color: inherit;
+	font: inherit;
+	border-radius: 8px;
+}
+.ltl-user:focus-visible {
+	outline: 2px solid #6d5ef5;
+	outline-offset: 2px;
 }
 .ltl-avatar {
 	width: 30px;
@@ -379,6 +398,52 @@ body.ltl-fullscreen .layout-side-section {
 }
 .ltl-username {
 	font-weight: 600;
+}
+.ltl-user-menu {
+	display: none;
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	min-width: 168px;
+	background: #fff;
+	border: 1px solid var(--ltl-border, #e2e8f0);
+	border-radius: 12px;
+	box-shadow: 0 12px 28px rgba(28, 24, 55, 0.12);
+	padding: 6px;
+	z-index: 40;
+}
+.ltl-user-picker.is-open .ltl-user-menu {
+	display: block;
+}
+.ltl-user-menu-item {
+	appearance: none;
+	width: 100%;
+	border: 0;
+	background: transparent;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	cursor: pointer;
+	color: var(--ltl-text, #1e293b);
+	font-size: 13px;
+	font-weight: 600;
+	text-align: left;
+}
+.ltl-user-menu-item i {
+	width: 14px;
+	color: var(--ltl-muted, #64748b);
+}
+.ltl-user-menu-item:hover,
+.ltl-user-menu-item:focus-visible {
+	background: var(--ltl-orange-soft, #ede9fe);
+	color: var(--ltl-orange, #7c5cfc);
+	outline: none;
+}
+.ltl-user-menu-item:hover i,
+.ltl-user-menu-item:focus-visible i {
+	color: var(--ltl-orange, #7c5cfc);
 }
 .ltl-scroll {
 	flex: 1;
@@ -1313,12 +1378,23 @@ body.ltl-fullscreen .layout-side-section {
 	cursor: default;
 }
 
+.ltl-rate-action-cell {
+	white-space: nowrap;
+	width: 1%;
+}
 .ltl-rate-actions {
 	display: inline-flex;
+	flex-direction: row;
 	align-items: center;
-	gap: 6px;
-	flex-wrap: wrap;
+	gap: 8px;
+	flex-wrap: nowrap;
+	white-space: nowrap;
 	justify-content: flex-end;
+}
+.ltl-rate-actions .ltl-btn {
+	flex-shrink: 0;
+	white-space: nowrap;
+	padding: 7px 12px;
 }
 .ltl-rate-errors {
 	margin-top: 12px;

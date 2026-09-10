@@ -78,6 +78,12 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 			dash.open_quote_detail(name);
 			return;
 		}
+		if (view === "carriers" && dash.is_shipper_user()) {
+			dash.body.find(".ltl-nav-item").removeClass("active");
+			dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+			dash.show_view("quote");
+			return;
+		}
 		if (
 			view === "quote" ||
 			view === "quotes" ||
@@ -678,7 +684,73 @@ ltl_quote.Dashboard = class Dashboard {
 
 	toggle_theme_menu() {
 		if (this.theme_menu_open()) this.close_theme_menu();
-		else this.open_theme_menu();
+		else {
+			this.close_user_menu();
+			this.open_theme_menu();
+		}
+	}
+
+	render_user_menu() {
+		const fullname = frappe.session.user_fullname || frappe.session.user || __("User");
+		const initials = String(fullname)
+			.split(/\s+/)
+			.filter(Boolean)
+			.slice(0, 2)
+			.map((part) => part[0])
+			.join("")
+			.toUpperCase() || "U";
+		const display = initials.length === 1 ? String(fullname).slice(0, 2).toUpperCase() : initials;
+		return `
+			<div class="ltl-user-picker">
+				<button type="button" class="ltl-user" data-action="toggle-user-menu" aria-haspopup="menu" aria-expanded="false" aria-label="${frappe.utils.escape_html(
+					fullname
+				)}">
+					<span class="ltl-avatar">${frappe.utils.escape_html(display)}</span>
+					<span class="ltl-username">${frappe.utils.escape_html(fullname)}</span>
+				</button>
+				<div class="ltl-user-menu" role="menu">
+					<button type="button" class="ltl-user-menu-item" role="menuitem" data-action="logout">
+						<i class="fa fa-sign-out"></i>
+						${__("Log Out")}
+					</button>
+				</div>
+			</div>`;
+	}
+
+	user_menu_open() {
+		return this.body.find(".ltl-user-picker").hasClass("is-open");
+	}
+
+	open_user_menu() {
+		this.close_theme_menu();
+		this.body.find(".ltl-user-picker").addClass("is-open");
+		this.body.find(".ltl-user").attr("aria-expanded", "true");
+	}
+
+	close_user_menu() {
+		this.body.find(".ltl-user-picker").removeClass("is-open");
+		this.body.find(".ltl-user").attr("aria-expanded", "false");
+	}
+
+	toggle_user_menu() {
+		if (this.user_menu_open()) this.close_user_menu();
+		else this.open_user_menu();
+	}
+
+	logout_user() {
+		this.close_user_menu();
+		frappe.call({
+			method: "logout",
+			callback: (r) => {
+				if (r.exc) return;
+				if (frappe.app) frappe.app.logged_out = true;
+				if (frappe.app && typeof frappe.app.redirect_to_login === "function") {
+					frappe.app.redirect_to_login();
+					return;
+				}
+				window.location.href = "/login";
+			},
+		});
 	}
 
 	render() {
@@ -695,10 +767,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-topbar-right">
 							${this.render_theme_picker()}
 							<span class="ltl-bell"><i class="fa fa-bell-o"></i></span>
-							<span class="ltl-user">
-								<span class="ltl-avatar">${(frappe.session.user_fullname || "U").slice(0, 2).toUpperCase()}</span>
-								<span class="ltl-username">${frappe.utils.escape_html(frappe.session.user_fullname || frappe.session.user)}</span>
-							</span>
+							${this.render_user_menu()}
 						</div>
 					</div>
 					<div class="ltl-scroll">
@@ -751,9 +820,12 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	render_sidebar() {
+		const hide_quote_source = this.is_shipper_user();
 		const sections = NAV_SECTIONS.map((section) => {
+			const items = section.items.filter((item) => !(hide_quote_source && item.view === "carriers"));
+			if (!items.length) return "";
 			const title = section.title ? `<div class="ltl-nav-title">${section.title}</div>` : "";
-			const items = section.items
+			const links = items
 				.map((item) => {
 					const badge = item.badge ? `<span class="ltl-nav-badge">${item.badge}</span>` : "";
 					const active = item.active ? "active" : "";
@@ -765,7 +837,7 @@ ltl_quote.Dashboard = class Dashboard {
 						</a>`;
 				})
 				.join("");
-			return `<div class="ltl-nav-section">${title}${items}</div>`;
+			return `<div class="ltl-nav-section">${title}${links}</div>`;
 		}).join("");
 
 		return `
@@ -825,6 +897,15 @@ ltl_quote.Dashboard = class Dashboard {
 		];
 	}
 
+	is_shipper_user() {
+		const user = String(frappe.session.user || "");
+		if (!user || user === "Administrator" || user === "Guest") return false;
+		const roles =
+			(frappe.boot && frappe.boot.user && frappe.boot.user.roles) || frappe.user_roles || [];
+		if (roles.includes("Administrator")) return false;
+		return roles.includes("Shipper");
+	}
+
 	has_enabled_carriers() {
 		return Boolean(this.available_carriers && this.available_carriers.length);
 	}
@@ -876,6 +957,7 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	render_carrier_filter(field) {
+		if (this.is_shipper_user()) return "";
 		return `
 			<div class="ltl-field ltl-field-carriers">
 				<label>${__("Source")}</label>
@@ -1039,9 +1121,13 @@ ltl_quote.Dashboard = class Dashboard {
 						<select class="ltl-input" data-field="freight_class">${this.freight_options()}</select>
 					</div>
 				</div>
-				<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+				${
+					this.is_shipper_user()
+						? ""
+						: `<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
 					${this.render_carrier_filter("carriers")}
-				</div>
+				</div>`
+				}
 			</div>`;
 	}
 
@@ -1118,9 +1204,13 @@ ltl_quote.Dashboard = class Dashboard {
 						<select class="ltl-input" data-field="exp_freight_class">${this.freight_options()}</select>
 					</div>
 				</div>
-				<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+				${
+					this.is_shipper_user()
+						? ""
+						: `<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
 					${this.render_carrier_filter("exp_carriers")}
-				</div>
+				</div>`
+				}
 				<div class="ltl-collapse-card ltl-load-acc-card" style="margin-top:18px;">
 					<div class="ltl-collapse-head" data-action="toggle-load-acc">
 						<span><i class="fa fa-chevron-down ltl-chevron"></i> Load Based Accessorials</span>
@@ -1555,9 +1645,23 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 		this.body.on("click", (e) => {
 			if (!$(e.target).closest(".ltl-theme-picker").length) this.close_theme_menu();
+			if (!$(e.target).closest(".ltl-user-picker").length) this.close_user_menu();
 		});
 		this.body.on("keydown", ".ltl-theme-btn, .ltl-theme-option", (e) => {
 			if (e.key === "Escape") this.close_theme_menu();
+		});
+		this.body.on("click", "[data-action='toggle-user-menu']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggle_user_menu();
+		});
+		this.body.on("click", "[data-action='logout']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.logout_user();
+		});
+		this.body.on("keydown", ".ltl-user, .ltl-user-menu-item", (e) => {
+			if (e.key === "Escape") this.close_user_menu();
 		});
 
 		this.body.on("click", "[data-action='toggle-carriers']", (e) => {
@@ -2373,7 +2477,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<td>${base}</td>
 						<td>${acc}</td>
 						<td><span class="ltl-rating">${rating} <i class="fa fa-star"></i></span></td>
-						<td>${this.render_rate_action(q, idx)}</td>
+						<td class="ltl-rate-action-cell">${this.render_rate_action(q, idx)}</td>
 					</tr>`;
 			})
 			.join("");
@@ -2989,6 +3093,9 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	show_view(key) {
+		if (key === "carriers" && this.is_shipper_user()) {
+			key = "quote";
+		}
 		const is_quote = key === "quote";
 		const is_detail = key === "detail";
 		const is_line_item = key === "line-item";

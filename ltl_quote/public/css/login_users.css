@@ -1,0 +1,36 @@
+.for-login .ltl-login-users {
+	margin-bottom: 18px;
+}
+.ltl-login-users-label {
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--text-muted, #6b7280);
+	margin-bottom: 8px;
+}
+.ltl-login-user-grid {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 8px;
+}
+.ltl-login-user {
+	appearance: none;
+	border: 1px solid var(--border-color, #d1d5db);
+	background: #fff;
+	border-radius: 8px;
+	padding: 8px 6px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-color, #1f2937);
+	cursor: pointer;
+	line-height: 1.2;
+}
+.ltl-login-user:hover {
+	border-color: #111;
+}
+.ltl-login-user.is-selected {
+	border-color: #111;
+	background: #111;
+	color: #fff;
+}

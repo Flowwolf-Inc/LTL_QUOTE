@@ -24,6 +24,7 @@ def after_install():
 	_seed_carrier_accessorials()
 	_disable_mock_carriers()
 	_migrate_quote_currency()
+	_ensure_login_users()
 	frappe.db.commit()
 
 
@@ -34,6 +35,7 @@ def after_migrate():
 	_ensure_smc3_carrier()
 	_seed_carrier_accessorials()
 	_migrate_quote_currency()
+	_ensure_login_users()
 	frappe.db.commit()
 
 
@@ -293,6 +295,94 @@ def _disable_mock_carriers():
 		0,
 		update_modified=False,
 	)
+
+
+LOGIN_USERS = (
+	{
+		"email": "shipper@ltlquote.local",
+		"username": "Shipper",
+		"first_name": "Shipper",
+		"password": "Flowwolf@123",
+		"roles": ("Shipper", "System Manager"),
+	},
+	{
+		"email": "broker@ltlquote.local",
+		"username": "Broker",
+		"first_name": "Broker",
+		"password": "Flowwolf@1212",
+		"roles": ("Broker", "System Manager"),
+	},
+)
+
+
+def _ensure_login_users():
+	"""Create Shipper and Broker desk users and set Administrator password to admin."""
+	from frappe.utils.password import update_password
+
+	frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 1)
+
+	if frappe.db.exists("User", "Administrator"):
+		update_password("Administrator", "admin")
+
+	for role_name in ("Shipper", "Broker"):
+		if frappe.db.exists("Role", role_name):
+			continue
+		frappe.get_doc({"doctype": "Role", "role_name": role_name, "desk_access": 1}).insert(
+			ignore_permissions=True
+		)
+
+	for spec in LOGIN_USERS:
+		if frappe.db.exists("User", spec["email"]):
+			user = frappe.get_doc("User", spec["email"])
+		else:
+			user = frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": spec["email"],
+					"first_name": spec["first_name"],
+					"username": spec["username"],
+					"send_welcome_email": 0,
+					"user_type": "System User",
+					"new_password": spec["password"],
+				}
+			)
+			user.flags.ignore_password_policy = True
+			user.insert(ignore_permissions=True)
+
+		if (user.username or "") != spec["username"]:
+			user.username = spec["username"]
+		if user.enabled != 1:
+			user.enabled = 1
+		existing_roles = {row.role for row in user.roles}
+		for role in spec["roles"]:
+			if role not in existing_roles:
+				user.append("roles", {"role": role})
+		user.flags.ignore_password_policy = True
+		user.save(ignore_permissions=True)
+		update_password(user.name, spec["password"])
+
+	if frappe.db.exists("Page", "ltl-quote"):
+		page = frappe.get_doc("Page", "ltl-quote")
+		existing = {row.role for row in page.roles}
+		changed = False
+		for role in ("System Manager", "Shipper", "Broker"):
+			if role not in existing:
+				page.append("roles", {"role": role})
+				changed = True
+		if changed:
+			page.save(ignore_permissions=True)
+
+	head_snippet = (
+		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css">\n'
+		'<script src="/assets/ltl_quote/js/login_users.js"></script>'
+	)
+	head_html = frappe.db.get_single_value("Website Settings", "head_html") or ""
+	if "login_users.js" not in head_html:
+		frappe.db.set_single_value(
+			"Website Settings",
+			"head_html",
+			(head_html.rstrip() + "\n" + head_snippet).strip(),
+		)
 
 
 def _migrate_quote_currency():
