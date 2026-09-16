@@ -1834,23 +1834,16 @@ def _resolve_quote_row_index(
 
 def _read_request_context() -> tuple[dict, dict]:
 	headers = dict(frappe.request.headers) if getattr(frappe, "request", None) else {}
-	body: dict = {}
+	body = dict(read_request_json())
 
-	if getattr(frappe, "request", None):
-		if getattr(frappe.request, "json", None):
-			raw = frappe.request.json
+	if not body and getattr(frappe, "request", None) and frappe.request.data:
+		try:
+			raw = json.loads(frappe.request.data.decode("utf-8"))
 			if isinstance(raw, dict):
 				body = raw
-		elif frappe.request.data:
-			try:
-				raw = json.loads(frappe.request.data.decode("utf-8"))
-				if isinstance(raw, dict):
-					body = raw
-			except (ValueError, UnicodeDecodeError):
-				body = dict(frappe.local.form_dict)
-		else:
+		except (ValueError, UnicodeDecodeError):
 			body = dict(frappe.local.form_dict)
-	else:
+	elif not body:
 		body = dict(frappe.local.form_dict)
 
 	body.pop("cmd", None)

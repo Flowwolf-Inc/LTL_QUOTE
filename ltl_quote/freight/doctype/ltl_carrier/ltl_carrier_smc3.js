@@ -34,6 +34,29 @@ window.ltl_smc3_credentials = {
 
 frappe.ui.form.on("LTL Carrier", {
 	refresh(frm) {
+		if (!frm.is_new() && frm.doc.name) {
+			const name = frm.doc.name;
+			window.__ltl_open_carrier = name;
+			frappe.route_options = {
+				ltl_view: "carrier",
+				ltl_name: name,
+			};
+			frappe.set_route("ltl-quote");
+			const try_open = (attempt) => {
+				const page = frappe.pages && frappe.pages["ltl-quote"];
+				const dash = page && (page.ltl_dashboard || (page.wrapper && page.wrapper.ltl_dashboard));
+				if (dash && typeof dash.open_carrier_detail === "function") {
+					window.__ltl_open_carrier = null;
+					dash.open_carrier_detail(name);
+					return;
+				}
+				if (attempt < 40) {
+					setTimeout(() => try_open(attempt + 1), 150);
+				}
+			};
+			setTimeout(() => try_open(0), 50);
+			return;
+		}
 		window.ltl_smc3_credentials.bind(frm);
 	},
 });

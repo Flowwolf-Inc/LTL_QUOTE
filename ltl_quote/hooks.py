@@ -47,6 +47,7 @@ doctype_js = {
 	"LTL Quote Request": "freight/doctype/ltl_quote_request/ltl_quote_request.js",
 	"LTL Shipment": "freight/doctype/ltl_shipment/ltl_shipment.js",
 	"LTL Carrier": "freight/doctype/ltl_carrier/ltl_carrier_smc3.js",
+	"LTL Accessorial": "freight/doctype/ltl_accessorial/ltl_accessorial.js",
 }
 doctype_list_js = {
 	"Dayton Packaging Type": "freight/doctype/dayton_packaging_type/dayton_packaging_type_list.js",

@@ -435,9 +435,13 @@ def quote_data_from_shipment(shipment, quote_request=None) -> dict:
 		"destination_state": getattr(qr, "destination_state", None) or getattr(shipment, "bol_consignee_state", None),
 		"shipper_name": getattr(shipment, "bol_shipper_name", None)
 		or (getattr(qr, "shipper_company_name", None) if qr else None),
+		"shipper_company_name": getattr(shipment, "bol_shipper_name", None)
+		or (getattr(qr, "shipper_company_name", None) if qr else None),
 		"shipper_address": getattr(shipment, "bol_shipper_address1", None)
 		or (getattr(qr, "shipper_address", None) if qr else None),
 		"consignee_name": getattr(shipment, "bol_consignee_name", None)
+		or (getattr(qr, "consignee_company_name", None) if qr else None),
+		"consignee_company_name": getattr(shipment, "bol_consignee_name", None)
 		or (getattr(qr, "consignee_company_name", None) if qr else None),
 		"consignee_address": getattr(shipment, "bol_consignee_address1", None)
 		or (getattr(qr, "consignee_address", None) if qr else None),

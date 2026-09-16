@@ -59,6 +59,25 @@ def get_enabled_carrier_options() -> list[dict]:
 
 
 @frappe.whitelist()
+def set_smc3_network_carrier_enabled(carrier: str, row_name: str, enabled: int = 0) -> dict:
+	"""Toggle Enabled on one SMC3 Network Carriers child row."""
+	doc = frappe.get_doc("LTL Carrier", carrier)
+	doc.check_permission("write")
+	row_id = str(row_name or "").strip()
+	row = next((item for item in (doc.smc3_network_carriers or []) if item.name == row_id), None)
+	if not row:
+		frappe.throw(frappe._("Network carrier not found."))
+	row.enabled = 1 if frappe.utils.cint(enabled) else 0
+	doc.save()
+	return {
+		"name": row.name,
+		"enabled": int(row.enabled or 0),
+		"scac": row.scac,
+		"carrier_label": row.carrier_label,
+	}
+
+
+@frappe.whitelist()
 def get_dayton_accessorial_extras(side: str = "pickup") -> list[dict]:
 	"""Unique Dayton catalog options for Origin (pickup) / Destination (delivery) extras.
 
@@ -544,13 +563,37 @@ def get_pickup_page_data(name: str) -> dict:
 	quote_summary = {}
 	if doc.quote_request and frappe.db.exists("LTL Quote Request", doc.quote_request):
 		quote = frappe.get_doc("LTL Quote Request", doc.quote_request)
+		from ltl_quote.utils.location import resolve_us_location
+
+		origin_city, origin_state = resolve_us_location(
+			quote.origin_zip or doc.bol_shipper_postal_code,
+			doc.bol_shipper_city or quote.origin_city,
+			doc.bol_shipper_state or quote.origin_state,
+		)
+		destination_city, destination_state = resolve_us_location(
+			quote.destination_zip or doc.bol_consignee_postal_code,
+			doc.bol_consignee_city or quote.destination_city,
+			doc.bol_consignee_state or quote.destination_state,
+		)
 		quote_summary = {
 			"origin_zip": quote.origin_zip,
 			"destination_zip": quote.destination_zip,
-			"origin_city": quote.origin_city,
-			"origin_state": quote.origin_state,
+			"origin_city": origin_city,
+			"origin_state": origin_state,
+			"destination_city": destination_city,
+			"destination_state": destination_state,
 			"total_weight": quote.total_weight,
 			"pieces": quote.pieces,
+			"shipper_company_name": quote.shipper_company_name,
+			"shipper_address": quote.shipper_address,
+			"consignee_company_name": quote.consignee_company_name,
+			"consignee_address": quote.consignee_address,
+			"contact_name": quote.contact_name,
+			"contact_phone": quote.contact_phone,
+			"origin_contact_email": quote.origin_contact_email,
+			"destination_contact_name": quote.destination_contact_name,
+			"destination_contact_phone": quote.destination_contact_phone,
+			"destination_contact_email": quote.destination_contact_email,
 		}
 
 	pickup = shipment_pickup_summary(doc)
@@ -915,6 +958,104 @@ def save_shipment_detail(name: str, data: str | dict | None = None) -> dict:
 		"bol_document_url": doc.bol_document_url or doc.bol_document or "",
 		"bol_image": doc.bol_image or "",
 	}
+
+
+PICKUP_SHIPMENT_PARTY_FIELDS = (
+	"pickup_comments",
+	"bol_shipper_name",
+	"bol_shipper_address1",
+	"bol_shipper_city",
+	"bol_shipper_state",
+	"bol_shipper_postal_code",
+	"bol_shipper_contact_name",
+	"bol_shipper_contact_phone",
+	"bol_consignee_name",
+	"bol_consignee_address1",
+	"bol_consignee_city",
+	"bol_consignee_state",
+	"bol_consignee_postal_code",
+	"bol_consignee_contact_name",
+	"bol_consignee_contact_phone",
+)
+
+PICKUP_QUOTE_PARTY_FIELDS = (
+	"origin_city",
+	"origin_state",
+	"destination_city",
+	"destination_state",
+	"shipper_company_name",
+	"shipper_address",
+	"consignee_company_name",
+	"consignee_address",
+	"contact_name",
+	"contact_phone",
+	"origin_contact_email",
+	"destination_contact_name",
+	"destination_contact_phone",
+	"destination_contact_email",
+)
+
+PICKUP_QUOTE_FROM_SHIPMENT = {
+	"bol_shipper_name": "shipper_company_name",
+	"bol_shipper_address1": "shipper_address",
+	"bol_shipper_city": "origin_city",
+	"bol_shipper_state": "origin_state",
+	"bol_shipper_contact_name": "contact_name",
+	"bol_shipper_contact_phone": "contact_phone",
+	"bol_consignee_name": "consignee_company_name",
+	"bol_consignee_address1": "consignee_address",
+	"bol_consignee_city": "destination_city",
+	"bol_consignee_state": "destination_state",
+	"bol_consignee_contact_name": "destination_contact_name",
+	"bol_consignee_contact_phone": "destination_contact_phone",
+	"origin_contact_email": "origin_contact_email",
+	"destination_contact_email": "destination_contact_email",
+}
+
+
+@frappe.whitelist()
+def save_pickup_dispatch_parties(name: str, data: str | dict | None = None) -> dict:
+	"""Save shipper/consignee details required for SMC3 Dispatch.
+
+	Writes BOL party fields on the shipment and contact/company fields on the
+	linked quote request even when that quote is already Booked.
+	"""
+	if isinstance(data, str):
+		data = frappe.parse_json(data)
+	data = data or {}
+
+	if not name or not frappe.db.exists("LTL Shipment", name):
+		frappe.throw(f"Shipment {name} not found.")
+
+	doc = frappe.get_doc("LTL Shipment", name)
+	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
+	if doc.status in ("Delivered", "Cancelled"):
+		frappe.throw(f"Shipment {name} is {doc.status} and cannot be edited.")
+
+	for field in PICKUP_SHIPMENT_PARTY_FIELDS:
+		if field in data:
+			doc.set(field, data.get(field))
+	doc.flags.ignore_version = True
+	doc.save()
+	frappe.db.commit()
+
+	quote_name = str(getattr(doc, "quote_request", None) or "").strip()
+	if quote_name and frappe.db.exists("LTL Quote Request", quote_name):
+		quote = frappe.get_doc("LTL Quote Request", quote_name)
+		frappe.has_permission("LTL Quote Request", "write", doc=quote, throw=True)
+		if quote.status != "Cancelled":
+			for src, dest in PICKUP_QUOTE_FROM_SHIPMENT.items():
+				if src in data:
+					quote.set(dest, data.get(src))
+			for field in PICKUP_QUOTE_PARTY_FIELDS:
+				if field in data:
+					quote.set(field, data.get(field))
+			quote.flags.ignore_version = True
+			quote.save()
+			frappe.db.commit()
+
+	doc.reload()
+	return {"name": doc.name, "status": doc.status}
 
 
 def _refresh_smc3_bol_after_save(shipment) -> None:

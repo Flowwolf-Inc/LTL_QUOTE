@@ -61,7 +61,7 @@ def build_dispatch_payload(
 	quote_data = quote_data or quote_data_from_shipment(shipment)
 	origin = _dispatch_party(
 		quote_data,
-		name=quote_data.get("shipper_name"),
+		name=quote_data.get("shipper_name") or quote_data.get("shipper_company_name"),
 		address=quote_data.get("shipper_address"),
 		city=quote_data.get("origin_city"),
 		state=quote_data.get("origin_state"),
@@ -74,7 +74,7 @@ def build_dispatch_payload(
 	)
 	destination = _dispatch_party(
 		quote_data,
-		name=quote_data.get("consignee_name"),
+		name=quote_data.get("consignee_name") or quote_data.get("consignee_company_name"),
 		address=quote_data.get("consignee_address"),
 		city=quote_data.get("destination_city"),
 		state=quote_data.get("destination_state"),

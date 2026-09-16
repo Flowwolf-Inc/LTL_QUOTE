@@ -689,6 +689,21 @@ body.ltl-fullscreen .layout-side-section {
 	border-color: var(--ltl-orange);
 	box-shadow: 0 0 0 3px rgba(245, 130, 31, 0.12);
 }
+select.ltl-input {
+	cursor: pointer;
+	appearance: auto;
+}
+select.ltl-input-compact {
+	min-width: 84px;
+	width: auto;
+	padding: 6px 8px;
+	font-size: 12px;
+}
+.ltl-input[readonly],
+textarea.ltl-input[readonly] {
+	cursor: default;
+	background: #f8f9fb;
+}
 .ltl-field-carriers {
 	position: relative;
 }
@@ -1897,7 +1912,9 @@ img.ltl-bol-image {
 	display: flex;
 	flex-direction: column;
 }
-.ltl-pickup-detail .ltl-detail-hero-left {
+.ltl-pickup-detail .ltl-detail-hero-left,
+.ltl-accessorial-detail .ltl-detail-hero-left,
+.ltl-carrier-detail .ltl-detail-hero-left {
 	display: flex;
 	align-items: center;
 	gap: 14px;
@@ -1913,9 +1930,19 @@ img.ltl-bol-image {
 }
 .ltl-pickup-grid {
 	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
+	grid-template-columns: 1fr;
 	gap: 18px;
 	margin-bottom: 18px;
+}
+.ltl-pickup-parties {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 18px;
+	align-items: stretch;
+}
+.ltl-pickup-parties > .ltl-detail-card {
+	margin-bottom: 0;
+	height: 100%;
 }
 .ltl-pickup-actions-card .ltl-pickup-action-block {
 	border: 1px solid var(--ltl-border, #e8e0d8);
@@ -1981,6 +2008,7 @@ img.ltl-bol-image {
 .ltl-pickup-method.delete { background: #dc2626; }
 @media (max-width: 960px) {
 	.ltl-pickup-grid { grid-template-columns: 1fr; }
+	.ltl-pickup-parties { grid-template-columns: 1fr; }
 }
 .ltl-detail-schedule-pickup:hover:not(:disabled),
 .ltl-detail-view-pickup:hover:not(:disabled),
@@ -2017,6 +2045,9 @@ img.ltl-bol-image {
 }
 .ltl-detail-grid-2 {
 	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.ltl-detail-grid-2 > .ltl-field-span-2 {
+	grid-column: 1 / -1;
 }
 .ltl-detail-grid-3 {
 	grid-template-columns: repeat(3, minmax(0, 1fr));

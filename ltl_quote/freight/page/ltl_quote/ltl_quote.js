@@ -50,12 +50,26 @@ frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
 	page.wrapper.find(".page-head").hide();
 
 	wrapper.ltl_dashboard = new ltl_quote.Dashboard(wrapper, page);
+	frappe.pages["ltl-quote"].ltl_dashboard = wrapper.ltl_dashboard;
 };
 
 frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 	document.body.classList.add("ltl-fullscreen");
 	const dash = wrapper.ltl_dashboard;
 	if (!dash) return;
+
+	const pending_carrier = window.__ltl_open_carrier;
+	if (pending_carrier) {
+		window.__ltl_open_carrier = null;
+		dash.open_carrier_detail(pending_carrier);
+		return;
+	}
+	const pending_accessorial = window.__ltl_open_accessorial;
+	if (pending_accessorial) {
+		window.__ltl_open_accessorial = null;
+		dash.open_accessorial_detail(pending_accessorial);
+		return;
+	}
 
 	const opts = frappe.route_options || {};
 	const view = opts.ltl_view;
@@ -76,6 +90,20 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 		}
 		if (name && (view === "quote" || view === "quotes")) {
 			dash.open_quote_detail(name);
+			return;
+		}
+		if (name && (view === "accessorial" || view === "accessorials")) {
+			dash.open_accessorial_detail(name);
+			return;
+		}
+		if (name && (view === "carrier" || view === "carriers")) {
+			if (dash.is_shipper_user()) {
+				dash.body.find(".ltl-nav-item").removeClass("active");
+				dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+				dash.show_view("quote");
+				return;
+			}
+			dash.open_carrier_detail(name);
 			return;
 		}
 		if (view === "carriers" && dash.is_shipper_user()) {
@@ -354,7 +382,8 @@ const LIST_VIEWS = {
 		sub: "Accessorial service catalog.",
 		icon: "fa fa-tags",
 		fields: ["name", "accessorial_code", "accessorial_name", "charge_type", "default_amount", "currency"],
-		order_by: "accessorial_name asc",
+		order_by: "accessorial_code asc",
+		limit: 500,
 		search: ["accessorial_code", "accessorial_name", "charge_type"],
 		columns: [
 			{ label: "Code", type: "mono", key: "accessorial_code" },
@@ -546,6 +575,23 @@ ltl_quote.Dashboard = class Dashboard {
 		this.apply_theme(this.saved_theme());
 		this.bind_events();
 		this.refresh_line_items_table();
+		this._built = true;
+		const pending =
+			this._pending_detail ||
+			(window.__ltl_open_carrier
+				? { type: "carrier", name: window.__ltl_open_carrier }
+				: null) ||
+			(window.__ltl_open_accessorial
+				? { type: "accessorial", name: window.__ltl_open_accessorial }
+				: null);
+		if (pending && pending.name) {
+			this._pending_detail = null;
+			window.__ltl_open_carrier = null;
+			window.__ltl_open_accessorial = null;
+			if (pending.type === "carrier") this.open_carrier_detail(pending.name);
+			else if (pending.type === "accessorial") this.open_accessorial_detail(pending.name);
+			return;
+		}
 		this.load_recent_requests();
 	}
 
@@ -1718,6 +1764,14 @@ ltl_quote.Dashboard = class Dashboard {
 				this.open_shipment_detail(name);
 				return;
 			}
+			if (this.current_list.doctype === "LTL Accessorial") {
+				this.open_accessorial_detail(name);
+				return;
+			}
+			if (this.current_list.doctype === "LTL Carrier") {
+				this.open_carrier_detail(name);
+				return;
+			}
 			frappe.set_route("Form", this.current_list.doctype, name);
 		});
 
@@ -1778,8 +1832,19 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.on("click", ".ltl-pickup-create", (e) => {
 			e.stopPropagation();
 			const shipment = $(e.currentTarget).attr("data-shipment");
-			if (!shipment) return;
+			if (!shipment || this._scheduling_pickup) return;
+			const $btn = $(e.currentTarget);
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
 			const comments = this.body.find(".ltl-pickup-create-comments").val() || "";
+			const connector = ltl_connector_key(
+				(this.pickup_doc && (this.pickup_doc.carrier || (this.pickup_doc.doc && this.pickup_doc.doc.carrier))) || ""
+			);
+			const done = () => {
+				this._scheduling_pickup = false;
+				$btn.prop("disabled", false);
+			};
+			this._scheduling_pickup = true;
+			$btn.prop("disabled", true);
 			const schedule = () => {
 				const carrier = String(
 					(this.pickup_doc && (this.pickup_doc.carrier || (this.pickup_doc.doc && this.pickup_doc.doc.carrier))) || ""
@@ -1797,19 +1862,47 @@ ltl_quote.Dashboard = class Dashboard {
 							this.load_pickup_detail(shipment);
 							return;
 						}
+						done();
 						frappe.msgprint({
 							title: __("Pickup Failed"),
 							indicator: "red",
 							message: result.message || __("Could not schedule pickup."),
 						});
 					},
+					error: done,
 				});
 			};
-			if (comments) {
-				frappe.db.set_value("LTL Shipment", shipment, "pickup_comments", comments).then(schedule);
-			} else {
-				schedule();
+			const persist_comments_then_schedule = () => {
+				if (comments) {
+					frappe.db.set_value("LTL Shipment", shipment, "pickup_comments", comments).then(schedule, done);
+				} else {
+					schedule();
+				}
+			};
+			if (connector === "SMC3" && $root.find("[data-pickup-party]").length) {
+				const parties = this.collect_pickup_parties($root);
+				if (comments) parties.pickup_comments = comments;
+				const missing = this.validate_smc3_pickup_parties(parties);
+				if (missing.length) {
+					done();
+					frappe.msgprint({
+						title: __("Pickup details required"),
+						indicator: "orange",
+						message: __("Please fill: {0}", [missing.join(", ")]),
+					});
+					return;
+				}
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_pickup_dispatch_parties",
+					args: { name: shipment, data: parties },
+					freeze: true,
+					freeze_message: __("Saving pickup contacts…"),
+					callback: () => schedule(),
+					error: done,
+				});
+				return;
 			}
+			persist_comments_then_schedule();
 		});
 
 		this.body.on("click", ".ltl-pickup-update", (e) => {
@@ -2119,6 +2212,14 @@ ltl_quote.Dashboard = class Dashboard {
 				this.open_shipment_detail(name);
 				return;
 			}
+			if (this.current_list && this.current_list.doctype === "LTL Accessorial") {
+				this.open_accessorial_detail(name);
+				return;
+			}
+			if (this.current_list && this.current_list.doctype === "LTL Carrier") {
+				this.open_carrier_detail(name);
+				return;
+			}
 			if (this.current_list && this.current_list.doctype !== "LTL Quote Request") {
 				frappe.set_route("Form", this.current_list.doctype, name);
 				return;
@@ -2127,6 +2228,8 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 
 		this.body.on("click", "[data-action='detail-cancel']", () => this.close_detail_view());
+		this.body.on("change", "[data-carrier-enabled]", (e) => this.save_carrier_enabled(e));
+		this.body.on("change", "[data-smc3-network-enabled]", (e) => this.save_smc3_network_enabled(e));
 		this.body.on("click", "[data-action='detail-save']", () => {
 			if (this.detail_type === "shipment") this.save_shipment_detail();
 			else this.save_quote_detail();
@@ -2369,7 +2472,10 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	fetch_rates() {
-		if (!this.require_line_items()) return;
+		const has_line_items = Boolean((this.line_items || []).length);
+		if (this.expanded || has_line_items) {
+			if (!this.require_line_items()) return;
+		}
 
 		const payload = this.collect_payload();
 		const missing = [];
@@ -2980,7 +3086,7 @@ ltl_quote.Dashboard = class Dashboard {
 				nmfc: first.nmfc || first.nmfc_number || "",
 			},
 			freeze: true,
-			freeze_message: __("Reserving PRO, generating BOL, and fetching BOL image…"),
+			freeze_message: __("Generating BOL, and fetching BOL image…"),
 			callback: (r) => {
 				const res = r.message || {};
 				if (res.status === "success" || res.status === "already_booked") {
@@ -3134,7 +3240,14 @@ ltl_quote.Dashboard = class Dashboard {
 		}
 
 		if (is_detail) {
-			const label = this.detail_type === "shipment" ? "Shipment" : "Quote Request";
+			const label =
+				this.detail_type === "shipment"
+					? "Shipment"
+					: this.detail_type === "accessorial"
+						? "Accessorial"
+						: this.detail_type === "carrier"
+							? "Quote Source"
+							: "Quote Request";
 			this.body.find(".ltl-breadcrumb .current").text(label);
 			return;
 		}
@@ -3350,6 +3463,140 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 	}
 
+	open_accessorial_detail(name) {
+		if (!name) return;
+		if (!this._built) {
+			this._pending_detail = { type: "accessorial", name };
+			return;
+		}
+		this.detail_return_view = "accessorials";
+		this.detail_type = "accessorial";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="accessorials"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.db
+			.get_doc("LTL Accessorial", name)
+			.then((doc) => {
+				if (!doc) {
+					container.html('<div class="ltl-empty">Unable to load accessorial.</div>');
+					return;
+				}
+				this.detail_doc = { doc };
+				container.html(this.render_accessorial_detail(doc));
+			})
+			.catch(() => {
+				container.html('<div class="ltl-empty">Unable to load accessorial.</div>');
+			});
+	}
+
+	save_carrier_enabled(e) {
+		const doc = this.detail_doc && this.detail_doc.doc;
+		if (!doc || !doc.name || this.detail_type !== "carrier") return;
+		const $select = $(e.currentTarget);
+		const as_flag = (value) => (value === 1 || value === true || value === "1" ? 1 : 0);
+		const enabled = as_flag($select.val());
+		const previous = as_flag(doc.enabled);
+		if (enabled === previous) return;
+		$select.prop("disabled", true);
+		const finish = () => $select.prop("disabled", false);
+		frappe.db
+			.set_value("LTL Carrier", doc.name, "enabled", enabled)
+			.then(() => {
+				doc.enabled = enabled;
+				this.body
+					.find(".ltl-carrier-enabled-badge")
+					.text(enabled ? __("Enabled") : __("Disabled"));
+				this.load_enabled_carrier_options();
+				frappe.show_alert({
+					message: enabled ? __("Carrier enabled") : __("Carrier disabled"),
+					indicator: enabled ? "green" : "orange",
+				});
+				finish();
+			})
+			.catch(() => {
+				$select.val(String(previous));
+				frappe.show_alert({
+					message: __("Could not update carrier status."),
+					indicator: "red",
+				});
+				finish();
+			});
+	}
+
+	save_smc3_network_enabled(e) {
+		const doc = this.detail_doc && this.detail_doc.doc;
+		if (!doc || this.detail_type !== "carrier") return;
+		const $select = $(e.currentTarget);
+		const row_name = ($select.attr("data-row-name") || "").trim();
+		if (!row_name) return;
+		const as_flag = (value) => (value === 1 || value === true || value === "1" ? 1 : 0);
+		const enabled = as_flag($select.val());
+		const rows = doc.smc3_network_carriers || [];
+		const row = rows.find((item) => item.name === row_name);
+		const previous = as_flag(row && row.enabled);
+		if (enabled === previous) return;
+		$select.prop("disabled", true);
+		const finish = () => $select.prop("disabled", false);
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.set_smc3_network_carrier_enabled",
+			args: { carrier: doc.name, row_name, enabled },
+			callback: (r) => {
+				if (r.exc) {
+					$select.val(String(previous));
+					finish();
+					return;
+				}
+				const saved = r.message || {};
+				const value = as_flag(saved.enabled);
+				if (row) row.enabled = value;
+				const label = saved.scac || saved.carrier_label || (row && (row.scac || row.carrier_label)) || row_name;
+				frappe.show_alert({
+					message: value ? __("{0} enabled", [label]) : __("{0} disabled", [label]),
+					indicator: value ? "green" : "orange",
+				});
+				finish();
+			},
+			error: () => {
+				$select.val(String(previous));
+				frappe.show_alert({
+					message: __("Could not update network carrier status."),
+					indicator: "red",
+				});
+				finish();
+			},
+		});
+	}
+
+	open_carrier_detail(name) {
+		if (!name) return;
+		if (!this._built) {
+			this._pending_detail = { type: "carrier", name };
+			return;
+		}
+		this.detail_return_view = "carriers";
+		this.detail_type = "carrier";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="carriers"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.db
+			.get_doc("LTL Carrier", name)
+			.then((doc) => {
+				if (!doc) {
+					container.html('<div class="ltl-empty">Unable to load carrier.</div>');
+					return;
+				}
+				this.detail_doc = { doc };
+				container.html(this.render_carrier_detail(doc));
+			})
+			.catch(() => {
+				container.html('<div class="ltl-empty">Unable to load carrier.</div>');
+			});
+	}
+
 	open_pickup_detail(name) {
 		if (!name) return;
 		this.pickup_shipment_name = name;
@@ -3546,7 +3793,15 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	close_detail_view() {
-		const back = this.detail_return_view || (this.detail_type === "shipment" ? "shipments" : "quotes");
+		const back =
+			this.detail_return_view ||
+			(this.detail_type === "shipment"
+				? "shipments"
+				: this.detail_type === "accessorial"
+					? "accessorials"
+					: this.detail_type === "carrier"
+						? "carriers"
+						: "quotes");
 		this.detail_doc = null;
 		this.detail_type = null;
 		this.body.find(".ltl-nav-item").removeClass("active");
@@ -3557,6 +3812,204 @@ ltl_quote.Dashboard = class Dashboard {
 
 	close_quote_detail() {
 		this.close_detail_view();
+	}
+
+	render_accessorial_detail(doc) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v || "—");
+		const code = doc.accessorial_code || doc.name || "—";
+		const amount =
+			doc.default_amount != null && doc.default_amount !== ""
+				? format_currency(doc.default_amount, doc.currency || "USD")
+				: "—";
+		return `
+			<div class="ltl-detail ltl-accessorial-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
+							<i class="fa fa-arrow-left"></i> ${__("Back to Accessorials")}
+						</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-tags"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Accessorial")}</div>
+							<div class="ltl-detail-hero-sub">${val(doc.accessorial_name)}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Accessorial Details")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Code")}</label>
+							<input class="ltl-input" value="${esc(code)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Accessorial Name")}</label>
+							<input class="ltl-input" value="${val(doc.accessorial_name)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Charge Type")}</label>
+							<input class="ltl-input" value="${val(doc.charge_type)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Currency")}</label>
+							<input class="ltl-input" value="${val(doc.currency)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Default Amount")}</label>
+							<input class="ltl-input" value="${esc(amount)}" readonly /></div>
+						<div class="ltl-field ltl-field-span-2"><label>${__("Description")}</label>
+							<textarea class="ltl-input" rows="4" readonly>${val(doc.description)}</textarea></div>
+					</div>
+				</section>
+			</div>`;
+	}
+
+	masked_secret(value) {
+		const text = String(value == null ? "" : value).trim();
+		if (!text) return "—";
+		return "••••••••";
+	}
+
+	render_carrier_detail(doc) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v || "—");
+		const code = doc.carrier_code || doc.name || "—";
+		const is_on = (value) => value === 1 || value === true || value === "1";
+		const enabled = is_on(doc.enabled);
+		const score =
+			doc.reliability_score != null && doc.reliability_score !== ""
+				? Number(doc.reliability_score).toFixed(3)
+				: "—";
+		const mappings = doc.accessorial_mappings || [];
+		const mapping_rows = mappings.length
+			? mappings
+					.map((row, idx) => {
+						const on = is_on(row.enabled);
+						return `<tr>
+							<td>${idx + 1}</td>
+							<td>${esc(row.accessorial || "—")}</td>
+							<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+							<td>${esc(row.service_group || "—")}</td>
+							<td class="ltl-mono">${esc(row.carrier_accessorial_code || "—")}</td>
+							<td>${
+								on
+									? '<span class="ltl-status ltl-status-green">Yes</span>'
+									: '<span class="ltl-status ltl-status-grey">No</span>'
+							}</td>
+						</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="6" class="ltl-empty-cell">${__("No accessorial mappings")}</td></tr>`;
+		const is_smc3 = String(doc.connector_type || "") === "SMC3";
+		const network = doc.smc3_network_carriers || [];
+		const network_rows = network.length
+			? network
+					.map((row, idx) => {
+						const on = is_on(row.enabled);
+						const row_name = esc(row.name || "");
+						return `<tr>
+							<td>${idx + 1}</td>
+							<td class="ltl-mono">${esc(row.scac || "—")}</td>
+							<td>${esc(row.carrier_label || "—")}</td>
+							<td class="ltl-mono">${esc(row.eva_access_id || "—")}</td>
+							<td>
+								<select class="ltl-input ltl-input-compact" data-smc3-network-enabled data-row-name="${row_name}">
+									<option value="1" ${on ? "selected" : ""}>${__("Yes")}</option>
+									<option value="0" ${!on ? "selected" : ""}>${__("No")}</option>
+								</select>
+							</td>
+							<td>${is_on(row.contract_pricing) ? __("Yes") : __("No")}</td>
+							<td>${is_on(row.dynamic_pricing) ? __("Yes") : __("No")}</td>
+						</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">${__("No SMC3 network carriers")}</td></tr>`;
+		const smc3_card = is_smc3
+			? `<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-sitemap"></i> ${__("SMC3 Network Carriers")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th><th>${__("SCAC")}</th><th>${__("Carrier Name")}</th><th>${__("EVA Access ID")}</th>
+							<th>${__("Enabled")}</th><th>${__("Contract")}</th><th>${__("Dynamic")}</th>
+						</tr></thead>
+						<tbody>${network_rows}</tbody>
+					</table>
+				</section>`
+			: "";
+		return `
+			<div class="ltl-detail ltl-carrier-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
+							<i class="fa fa-arrow-left"></i> ${__("Back to Quote Source")}
+						</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-users"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Carrier Details")}</div>
+							<div class="ltl-detail-hero-sub">${val(doc.carrier_name)}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
+						<div class="ltl-detail-hero-badge ltl-carrier-enabled-badge">${
+							enabled ? __("Enabled") : __("Disabled")
+						}</div>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Carrier Details")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Carrier Name")}</label>
+							<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Enabled")}</label>
+							<select class="ltl-input" data-carrier-enabled>
+								<option value="1" ${enabled ? "selected" : ""}>${__("Yes")}</option>
+								<option value="0" ${!enabled ? "selected" : ""}>${__("No")}</option>
+							</select></div>
+						<div class="ltl-field"><label>${__("SCAC")}</label>
+							<input class="ltl-input" value="${val(doc.scac)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Reliability Score")}</label>
+							<input class="ltl-input" value="${esc(score)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Carrier Code")}</label>
+							<input class="ltl-input" value="${esc(code)}" readonly /></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-plug"></i> ${__("API Integration")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Connector Type")}</label>
+							<input class="ltl-input" value="${val(doc.connector_type)}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Key")}</label>
+							<input class="ltl-input" value="${esc(this.masked_secret(doc.api_key))}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Base URL")}</label>
+							<input class="ltl-input" value="${val(doc.api_base_url)}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Secret")}</label>
+							<input class="ltl-input" value="${esc(this.masked_secret(doc.api_secret))}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Version")}</label>
+							<input class="ltl-input" value="${val(doc.api_version)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Account Number")}</label>
+							<input class="ltl-input" value="${val(doc.account_number)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Auth Type")}</label>
+							<input class="ltl-input" value="${val(doc.auth_type)}" readonly /></div>
+						<div class="ltl-field ltl-field-span-2"><label>${__("Notes")}</label>
+							<textarea class="ltl-input" rows="3" readonly>${val(doc.notes)}</textarea></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> ${__("Accessorial Mapping")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th>
+							<th>${__("Accessorial")}</th>
+							<th>${__("Internal Code")}</th>
+							<th>${__("Service Group")}</th>
+							<th>${__("Carrier Code / Flag")}</th>
+							<th>${__("Enabled")}</th>
+						</tr></thead>
+						<tbody>${mapping_rows}</tbody>
+					</table>
+				</section>
+				${smc3_card}
+			</div>`;
 	}
 
 	render_accessorial_detail_rows(accessorials) {
@@ -3992,6 +4445,97 @@ ltl_quote.Dashboard = class Dashboard {
 		};
 	}
 
+	pickup_party_val(...values) {
+		for (const value of values) {
+			const text = String(value == null ? "" : value).trim();
+			if (text && text !== "—") return text;
+		}
+		return "";
+	}
+
+	pickup_party_field(key, label, value, { required = true, type = "text", placeholder = "" } = {}) {
+		const req = required ? ` <span class="req">*</span>` : "";
+		const ph = placeholder ? ` placeholder="${frappe.utils.escape_html(placeholder)}"` : "";
+		return `<div class="ltl-field"><label>${label}${req}</label>
+			<input type="${type}" class="ltl-input ltl-pickup-party" data-pickup-party="${frappe.utils.escape_html(key)}" value="${frappe.utils.escape_html(value || "")}"${ph} /></div>`;
+	}
+
+	collect_pickup_parties($root) {
+		const data = {};
+		($root || this.body).find("[data-pickup-party]").each(function () {
+			const key = ($(this).attr("data-pickup-party") || "").trim();
+			if (key) data[key] = ($(this).val() || "").trim();
+		});
+		return data;
+	}
+
+	validate_smc3_pickup_parties(data) {
+		const required = [
+			["bol_shipper_name", __("Shipper Company Name")],
+			["bol_shipper_address1", __("Shipper Address")],
+			["bol_shipper_city", __("Shipper City")],
+			["bol_shipper_state", __("Shipper State")],
+			["bol_shipper_postal_code", __("Origin ZIP")],
+			["bol_shipper_contact_name", __("Shipper Contact Name")],
+			["bol_consignee_name", __("Consignee Company Name")],
+			["bol_consignee_address1", __("Consignee Address")],
+			["bol_consignee_city", __("Consignee City")],
+			["bol_consignee_state", __("Consignee State")],
+			["bol_consignee_postal_code", __("Destination ZIP")],
+			["bol_consignee_contact_name", __("Consignee Contact Name")],
+		];
+		const missing = required.filter(([key]) => !String(data[key] || "").trim()).map(([, label]) => label);
+		const phone_ok = (value) => String(value || "").replace(/\D/g, "").length >= 10;
+		const email_ok = (value) => /@/.test(String(value || "").trim());
+		if (!phone_ok(data.bol_shipper_contact_phone)) missing.push(__("Shipper Contact Phone"));
+		if (!email_ok(data.origin_contact_email)) missing.push(__("Shipper Contact Email"));
+		if (!phone_ok(data.bol_consignee_contact_phone)) missing.push(__("Consignee Contact Phone"));
+		if (!email_ok(data.destination_contact_email)) missing.push(__("Consignee Contact Email"));
+		return missing;
+	}
+
+	render_smc3_party_forms(doc, quote, raw) {
+		const shipper = raw.shipper || {};
+		const shipper_addr = shipper.address || {};
+		const contact = raw.contact || {};
+		const dest = raw.consignee || raw.destination || {};
+		const dest_addr = dest.address || {};
+		const dest_contact = dest.contact || {};
+		const field = (key, label, value, opts) => this.pickup_party_field(key, label, value, opts);
+		const shipper_fields = [
+			field("bol_shipper_name", __("Shipper Company Name"), this.pickup_party_val(doc.bol_shipper_name, quote.shipper_company_name, shipper.name)),
+			field("bol_shipper_address1", __("Shipper Address"), this.pickup_party_val(doc.bol_shipper_address1, quote.shipper_address, shipper_addr.line1 || shipper_addr.address1)),
+			field("bol_shipper_city", __("Shipper City"), this.pickup_party_val(doc.bol_shipper_city, quote.origin_city, shipper_addr.city)),
+			field("bol_shipper_state", __("Shipper State"), this.pickup_party_val(doc.bol_shipper_state, quote.origin_state, shipper_addr.state)),
+			field("bol_shipper_postal_code", __("Origin ZIP"), this.pickup_party_val(doc.bol_shipper_postal_code, quote.origin_zip, shipper_addr.zip)),
+			field("bol_shipper_contact_name", __("Contact Name"), this.pickup_party_val(doc.bol_shipper_contact_name, quote.contact_name, contact.name)),
+			field("bol_shipper_contact_phone", __("Contact Phone"), this.pickup_party_val(doc.bol_shipper_contact_phone, quote.contact_phone, contact.phone), { placeholder: "10-digit phone" }),
+			field("origin_contact_email", __("Contact Email"), this.pickup_party_val(quote.origin_contact_email, contact.email), { type: "email" }),
+		].join("");
+		const consignee_fields = [
+			field("bol_consignee_name", __("Consignee Company Name"), this.pickup_party_val(doc.bol_consignee_name, quote.consignee_company_name, dest.name)),
+			field("bol_consignee_address1", __("Consignee Address"), this.pickup_party_val(doc.bol_consignee_address1, quote.consignee_address, dest_addr.line1 || dest_addr.address1)),
+			field("bol_consignee_city", __("Consignee City"), this.pickup_party_val(doc.bol_consignee_city, quote.destination_city, dest_addr.city)),
+			field("bol_consignee_state", __("Consignee State"), this.pickup_party_val(doc.bol_consignee_state, quote.destination_state, dest_addr.state)),
+			field("bol_consignee_postal_code", __("Destination ZIP"), this.pickup_party_val(doc.bol_consignee_postal_code, quote.destination_zip, dest_addr.zip)),
+			field("bol_consignee_contact_name", __("Contact Name"), this.pickup_party_val(doc.bol_consignee_contact_name, quote.destination_contact_name, dest_contact.name)),
+			field("bol_consignee_contact_phone", __("Contact Phone"), this.pickup_party_val(doc.bol_consignee_contact_phone, quote.destination_contact_phone, dest_contact.phone), { placeholder: "10-digit phone" }),
+			field("destination_contact_email", __("Contact Email"), this.pickup_party_val(quote.destination_contact_email, dest_contact.email), { type: "email" }),
+		].join("");
+		return `
+			<div class="ltl-pickup-parties">
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper")}</div>
+					<p class="ltl-pickup-action-desc">${__("Required by SMC3 Dispatch before a pickup can be requested.")}</p>
+					<div class="ltl-detail-grid ltl-detail-grid-2">${shipper_fields}</div>
+				</section>
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Consignee")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">${consignee_fields}</div>
+				</section>
+			</div>`;
+	}
+
 	render_pickup_detail(payload) {
 		const doc = payload.doc || {};
 		const pickup = payload.pickup || {};
@@ -4254,6 +4798,7 @@ ltl_quote.Dashboard = class Dashboard {
 						</div>
 					</section>
 
+					${is_smc3 && !has_pickup ? this.render_smc3_party_forms(doc, quote, raw) : `
 					<section class="ltl-detail-card">
 						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper & Contacts")}</div>
 						<div class="ltl-detail-grid ltl-detail-grid-2">
@@ -4264,7 +4809,7 @@ ltl_quote.Dashboard = class Dashboard {
 							<div class="ltl-field"><label>${__("Contact Phone")}</label><input class="ltl-input" value="${esc(contact.phone || doc.bol_shipper_contact_phone || "—")}" readonly /></div>
 							<div class="ltl-field"><label>${__("Requester")}</label><input class="ltl-input" value="${esc(requester.name || "—")}" readonly /></div>
 						</div>
-					</section>
+					</section>`}
 				</div>
 
 				${!hide_dayton_fields ? `
@@ -4927,20 +5472,47 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 	}
 
+	is_blank_list_value(value) {
+		const text = String(value == null ? "" : value).trim();
+		return !text || text === "-" || text === "—";
+	}
+
+	sort_list_rows(cfg, rows) {
+		const list = (rows || []).slice();
+		if (!cfg || cfg.doctype !== "LTL Accessorial") return list;
+		const hyphen_row = (row) =>
+			this.is_blank_list_value(row.accessorial_code) && this.is_blank_list_value(row.accessorial_name);
+		const key = (row) =>
+			String(row.accessorial_code || row.accessorial_name || "")
+				.trim()
+				.toLowerCase();
+		list.sort((a, b) => {
+			const aHyphen = hyphen_row(a);
+			const bHyphen = hyphen_row(b);
+			if (aHyphen !== bHyphen) return aHyphen ? 1 : -1;
+			return key(a).localeCompare(key(b), undefined, { sensitivity: "base" });
+		});
+		return list;
+	}
+
 	load_list(cfg) {
 		const container = this.body.find(".ltl-list-body");
 		container.html('<div class="ltl-empty">Loading…</div>');
+		const request_id = (this._list_request_id = (this._list_request_id || 0) + 1);
 		frappe.db
 			.get_list(cfg.doctype, {
 				fields: cfg.fields,
 				order_by: cfg.order_by,
-				limit: 100,
+				limit: cfg.limit || 100,
 			})
 			.then((rows) => {
-				this.list_rows = rows || [];
+				if (request_id !== this._list_request_id) return;
+				if (!this.current_list || this.current_list.doctype !== cfg.doctype) return;
+				this.list_rows = this.sort_list_rows(cfg, rows);
 				this.render_list_table(this.list_rows);
 			})
 			.catch(() => {
+				if (request_id !== this._list_request_id) return;
 				container.html('<div class="ltl-empty">Unable to load records.</div>');
 			});
 	}

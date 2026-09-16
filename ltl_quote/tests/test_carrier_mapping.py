@@ -161,6 +161,53 @@ class TestLoadCarriersForRating(unittest.TestCase):
 			throw.assert_called_once_with(NO_ENABLED_CARRIERS_MESSAGE)
 
 
+class _FormEncodedRequest:
+	"""Werkzeug-like request that raises 415 if ``.json`` is read."""
+
+	is_json = False
+
+	def get_json(self, silent=False, force=False, cache=True):
+		if silent:
+			return None
+		raise RuntimeError("415 Unsupported Media Type")
+
+	@property
+	def json(self):
+		raise RuntimeError("415 Unsupported Media Type")
+
+
+class _JsonRequest:
+	is_json = True
+
+	def get_json(self, silent=False, force=False, cache=True):
+		return {"source": ["SMC3"], "origin_zip": "60601"}
+
+	@property
+	def json(self):
+		return self.get_json()
+
+
+class TestReadRequestJson(unittest.TestCase):
+	def test_form_urlencoded_desk_call_does_not_raise(self):
+		from ltl_quote.api.carrier_mapping import read_request_json
+
+		with patch("ltl_quote.api.carrier_mapping.frappe.request", _FormEncodedRequest()):
+			self.assertEqual(read_request_json(), {})
+
+	def test_application_json_body_is_returned(self):
+		from ltl_quote.api.carrier_mapping import read_request_json
+
+		with patch("ltl_quote.api.carrier_mapping.frappe.request", _JsonRequest()):
+			self.assertEqual(read_request_json()["source"], ["SMC3"])
+
+	def test_missing_request_returns_empty(self):
+		from ltl_quote.api.carrier_mapping import read_request_json
+
+		with patch("ltl_quote.api.carrier_mapping.frappe") as mock_frappe:
+			mock_frappe.request = None
+			self.assertEqual(read_request_json(), {})
+
+
 class TestResolveRateSource(unittest.TestCase):
 	def test_missing_or_empty_returns_empty_list(self):
 		with patch("ltl_quote.api.carrier_mapping.read_request_json", return_value={}):

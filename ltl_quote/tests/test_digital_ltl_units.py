@@ -188,6 +188,99 @@ class TestRequiredPartyFields(unittest.TestCase):
 		self.assertNotIn("Jane Doe", str(payload))
 		self.assertNotIn("shipperContactPerson@email.com", str(payload))
 
+	def test_dispatch_payload_uses_shipper_company_name_fallback(self):
+		from types import SimpleNamespace
+
+		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
+
+		quote = dict(FAILED_TXN_QUOTE)
+		quote.pop("shipper_name")
+		quote["shipper_company_name"] = "Fallback Shipper Co"
+		with patch(
+			"ltl_quote.carrier_network.smc3_dispatch.resolve_pickup_window",
+			return_value=("2026-09-16 08:00:00", "2026-09-16 16:00:00"),
+		):
+			payload = build_dispatch_payload(SimpleNamespace(pickup_date="2026-09-08"), quote)
+		self.assertEqual(payload["origin"]["name"], "Fallback Shipper Co")
+
+	def test_dispatch_payload_uses_shipment_bol_fields_when_quote_company_empty(self):
+		from types import SimpleNamespace
+
+		from ltl_quote.carrier_network.smc3_bol import quote_data_from_shipment
+		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
+
+		shipment = SimpleNamespace(
+			bol_shipper_name="Acme Shipper",
+			bol_shipper_address1="100 N State St",
+			bol_shipper_city="Chicago",
+			bol_shipper_state="IL",
+			bol_shipper_postal_code="60601",
+			bol_shipper_contact_name="Pat Smith",
+			bol_shipper_contact_phone="3125550100",
+			bol_consignee_name="Dallas Receiver",
+			bol_consignee_address1="200 Main St",
+			bol_consignee_city="Dallas",
+			bol_consignee_state="TX",
+			bol_consignee_postal_code="75201",
+			bol_consignee_contact_name="Sam Lee",
+			bol_consignee_contact_phone="2145550199",
+			bol_bill_to_name=None,
+			bol_bill_to_address1=None,
+			bol_bill_to_city=None,
+			bol_bill_to_state=None,
+			bol_bill_to_postal_code=None,
+			bol_payment_terms="Prepaid",
+			pickup_date="2026-09-16",
+			pro_number="24601-42",
+			bol_number="SCN1234",
+			bol_scac="SMCA",
+			quote_request="LTL-QR-TEST",
+			bol_grand_total_weight=1200,
+			bol_total_quantity=1,
+		)
+		quote_request = SimpleNamespace(
+			name="LTL-QR-TEST",
+			origin_zip="60601",
+			origin_city="",
+			origin_state="",
+			destination_zip="75201",
+			destination_city="",
+			destination_state="",
+			shipper_company_name="",
+			shipper_address="",
+			consignee_company_name="",
+			consignee_address="",
+			contact_name="",
+			contact_phone="",
+			origin_contact_name=None,
+			origin_contact_phone=None,
+			origin_contact_email="pat@acme.example",
+			destination_contact_name="",
+			destination_contact_phone="",
+			destination_contact_email="recv@dallas.example",
+			contact_email=None,
+			total_weight=1200,
+			pieces=1,
+			freight_class="55",
+			length=None,
+			width=None,
+			height=None,
+			origin_country="USA",
+			destination_country="USA",
+			line_items=[],
+		)
+		data = quote_data_from_shipment(shipment, quote_request=quote_request)
+		self.assertEqual(data["shipper_name"], "Acme Shipper")
+		self.assertEqual(data["origin_city"], "Chicago")
+		with patch(
+			"ltl_quote.carrier_network.smc3_dispatch.resolve_pickup_window",
+			return_value=("2026-09-16 08:00:00", "2026-09-16 16:00:00"),
+		):
+			payload = build_dispatch_payload(shipment, data)
+		self.assertEqual(payload["origin"]["name"], "Acme Shipper")
+		self.assertEqual(payload["destination"]["name"], "Dallas Receiver")
+		self.assertEqual(payload["origin"]["contact"]["email"], "pat@acme.example")
+
 
 def run_checks():
 	"""Run this module's unit tests via `bench execute` (no site allow_tests flag)."""

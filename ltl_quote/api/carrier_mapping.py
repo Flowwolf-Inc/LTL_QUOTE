@@ -278,7 +278,13 @@ def _source_value_from_mapping(mapping):
 
 
 def read_request_json() -> dict:
-	"""Return the HTTP JSON body via ``frappe.request.get_json()`` when present."""
+	"""Return the HTTP JSON body when Content-Type is JSON.
+
+	Desk ``frappe.call`` posts ``application/x-www-form-urlencoded``. Werkzeug's
+	``request.json`` property calls ``get_json()`` without ``silent=True`` and
+	raises HTTP 415 for that content type, which aborts Fetch Rates before any
+	carrier is pinged. Never touch ``request.json`` here.
+	"""
 	req = getattr(frappe, "request", None)
 	if req is None:
 		return {}
@@ -287,16 +293,25 @@ def read_request_json() -> dict:
 		try:
 			data = get_json(silent=True)
 		except TypeError:
+			if not getattr(req, "is_json", False):
+				return {}
 			try:
 				data = get_json()
 			except Exception:
-				data = None
+				return {}
 		except Exception:
-			data = None
-		if isinstance(data, dict):
-			return data
-	raw = getattr(req, "json", None)
-	return raw if isinstance(raw, dict) else {}
+			return {}
+		return data if isinstance(data, dict) else {}
+	if not getattr(req, "is_json", False):
+		return {}
+	raw = getattr(req, "data", None)
+	if not raw:
+		return {}
+	try:
+		parsed = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+	except (TypeError, ValueError, UnicodeDecodeError, AttributeError):
+		return {}
+	return parsed if isinstance(parsed, dict) else {}
 
 
 def resolve_rate_source(source=None, *mappings) -> list[str]:
