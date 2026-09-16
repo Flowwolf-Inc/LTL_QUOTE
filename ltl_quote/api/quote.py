@@ -17,8 +17,10 @@ from ltl_quote.api.carrier_mapping import (
 	extract_requested_carriers,
 	load_carriers_for_rating,
 	parse_carrier_tokens,
+	read_request_json,
 	require_enabled_carriers,
 	resolve_carrier_id,
+	resolve_rate_source,
 )
 from ltl_quote.api.payload import apply_default_handling_dimensions, default_handling_dimensions, line_item_freight_class, parse_rating_payload
 from ltl_quote.api.shipping import ensure_shipping_class
@@ -39,7 +41,7 @@ from ltl_quote.utils.transaction_log import log_api_transaction
 
 
 @frappe.whitelist(allow_guest=True)
-def get_ltl_rates(payload=None, **kwargs):
+def get_ltl_rates(payload=None, source=None, **kwargs):
 	"""
 	FLOWWOLF Unified Multi-Carrier Rating API
 
@@ -48,45 +50,75 @@ def get_ltl_rates(payload=None, **kwargs):
 
 	Request body (JSON):
 	    {
-	        "carrier_preference": "Dayton Freight",
-	        "carriers": ["SMC3", "Dayton"],
 	        "origin_zip": "45414",
+	        "origin_city": "DAYTON",
+	        "origin_state": "OH",
 	        "destination_zip": "60601",
-	        "accessorial_codes": ["LIFTGATE", "RESIDENTIAL"],
-	        "items": [{"classification": "70", "weight": 1450, "qty": 1}]
+	        "destination_city": "CHICAGO",
+	        "destination_state": "IL",
+	        "accessorial_codes": ["LIFTGATE"],
+	        "source": ["SMC3", "Dayton"],
+	        "items": [{"classification": "85", "weight": 1450, "qty": 1}]
 	    }
+
+	``source`` is a list of carrier rate providers. Blank entries are ignored.
+	If ``source`` is omitted or empty, rates are fetched from every LTL Carrier
+	the user has enabled.
 	"""
 	# 1. Capture request context safely from Postman / REST clients
 	headers = dict(frappe.request.headers) if hasattr(frappe, "request") else {}
-	if hasattr(frappe, "request") and frappe.request.data:
+	json_body = read_request_json()
+	if json_body:
+		body = dict(json_body)
+	elif hasattr(frappe, "request") and frappe.request.data:
 		try:
 			body = json.loads(frappe.request.data.decode("utf-8"))
 		except (ValueError, UnicodeDecodeError):
 			body = dict(frappe.local.form_dict)
 	else:
 		body = dict(frappe.local.form_dict)
+	if not isinstance(body, dict):
+		body = dict(frappe.local.form_dict)
 	body.pop("cmd", None)
 
 	status = "Queued"
 	response_payload = {}
-	carrier_id = "DAYTON" if "Dayton" in str(body.get("carrier_preference") or "") else "MOCK"
+	source = resolve_rate_source(source if source is not None else kwargs.get("source"), payload, kwargs, body, json_body)
+	carrier_id = "DAYTON" if "Dayton" in str(body.get("carrier_preference") or source or "") else "MOCK"
 
 	try:
 		request = parse_rating_payload(payload or body, **kwargs)
 		for field in ("origin_city", "origin_state", "destination_city", "destination_state"):
 			if body.get(field):
 				request[field] = str(body[field]).strip()
-		body = {**body, **request}
+		source = resolve_rate_source(
+			source if source else (kwargs.get("source")),
+			payload,
+			kwargs,
+			body,
+			request,
+			json_body,
+		)
+		request["source"] = source
+		body = {**body, **request, "source": source}
 
 		raw_preference = request.get("carrier_preference") or body.get("carrier_preference") or ""
 		raw_carriers = extract_requested_carriers(request, body, kwargs)
 		carrier_docs, filter_warnings, available_carriers = load_carriers_for_rating(
 			requested=raw_carriers,
 			carrier_preference=raw_preference,
+			source=source,
 		)
 		require_enabled_carriers(available_carriers)
-		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
+		filter_active = bool(
+			parse_carrier_tokens(source)
+			or parse_carrier_tokens(raw_carriers)
+			or parse_carrier_tokens(raw_preference)
+		)
 		applied_filter = applied_filter_ids(carrier_docs)
+		source = applied_filter or [row["id"] for row in available_carriers if row.get("id")]
+		request["source"] = source
+		body["source"] = source
 		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None
 
 		if len(carrier_docs) == 1:
@@ -124,6 +156,7 @@ def get_ltl_rates(payload=None, **kwargs):
 			"status": api_status,
 			"quote_request_id": quote_request.name,
 			"carrier_id": carrier_id,
+			"source": source,
 			"summary": {
 				"total_carriers_pinged": aggregation.get("carriers_pinged", 0),
 				"successful_quotes": len(ranked_quotes),
@@ -134,6 +167,7 @@ def get_ltl_rates(payload=None, **kwargs):
 				"destination_zip": request["destination_zip"],
 				"weight": request["total_weight"],
 				"freight_class": request["freight_class"],
+				"source": source,
 				"quotes": ranked_quotes,
 				"errors": errors,
 				"available_carriers": available_carriers,
@@ -156,17 +190,18 @@ def get_ltl_rates(payload=None, **kwargs):
 			"status": "error",
 			"error": f"Configuration Missing: {db_err}",
 			"carrier_id": carrier_id,
+			"source": source,
 		}
 	except frappe.ValidationError as e:
 		status = "API Error"
-		response_payload = {"status": "error", "error": str(e)}
+		response_payload = {"status": "error", "error": str(e), "source": source}
 	except Exception as e:
 		frappe.log_error(message=frappe.get_traceback(), title="LTL get_ltl_rates API Error")
 		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
 		raw = str(e)
 		if is_auth_error_text(raw):
 			raw = "Could not refresh carrier rates. Please try again."
-		response_payload = {"status": "error", "error": raw, "carrier_id": carrier_id}
+		response_payload = {"status": "error", "error": raw, "carrier_id": carrier_id, "source": source}
 	finally:
 		log_carrier_id = carrier_id or ("DAYTON" if "Dayton" in body.get("carrier_preference", "") else "Multi-Carrier")
 		log_api_transaction(headers, body, response_payload, status, log_carrier_id)

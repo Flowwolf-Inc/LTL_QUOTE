@@ -2362,6 +2362,7 @@ ltl_quote.Dashboard = class Dashboard {
 		const carriers = this.selected_carriers();
 		if (carriers.length) {
 			payload.carriers = carriers;
+			payload.source = carriers;
 		}
 
 		return payload;

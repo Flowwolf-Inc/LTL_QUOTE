@@ -1,0 +1,211 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-09-10 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "sync_status",
+  "column_break_status",
+  "revenova_id",
+  "synced_from_revenova",
+  "last_synced_on",
+  "last_sync_error",
+  "quote_section",
+  "quote_request",
+  "carrier",
+  "carrier_name",
+  "column_break_carrier",
+  "quoted_scac",
+  "carrier_quote_id",
+  "service_level",
+  "charges_section",
+  "total_charge",
+  "currency",
+  "column_break_charges",
+  "transit_days",
+  "origin_zip",
+  "destination_zip",
+  "payload_section",
+  "raw_payload"
+ ],
+ "fields": [
+  {
+   "default": "CQ-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "CQ-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nQuoted\nAccepted\nBooked\nCancelled\nError"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "sync_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Sync Status",
+   "options": "Pending\nSynced\nError",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "revenova_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Revenova Id",
+   "unique": 1,
+   "length": 18
+  },
+  {
+   "default": "0",
+   "fieldname": "synced_from_revenova",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Synced From Revenova"
+  },
+  {
+   "fieldname": "last_synced_on",
+   "fieldtype": "Datetime",
+   "label": "Last Synced On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_error",
+   "fieldtype": "Small Text",
+   "label": "Last Sync Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quote_section",
+   "fieldtype": "Section Break",
+   "label": "Carrier Quote"
+  },
+  {
+   "fieldname": "quote_request",
+   "fieldtype": "Link",
+   "label": "Quote Request",
+   "options": "LTL Quote Request"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Link",
+   "label": "Carrier",
+   "options": "LTL Carrier"
+  },
+  {
+   "fetch_from": "carrier.carrier_name",
+   "fieldname": "carrier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Carrier Name"
+  },
+  {
+   "fieldname": "column_break_carrier",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quoted_scac",
+   "fieldtype": "Data",
+   "label": "SCAC"
+  },
+  {
+   "fieldname": "carrier_quote_id",
+   "fieldtype": "Data",
+   "label": "Carrier Quote Id"
+  },
+  {
+   "fieldname": "service_level",
+   "fieldtype": "Data",
+   "label": "Service Level"
+  },
+  {
+   "fieldname": "charges_section",
+   "fieldtype": "Section Break",
+   "label": "Charges"
+  },
+  {
+   "fieldname": "total_charge",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total Charge",
+   "options": "currency"
+  },
+  {
+   "default": "USD",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "column_break_charges",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "transit_days",
+   "fieldtype": "Int",
+   "label": "Transit Days"
+  },
+  {
+   "fieldname": "origin_zip",
+   "fieldtype": "Data",
+   "label": "Origin ZIP"
+  },
+  {
+   "fieldname": "destination_zip",
+   "fieldtype": "Data",
+   "label": "Destination ZIP"
+  },
+  {
+   "fieldname": "payload_section",
+   "fieldtype": "Section Break",
+   "collapsible": 1,
+   "label": "Revenova Payload"
+  },
+  {
+   "fieldname": "raw_payload",
+   "fieldtype": "JSON",
+   "label": "Raw Payload"
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-10 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "Carrier Quote",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

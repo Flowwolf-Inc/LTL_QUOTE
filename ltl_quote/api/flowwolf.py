@@ -24,8 +24,10 @@ from ltl_quote.api.carrier_mapping import (
 	load_carrier_for_rating,
 	load_carriers_for_rating,
 	parse_carrier_tokens,
+	read_request_json,
 	require_enabled_carriers,
 	resolve_carrier_id,
+	resolve_rate_source,
 )
 from ltl_quote.api.payload import parse_rating_payload
 from ltl_quote.api.quote import (
@@ -58,19 +60,30 @@ FLOWWOLF_API_ENDPOINT = FLOWWOLF_RATES_ENDPOINT
 
 
 @frappe.whitelist(allow_guest=False)
-def get_rates(payload=None, **kwargs):
+def get_rates(payload=None, source=None, **kwargs):
 	"""FlowWolf unified multi-carrier LTL rating gateway."""
 	headers, body = _read_request_context()
 	status = "Queued"
 	response_payload: dict = {}
 	carrier_id = None
+	json_body = read_request_json()
+	source = resolve_rate_source(source if source is not None else kwargs.get("source"), payload, kwargs, body, json_body)
 
 	try:
 		request = parse_rating_payload(payload or body, **kwargs)
 		for field in ("origin_city", "origin_state", "destination_city", "destination_state"):
 			if body.get(field):
 				request[field] = str(body[field]).strip()
-		body = {**body, **request}
+		source = resolve_rate_source(
+			source if source else kwargs.get("source"),
+			payload,
+			kwargs,
+			body,
+			request,
+			json_body,
+		)
+		request["source"] = source
+		body = {**body, **request, "source": source}
 
 		shipment_request = _build_shipment_request_from_payload(request)
 
@@ -79,10 +92,18 @@ def get_rates(payload=None, **kwargs):
 		carrier_docs, filter_warnings, available_carriers = load_carriers_for_rating(
 			requested=raw_carriers,
 			carrier_preference=raw_preference,
+			source=source,
 		)
 		require_enabled_carriers(available_carriers)
-		filter_active = bool(parse_carrier_tokens(raw_carriers) or parse_carrier_tokens(raw_preference))
+		filter_active = bool(
+			parse_carrier_tokens(source)
+			or parse_carrier_tokens(raw_carriers)
+			or parse_carrier_tokens(raw_preference)
+		)
 		applied_filter = applied_filter_ids(carrier_docs)
+		source = applied_filter or [row["id"] for row in available_carriers if row.get("id")]
+		request["source"] = source
+		body["source"] = source
 		carrier_id = applied_filter[0] if len(applied_filter) == 1 else None
 
 		quote_request = _create_quote_request({**request, "save_request": request.get("save_request", True)})
@@ -102,6 +123,7 @@ def get_rates(payload=None, **kwargs):
 			"status": "success" if ranked_quotes else "error",
 			"engine": FLOWWOLF_ENGINE,
 			"quote_request_id": quote_request.name,
+			"source": source,
 			"summary": {
 				"total_carriers_pinged": len(carrier_docs),
 				"successful_quotes": len(ranked_quotes),
@@ -112,6 +134,7 @@ def get_rates(payload=None, **kwargs):
 				"destination_zip": shipment_request.destination_zip,
 				"weight": shipment_request.total_weight,
 				"freight_class": shipment_request.freight_class,
+				"source": source,
 				"quotes": ranked_quotes,
 				"errors": errors,
 				"available_carriers": available_carriers,
@@ -131,11 +154,21 @@ def get_rates(payload=None, **kwargs):
 	except frappe.ValidationError as e:
 		frappe.local.response["http_status_code"] = 400
 		status = "API Error"
-		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+		response_payload = {
+			"status": "error",
+			"engine": FLOWWOLF_ENGINE,
+			"message": str(e),
+			"source": source,
+		}
 	except Exception as e:
 		frappe.log_error(message=frappe.get_traceback(), title="FlowWolf get_rates API Error")
 		status = "Connection Failed" if "timeout" in str(e).lower() else "API Error"
-		response_payload = {"status": "error", "engine": FLOWWOLF_ENGINE, "message": str(e)}
+		response_payload = {
+			"status": "error",
+			"engine": FLOWWOLF_ENGINE,
+			"message": str(e),
+			"source": source,
+		}
 	finally:
 		log_body = {**(body or {}), "api_url": FLOWWOLF_API_ENDPOINT}
 		log_carrier_id = carrier_id or "Multi-Carrier"

@@ -237,19 +237,103 @@ def extract_requested_carriers(
 	return _carriers_from_mapping(form_dict)
 
 
-def load_carriers_for_rating(requested=None, carrier_preference=None) -> tuple[list, list, list]:
+def _source_value_from_mapping(mapping):
+	"""Return the raw ``source`` value from a dict, JSON string, or nested body."""
+	if mapping is None:
+		return None
+	if isinstance(mapping, (list, tuple, set)):
+		return list(mapping)
+	if isinstance(mapping, str):
+		text = mapping.strip()
+		if text.startswith("{") and text.endswith("}"):
+			try:
+				mapping = json.loads(text)
+			except ValueError:
+				return mapping
+		elif text.startswith("[") and text.endswith("]"):
+			try:
+				parsed = json.loads(text)
+				if isinstance(parsed, list):
+					return parsed
+			except ValueError:
+				return mapping
+		else:
+			return mapping
+	if not isinstance(mapping, dict):
+		return mapping
+
+	if "source" in mapping:
+		return mapping.get("source")
+
+	for nested_key in ("payload", "data"):
+		nested = mapping.get(nested_key)
+		if isinstance(nested, str):
+			try:
+				nested = json.loads(nested)
+			except ValueError:
+				continue
+		if isinstance(nested, dict) and "source" in nested:
+			return nested.get("source")
+	return None
+
+
+def read_request_json() -> dict:
+	"""Return the HTTP JSON body via ``frappe.request.get_json()`` when present."""
+	req = getattr(frappe, "request", None)
+	if req is None:
+		return {}
+	get_json = getattr(req, "get_json", None)
+	if callable(get_json):
+		try:
+			data = get_json(silent=True)
+		except TypeError:
+			try:
+				data = get_json()
+			except Exception:
+				data = None
+		except Exception:
+			data = None
+		if isinstance(data, dict):
+			return data
+	raw = getattr(req, "json", None)
+	return raw if isinstance(raw, dict) else {}
+
+
+def resolve_rate_source(source=None, *mappings) -> list[str]:
+	"""Parse ``source`` from a kwarg, JSON body, or nested payload.
+
+	Accepts a list (``["SMC3", "Dayton"]``), a JSON array string, or a single
+	name. Blank entries such as ``" "`` are ignored. Missing or empty source
+	returns ``[]`` so rating falls back to the user's enabled LTL Carriers.
+	"""
+	values = [source]
+	for mapping in mappings:
+		values.append(_source_value_from_mapping(mapping))
+	values.append(_source_value_from_mapping(read_request_json()))
+	for value in values:
+		if value is None:
+			continue
+		tokens = _raw_carrier_tokens(value)
+		if tokens:
+			return tokens
+	return []
+
+
+def load_carriers_for_rating(requested=None, carrier_preference=None, source=None) -> tuple[list, list, list]:
 	"""Intersect requested aliases with enabled LTL Carriers.
 
 	Returns ``(resolved_carrier_docs, warnings_list, available_carrier_metadata)``.
-	``carriers`` wins over ``carrier_preference`` when both are provided.
-	Empty requested + empty preference returns all enabled carriers.
+	``source`` wins over ``carriers`` and ``carrier_preference`` when provided.
+	Empty source + empty requested + empty preference returns all enabled carriers.
 	Unknown or disabled tokens are skipped with a warning.
 	"""
 	enabled = get_enabled_carriers() or []
 	available = [_carrier_metadata(doc) for doc in enabled]
 	enabled_by_id = _index_enabled_carriers(enabled)
 
-	raw_tokens = _raw_carrier_tokens(requested)
+	raw_tokens = _raw_carrier_tokens(source)
+	if not raw_tokens:
+		raw_tokens = _raw_carrier_tokens(requested)
 	if not raw_tokens:
 		raw_tokens = _raw_carrier_tokens(carrier_preference)
 
@@ -305,6 +389,7 @@ def _index_enabled_carriers(enabled: list) -> dict[str, Any]:
 			getattr(doc, "name", None),
 			getattr(doc, "carrier_code", None),
 			getattr(doc, "carrier_name", None),
+			getattr(doc, "connector_type", None),
 		):
 			text = str(key or "").strip().upper()
 			if text:
@@ -322,8 +407,8 @@ def applied_filter_ids(carrier_docs: list) -> list[str]:
 
 
 _CONNECTOR_FILTER_ALIASES = {
-	"DAYTON": {"DAYTON", "DAYTON FREIGHT"},
-	"TFORCE": {"TFORCE", "TFF", "TFORCE FREIGHT"},
+	"DAYTON": {"DAYTON", "DAYTON FREIGHT", "DAYTON FREIGHT LINES", "DAFG"},
+	"TFORCE": {"TFORCE", "TFF", "TFORCE FREIGHT", "TFFA"},
 	"ARCB": {"ARCB", "ARCBEST", "ABF", "ABFS", "ARCBEST API"},
 	"SMC3": {"SMC3"},
 	"MOCK": {"MOCK"},
@@ -343,43 +428,53 @@ def _filter_keys(carrier_docs: list) -> set[str]:
 		for alias_id, aliases in _CONNECTOR_FILTER_ALIASES.items():
 			if name in aliases or code in aliases or connector in aliases or alias_id in {name, code, connector}:
 				keys.update(aliases)
+				keys.add(alias_id)
 		if connector == "ARCBEST API":
 			keys.update(_CONNECTOR_FILTER_ALIASES["ARCB"])
 	keys.discard("")
 	return keys
 
 
+def _quote_field(quote, *names) -> str:
+	for name in names:
+		if isinstance(quote, dict):
+			value = quote.get(name)
+		else:
+			value = getattr(quote, name, None)
+		text = str(value or "").strip().upper()
+		if text:
+			return text
+	return ""
+
+
 def quote_matches_carrier_filter(quote, carrier_docs: list) -> bool:
-	"""True when a ranked quote belongs to one of the resolved carrier docs."""
+	"""True when a ranked quote belongs to one of the requested rate providers.
+
+	``source`` / ``rate_source`` on the quote is the rate provider (DAYTON, SMC3,
+	TFORCE, ARCBEST). When that field is set, it wins so an SMC3 row named
+	"Dayton Freight" is not returned for ``source: ["DAYTON"]``.
+	"""
 	if not carrier_docs:
 		return False
 	allowed = _filter_keys(carrier_docs)
-	if isinstance(quote, dict):
-		fields = [
-			quote.get("carrier_code"),
-			quote.get("carrier_name"),
-			quote.get("carrier"),
-			quote.get("source"),
-			quote.get("rate_source"),
-			quote.get("scac"),
-		]
-	else:
-		fields = [
-			getattr(quote, "carrier_code", None),
-			getattr(quote, "carrier_name", None),
-			getattr(quote, "carrier", None),
-			getattr(quote, "source", None),
-			getattr(quote, "rate_source", None),
-			getattr(quote, "scac", None),
-			getattr(quote, "quoted_scac", None),
-		]
-	for val in fields:
-		text = str(val or "").strip().upper()
-		if not text:
-			continue
-		if text in allowed:
+	provider = _quote_field(quote, "source", "rate_source")
+	if provider:
+		if provider in allowed:
 			return True
-		if "SMC3" in allowed and "SMC3" in text:
+		if "SMC3" in allowed and "SMC3" in provider:
+			return True
+		return False
+
+	for key in (
+		_quote_field(quote, "carrier_code"),
+		_quote_field(quote, "carrier_name", "carrier"),
+		_quote_field(quote, "scac", "quoted_scac"),
+	):
+		if not key:
+			continue
+		if key in allowed:
+			return True
+		if "SMC3" in allowed and "SMC3" in key:
 			return True
 	return False
 
@@ -396,18 +491,20 @@ def apply_carrier_response_filter(
 	filtered_errors = list(errors or [])
 	if filter_active:
 		filtered_quotes = [q for q in filtered_quotes if quote_matches_carrier_filter(q, carrier_docs)]
-		allowed = _filter_keys(carrier_docs)
 		kept_errors: list = []
 		for err in filtered_errors:
 			if not isinstance(err, dict):
 				kept_errors.append(err)
 				continue
-			carrier = str(err.get("carrier") or "").strip().upper()
 			message = str(err.get("error") or "").lower()
 			if "unknown or disabled carrier" in message:
 				kept_errors.append(err)
 				continue
-			if not carrier or carrier in allowed or ("SMC3" in allowed and "SMC3" in carrier):
+			if quote_matches_carrier_filter(err, carrier_docs):
+				kept_errors.append(err)
+				continue
+			carrier = str(err.get("carrier") or "").strip()
+			if not carrier:
 				kept_errors.append(err)
 		filtered_errors = kept_errors
 	if warnings:
