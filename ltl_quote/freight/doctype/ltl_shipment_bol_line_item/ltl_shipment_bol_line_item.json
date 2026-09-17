@@ -1,0 +1,127 @@
+{
+ "actions": [],
+ "creation": "2026-07-10 14:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "idx_line_no",
+  "handling_unit_qty",
+  "handling_unit_type",
+  "package_qty",
+  "package_type",
+  "freight_class",
+  "nmfc",
+  "hazmat",
+  "commodity_description",
+  "weight",
+  "weight_unit",
+  "length",
+  "width",
+  "height",
+  "dimension_unit",
+  "quote_reference"
+ ],
+ "fields": [
+  {
+   "fieldname": "idx_line_no",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Line No"
+  },
+  {
+   "fieldname": "handling_unit_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "HU Qty"
+  },
+  {
+   "fieldname": "handling_unit_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "HU Type"
+  },
+  {
+   "fieldname": "package_qty",
+   "fieldtype": "Int",
+   "label": "Package Qty"
+  },
+  {
+   "fieldname": "package_type",
+   "fieldtype": "Data",
+   "label": "Package Type"
+  },
+  {
+   "fieldname": "freight_class",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Class"
+  },
+  {
+   "fieldname": "nmfc",
+   "fieldtype": "Data",
+   "label": "NMFC"
+  },
+  {
+   "default": "0",
+   "fieldname": "hazmat",
+   "fieldtype": "Check",
+   "label": "Hazmat"
+  },
+  {
+   "fieldname": "commodity_description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Weight"
+  },
+  {
+   "default": "LBS",
+   "fieldname": "weight_unit",
+   "fieldtype": "Data",
+   "label": "Weight Unit"
+  },
+  {
+   "fieldname": "length",
+   "fieldtype": "Int",
+   "label": "Length"
+  },
+  {
+   "fieldname": "width",
+   "fieldtype": "Int",
+   "label": "Width"
+  },
+  {
+   "fieldname": "height",
+   "fieldtype": "Int",
+   "label": "Height"
+  },
+  {
+   "default": "IN",
+   "fieldname": "dimension_unit",
+   "fieldtype": "Data",
+   "label": "Dimension Unit"
+  },
+  {
+   "fieldname": "quote_reference",
+   "fieldtype": "Data",
+   "label": "Quote Reference"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-10 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Shipment BOL Line Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

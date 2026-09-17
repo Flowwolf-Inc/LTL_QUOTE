@@ -1,0 +1,167 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:center_id",
+ "creation": "2026-07-16 16:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "center_id",
+  "center_number",
+  "center_name",
+  "column_break_loc",
+  "city",
+  "state",
+  "zip",
+  "section_break_addr",
+  "address1",
+  "address2",
+  "section_break_contact",
+  "phone",
+  "toll_free",
+  "fax",
+  "section_break_geo",
+  "lat",
+  "lng"
+ ],
+ "fields": [
+  {
+   "fieldname": "center_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Code (ID)",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "center_number",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Number"
+  },
+  {
+   "fieldname": "center_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_loc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "city",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "City"
+  },
+  {
+   "fieldname": "state",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "State",
+   "length": 2
+  },
+  {
+   "fieldname": "zip",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "ZIP"
+  },
+  {
+   "fieldname": "section_break_addr",
+   "fieldtype": "Section Break",
+   "label": "Address"
+  },
+  {
+   "fieldname": "address1",
+   "fieldtype": "Data",
+   "label": "Address 1"
+  },
+  {
+   "fieldname": "address2",
+   "fieldtype": "Data",
+   "label": "Address 2"
+  },
+  {
+   "fieldname": "section_break_contact",
+   "fieldtype": "Section Break",
+   "label": "Contact"
+  },
+  {
+   "fieldname": "phone",
+   "fieldtype": "Data",
+   "label": "Phone"
+  },
+  {
+   "fieldname": "toll_free",
+   "fieldtype": "Data",
+   "label": "Toll Free"
+  },
+  {
+   "fieldname": "fax",
+   "fieldtype": "Data",
+   "label": "Fax"
+  },
+  {
+   "fieldname": "section_break_geo",
+   "fieldtype": "Section Break",
+   "label": "Coordinates"
+  },
+  {
+   "fieldname": "lat",
+   "fieldtype": "Float",
+   "label": "Latitude",
+   "precision": "9"
+  },
+  {
+   "fieldname": "lng",
+   "fieldtype": "Float",
+   "label": "Longitude",
+   "precision": "9"
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-16 16:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "Dayton Service Center",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 1,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "All",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "center_id",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "center_name",
+ "track_changes": 1
+}

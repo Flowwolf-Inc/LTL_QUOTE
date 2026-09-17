@@ -1,0 +1,5712 @@
+window.ltl_quote = window.ltl_quote || {};
+
+function ltl_connector_key(carrier) {
+	const code = String(carrier || "").toUpperCase();
+	if (code === "DAYTON") return "DAYTON";
+	if (["TFORCE", "TFF"].includes(code) || code.includes("TFORCE")) return "TFORCE";
+	if (["ARCB", "ARCBEST", "ABF", "ABFS"].includes(code) || code.includes("ARC")) return "ARCB";
+	if (code === "SMC3" || code.includes("SMC3")) return "SMC3";
+	return code;
+}
+
+function ltl_connector_label(carrier) {
+	const key = ltl_connector_key(carrier);
+	if (key === "TFORCE") return "TForce";
+	if (key === "ARCB") return "ArcBest";
+	if (key === "DAYTON") return "Dayton";
+	if (key === "SMC3") return "SMC3";
+	return key || "Carrier";
+}
+
+function ltl_supports_pickup(carrier) {
+	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(ltl_connector_key(carrier));
+}
+
+function ltl_pickup_ok(result) {
+	const status = String((result && result.status) || "").toLowerCase();
+	return (
+		status === "success" ||
+		status === "acknowledged" ||
+		Boolean(result && (result.ok || result.success))
+	);
+}
+
+function ltl_supports_smc3_bol(carrier) {
+	return ltl_connector_key(carrier) === "SMC3";
+}
+
+function ltl_supports_tracking(carrier) {
+	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(ltl_connector_key(carrier));
+}
+
+function ensure_ltl_fontawesome() {
+	if (document.getElementById("ltl-fontawesome")) {
+		return;
+	}
+	const link = document.createElement("link");
+	link.id = "ltl-fontawesome";
+	link.rel = "stylesheet";
+	link.href = "/assets/frappe/css/fonts/fontawesome/font-awesome.min.css";
+	document.head.appendChild(link);
+}
+
+frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
+	ensure_ltl_fontawesome();
+	const page = frappe.ui.make_app_page({
+		parent: wrapper,
+		title: __("LTL Quote"),
+		single_column: true,
+	});
+
+	// The dashboard renders its own chrome, so hide the default desk page header.
+	page.wrapper.find(".page-head").hide();
+
+	wrapper.ltl_dashboard = new ltl_quote.Dashboard(wrapper, page);
+	frappe.pages["ltl-quote"].ltl_dashboard = wrapper.ltl_dashboard;
+};
+
+frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
+	document.body.classList.add("ltl-fullscreen");
+	const dash = wrapper.ltl_dashboard;
+	if (!dash) return;
+
+	const pending_carrier = window.__ltl_open_carrier;
+	if (pending_carrier) {
+		window.__ltl_open_carrier = null;
+		dash.open_carrier_detail(pending_carrier);
+		return;
+	}
+	const pending_accessorial = window.__ltl_open_accessorial;
+	if (pending_accessorial) {
+		window.__ltl_open_accessorial = null;
+		dash.open_accessorial_detail(pending_accessorial);
+		return;
+	}
+
+	const opts = frappe.route_options || {};
+	const view = opts.ltl_view;
+	const name = opts.ltl_name;
+	if (view || name) {
+		frappe.route_options = {};
+		if (name && (view === "shipment" || view === "shipments")) {
+			dash.open_shipment_detail(name);
+			return;
+		}
+		if (name && view === "pickup") {
+			dash.open_pickup_detail(name);
+			return;
+		}
+		if (name && view === "tracking") {
+			dash.open_tracking_detail(name);
+			return;
+		}
+		if (name && (view === "quote" || view === "quotes")) {
+			dash.open_quote_detail(name);
+			return;
+		}
+		if (name && (view === "accessorial" || view === "accessorials")) {
+			dash.open_accessorial_detail(name);
+			return;
+		}
+		if (name && (view === "carrier" || view === "carriers")) {
+			if (dash.is_shipper_user()) {
+				dash.body.find(".ltl-nav-item").removeClass("active");
+				dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+				dash.show_view("quote");
+				return;
+			}
+			dash.open_carrier_detail(name);
+			return;
+		}
+		if (view === "carriers" && dash.is_shipper_user()) {
+			dash.body.find(".ltl-nav-item").removeClass("active");
+			dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+			dash.show_view("quote");
+			return;
+		}
+		if (
+			view === "quote" ||
+			view === "quotes" ||
+			view === "invoices" ||
+			view === "pods" ||
+			view === "shipments" ||
+			view === "carriers" ||
+			view === "accessorials"
+		) {
+			dash.body.find(".ltl-nav-item").removeClass("active");
+			dash.body.find(`.ltl-nav-item[data-view="${view}"]`).addClass("active");
+			dash.show_view(view);
+			return;
+		}
+	}
+
+	dash.load_recent_requests();
+};
+
+/** Navigate to the themed LTL Quote page (never the legacy Desk Form/List). */
+ltl_quote.open_dashboard = function (opts = {}) {
+	frappe.route_options = Object.assign({}, frappe.route_options || {}, {
+		ltl_view: opts.view || null,
+		ltl_name: opts.name || null,
+	});
+	frappe.set_route("ltl-quote");
+};
+
+frappe.pages["ltl-quote"].on_page_hide = function () {
+	document.body.classList.remove("ltl-fullscreen");
+};
+
+const FREIGHT_CLASSES = [
+	"50", "55", "60", "65", "70", "77.5", "85", "92.5", "100", "110",
+	"125", "150", "175", "200", "250", "300", "400", "500",
+];
+
+// Mockup checkbox label -> internal LTL Accessorial code sent to the rating API.
+const PICKUP_ACCESSORIALS = [
+	{ label: "Liftgate Pickup", code: "LIFTGATE" },
+	{ label: "Inside Pickup", code: "INSIDE_DELIVERY" },
+];
+const DELIVERY_ACCESSORIALS = [
+	{ label: "Liftgate Delivery", code: "LIFTGATE" },
+	{ label: "Inside Delivery", code: "INSIDE_DELIVERY" },
+	{ label: "Residential Delivery", code: "RESIDENTIAL" },
+	{ label: "Notify Before Delivery", code: "APPOINTMENT" },
+];
+const LOAD_ACCESSORIALS = [
+	{ label: "Limited Access", code: "LIMITED_ACCESS" },
+	{ label: "Hazmat Handling", code: "HAZMAT" },
+	{ label: "Delivery Appointment", code: "APPOINTMENT" },
+];
+
+function new_line_item(overrides = {}) {
+	return Object.assign(
+		{
+			id: `li_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+			item_number: "",
+			item_name: "",
+			item_id: "",
+			rate: "",
+			description: "",
+			units: "",
+			quantity: "",
+			packaging_units: "",
+			packaging_unit_count: "",
+			dimension_units: "IN",
+			length: "",
+			width: "",
+			height: "",
+			volume_units: "",
+			volume: "",
+			area_units: "",
+			area: "",
+			weight_units: "",
+			weight: "",
+			hazmat_class_division: "",
+			hazmat_phone: "",
+			hazmat_contact_company: "",
+			hazmat_contact: "",
+			hazmat_number: "",
+			hazmat_packaging_group: "",
+			hazmat: "",
+			hazmat_number_type: "",
+			linear_feet: "",
+			nmfc_class: "",
+			nmfc_number: "",
+			pickup_stop_location: "",
+			pickup: "",
+			drop_stop_location: "",
+			drop: "",
+		},
+		overrides
+	);
+}
+
+const SMC3_SCAC_NAMES = {
+	SMCA: "SMC3 Demo Carrier",
+	ODFL: "Old Dominion Freight Line",
+	SAIA: "Saia LTL Freight",
+	EXLA: "Estes Express Lines",
+	DAFG: "Dayton Freight Lines",
+	ABFS: "ABF Freight",
+	PYLE: "A. Duie Pyle",
+	AACT: "AAA Cooper Transportation",
+	DPHE: "AAA Cooper Transportation",
+	MIDW: "AAA Cooper Transportation",
+	AVRT: "Averitt Express",
+	CTII: "Central Transport LLC",
+	FXFE: "FedEx Freight",
+	FXNL: "FedEx Freight",
+	FWDN: "Forward Air, Inc",
+	RDFS: "R+L Carriers",
+	PITD: "Pitt Ohio",
+	SEFL: "Southeastern Freight Lines",
+	TFF: "TForce Freight",
+	TFFA: "TForce Freight",
+	CNWY: "XPO Logistics",
+	XPOL: "XPO Logistics",
+};
+
+const NAV_ICON_SVG = {
+	file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>`,
+	list: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="17" y2="13"/><line x1="7" y1="17" x2="13" y2="17"/></svg>`,
+	truck: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="7" width="15" height="11" rx="1"/><path d="M16 10h4l3 3v5h-7V10z"/><circle cx="5.5" cy="18.5" r="1.5"/><circle cx="18.5" cy="18.5" r="1.5"/></svg>`,
+	invoice: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`,
+	check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><polyline points="8 12 11 15 16 9"/></svg>`,
+	users: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+	tag: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>`,
+	cube: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
+	plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+	eye: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+	paperclip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`,
+};
+
+const NAV_SECTIONS = [
+	{
+		title: "RATE & BOOKING",
+		items: [
+			{ label: "New Carrier Quote", icon: "file", view: "quote", badge: "+", active: true },
+			{ label: "LTL Quote List", icon: "list", view: "quotes" },
+			{ label: "LTL Shipment", icon: "truck", view: "shipments" },
+			{ label: "LTL CI", icon: "invoice", view: "invoices" },
+			{ label: "LTL POD", icon: "check", view: "pods" },
+		],
+	},
+	{
+		title: "SETTINGS",
+		items: [
+			{ label: "Quote Source", icon: "users", view: "carriers" },
+			{ label: "Accessorials", icon: "tag", view: "accessorials" },
+		],
+	},
+];
+
+function ltl_nav_icon(name) {
+	return NAV_ICON_SVG[name] || "";
+}
+
+// Themed in-page list views. Each renders inside the dashboard shell.
+const LIST_VIEWS = {
+	quotes: {
+		doctype: "LTL Quote Request",
+		title: "LTL Quote List",
+		sub: "All rate requests across carriers.",
+		icon: "list",
+		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation", "bol_number", "pro_number", "bol_document_url"],
+		order_by: "creation desc",
+		search: ["name", "origin_zip", "destination_zip", "origin_city", "destination_city"],
+		columns: [
+			{ label: "Request ID", type: "mono", key: "name" },
+			{ label: "Origin", type: "origin" },
+			{ label: "Destination", type: "destination" },
+			{ label: "Weight (lbs)", type: "num", key: "total_weight" },
+			{ label: "Class", key: "freight_class" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Created On", type: "datetime", key: "creation" },
+		],
+	},
+	shipments: {
+		doctype: "LTL Shipment",
+		title: "LTL Shipment",
+		sub: "Booked shipments and their tracking status.",
+		icon: "truck",
+		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation", "bol_document", "bol_document_url", "bol_image"],
+		order_by: "creation desc",
+		search: ["name", "carrier_name", "bol_number", "pro_number", "status"],
+		columns: [
+			{ label: "Shipment ID", type: "mono", key: "name" },
+			{ label: "Carrier", type: "text", key: "carrier_name", fallback: "carrier" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "PRO #", key: "pro_number" },
+			{ label: "Total Charge", type: "money", key: "total_charge" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Booked On", type: "datetime", key: "booked_on" },
+		],
+	},
+	carriers: {
+		doctype: "LTL Carrier",
+		title: "Quote Source",
+		sub: "Configured carriers and their integrations.",
+		icon: "users",
+		fields: ["name", "carrier_code", "carrier_name", "scac", "connector_type", "reliability_score", "enabled"],
+		order_by: "carrier_name asc",
+		search: ["carrier_code", "carrier_name", "scac", "connector_type"],
+		columns: [
+			{ label: "Code", type: "mono", key: "carrier_code" },
+			{ label: "Carrier Name", type: "text", key: "carrier_name" },
+			{ label: "SCAC", key: "scac" },
+			{ label: "Connector", key: "connector_type" },
+			{ label: "Reliability", type: "num", key: "reliability_score" },
+			{ label: "Enabled", type: "bool", key: "enabled" },
+		],
+	},
+	invoices: {
+		doctype: "LTL Carrier Invoice",
+		title: "LTL CI",
+		sub: "Carrier invoices received against booked shipments.",
+		icon: "invoice",
+		fields: [
+			"name",
+			"shipment",
+			"quote_request",
+			"carrier_name",
+			"carrier",
+			"invoice_number",
+			"invoice_date",
+			"bol_number",
+			"pro_number",
+			"quoted_amount",
+			"billed_amount",
+			"currency",
+			"status",
+			"source",
+			"carrier_invoice",
+			"creation",
+		],
+		order_by: "creation desc",
+		search: ["name", "shipment", "invoice_number", "bol_number", "pro_number", "carrier_name", "status"],
+		columns: [
+			{ label: "Invoice ID", type: "mono", key: "name" },
+			{ label: "Shipment", type: "mono", key: "shipment" },
+			{ label: "Carrier", type: "text", key: "carrier_name", fallback: "carrier" },
+			{ label: "Invoice #", key: "invoice_number" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "Quoted Amount", type: "money", key: "quoted_amount" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Invoice Date", type: "datetime", key: "invoice_date" },
+		],
+	},
+	pods: {
+		doctype: "LTL POD",
+		title: "LTL POD",
+		sub: "Proof of delivery documents for booked shipments.",
+		icon: "check",
+		fields: [
+			"name",
+			"shipment",
+			"carrier_name",
+			"carrier",
+			"pro_number",
+			"bol_number",
+			"status",
+			"source",
+			"pod_document",
+			"creation",
+		],
+		order_by: "creation desc",
+		search: ["name", "shipment", "pro_number", "bol_number", "carrier_name", "status"],
+		columns: [
+			{ label: "POD ID", type: "mono", key: "name" },
+			{ label: "Shipment", type: "mono", key: "shipment" },
+			{ label: "Carrier", type: "text", key: "carrier_name", fallback: "carrier" },
+			{ label: "PRO #", key: "pro_number" },
+			{ label: "BOL #", key: "bol_number" },
+			{ label: "Status", type: "status", key: "status" },
+			{ label: "Source", key: "source" },
+			{ label: "Created On", type: "datetime", key: "creation" },
+		],
+	},
+	accessorials: {
+		doctype: "LTL Accessorial",
+		title: "Accessorials",
+		sub: "Accessorial service catalog.",
+		icon: "tag",
+		fields: ["name", "accessorial_code", "accessorial_name", "charge_type", "default_amount", "currency"],
+		order_by: "accessorial_code asc",
+		limit: 500,
+		search: ["accessorial_code", "accessorial_name", "charge_type"],
+		columns: [
+			{ label: "Code", type: "mono", key: "accessorial_code" },
+			{ label: "Name", type: "text", key: "accessorial_name" },
+			{ label: "Charge Type", key: "charge_type" },
+			{ label: "Default Amount", type: "money", key: "default_amount" },
+		],
+	},
+};
+
+function resolve_file_url(value) {
+	const attach = String(value || "").trim();
+	if (!attach) return "";
+	if (attach.startsWith("http")) return attach;
+	return window.location.origin + (attach.startsWith("/") ? attach : `/${attach}`);
+}
+
+function resolve_bol_url(row) {
+	if (!row) return "";
+	const url = String(row.bol_document_url || "").trim();
+	if (url) return resolve_file_url(url);
+	return resolve_file_url(row.bol_document);
+}
+
+function resolve_bol_image_url(row) {
+	if (!row) return "";
+	return resolve_file_url(row.bol_image);
+}
+
+function is_bol_image_url(url) {
+	const path = String(url || "").split("?")[0].toLowerCase();
+	return [".png", ".jpg", ".jpeg", ".gif", ".webp"].some((ext) => path.endsWith(ext));
+}
+
+ltl_quote.Dashboard = class Dashboard {
+	constructor(wrapper, page) {
+		this.wrapper = wrapper;
+		this.page = page;
+		this.body = $(page.main).addClass("ltl-dashboard-root");
+		this.quote_request_id = null;
+		this.quotes = [];
+		this.booking_context = null;
+		this.quote_request_status = null;
+		this.rate_errors = [];
+		this.expanded = false;
+		this.load_acc_expanded = false;
+		this.line_items_expanded = false;
+		this.line_items = [];
+		this.editing_line_item = null;
+		this.editing_line_item_is_new = false;
+		this.packaging_type_options = [];
+		this.shipping_class_options = FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		this.state_province_options = [];
+		this.available_carriers = [];
+		this.carriers_loaded = false;
+		this.acc_options = {
+			pickup: PICKUP_ACCESSORIALS,
+			delivery: DELIVERY_ACCESSORIALS,
+			load: LOAD_ACCESSORIALS,
+		};
+		this.dayton_acc_extras = { pickup: [], delivery: [] };
+		this.init();
+	}
+
+	init() {
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_accessorial_options",
+			callback: (r) => {
+				if (r.message && (r.message.delivery || []).length) {
+					this.acc_options = r.message;
+				}
+				this.build();
+			},
+			error: () => this.build(),
+		});
+		this.load_packaging_type_options();
+		this.load_shipping_class_options();
+		this.load_state_province_options();
+		this.load_enabled_carrier_options();
+		this.load_dayton_accessorial_extras();
+	}
+
+	load_dayton_accessorial_extras() {
+		["pickup", "delivery"].forEach((side) => {
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_dayton_accessorial_extras",
+				args: { side },
+				callback: (r) => {
+					this.dayton_acc_extras[side] = r.message || [];
+					this.refresh_dayton_acc_extras(side);
+				},
+			});
+		});
+	}
+
+	refresh_dayton_acc_extras(side) {
+		if (!this.body) return;
+		const od_side = side === "pickup" ? "origin" : "destination";
+		const host = this.body.find(`[data-dayton-extras='${od_side}']`);
+		if (!host.length) return;
+		host.html(this.render_dayton_extra_boxes(side, od_side));
+	}
+
+	load_enabled_carrier_options() {
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_enabled_carrier_options",
+			callback: (r) => {
+				this.refresh_carrier_filter_options(r.message || []);
+			},
+			error: () => {
+				this.refresh_carrier_filter_options([]);
+			},
+		});
+	}
+
+	load_packaging_type_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_packaging_type_options",
+			callback: (r) => {
+				this.packaging_type_options = r.message || [];
+			},
+		});
+	}
+
+	load_shipping_class_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_shipping_class_options",
+			callback: (r) => {
+				const rows = r.message || [];
+				if (rows.length) {
+					this.shipping_class_options = rows;
+					this.refresh_freight_class_selects();
+				}
+			},
+		});
+	}
+
+	refresh_freight_class_selects() {
+		const html = this.freight_options();
+		this.body.find("[data-field='freight_class'],[data-field='exp_freight_class']").each((_, el) => {
+			const $el = $(el);
+			const current = $el.val();
+			$el.html(html);
+			if (current) $el.val(current);
+		});
+	}
+
+	load_state_province_options() {
+		frappe.call({
+			method: "ltl_quote.api.shipping.get_state_province_options",
+			callback: (r) => {
+				const rows = r.message || [];
+				if (rows.length) {
+					this.state_province_options = rows;
+					this.refresh_state_province_selects();
+				}
+			},
+		});
+	}
+
+	refresh_state_province_selects() {
+		if (!this.body) return;
+		const html = this.state_province_options_html();
+		this.body.find("[data-field='exp_origin_state'],[data-field='exp_destination_state']").each((_, el) => {
+			const $el = $(el);
+			const current = $el.val();
+			$el.html(html);
+			if (current) $el.val(current);
+		});
+	}
+
+	state_province_options_html(selected = "") {
+		const rows = this.state_province_options || [];
+		const options = rows
+			.map((row) => {
+				const value = typeof row === "object" ? row.value || row.code : row;
+				const label = typeof row === "object" ? row.label || row.value || row.code : row;
+				const sel = String(selected) === String(value) ? "selected" : "";
+				return `<option value="${frappe.utils.escape_html(String(value))}" ${sel}>${frappe.utils.escape_html(
+					String(label)
+				)}</option>`;
+			})
+			.join("");
+		return `<option value="">Select state</option>${options}`;
+	}
+
+	build() {
+		this.render();
+		this.apply_theme(this.saved_theme());
+		this.bind_events();
+		this.refresh_line_items_table();
+		this._built = true;
+		const pending =
+			this._pending_detail ||
+			(window.__ltl_open_carrier
+				? { type: "carrier", name: window.__ltl_open_carrier }
+				: null) ||
+			(window.__ltl_open_accessorial
+				? { type: "accessorial", name: window.__ltl_open_accessorial }
+				: null);
+		if (pending && pending.name) {
+			this._pending_detail = null;
+			window.__ltl_open_carrier = null;
+			window.__ltl_open_accessorial = null;
+			if (pending.type === "carrier") this.open_carrier_detail(pending.name);
+			else if (pending.type === "accessorial") this.open_accessorial_detail(pending.name);
+			return;
+		}
+		this.load_recent_requests();
+	}
+
+	theme_storage_key() {
+		return "ltl_quote_theme";
+	}
+
+	available_themes() {
+		const v = this.theme_icon_version();
+		return [
+			{
+				id: "theme-1",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/image/theme-01.png?v=${v}`,
+				enabled: false,
+			},
+			{
+				id: "theme-2",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/image/theme-02.png?v=${v}`,
+				enabled: false,
+			},
+			{
+				id: "compact-purple",
+				label: __("Purple Theme"),
+				icon: `/assets/ltl_quote/image/purple-theme.png?v=${v}`,
+				enabled: true,
+			},
+			{
+				id: "theme-4",
+				label: __("Coming soon"),
+				icon: `/assets/ltl_quote/image/theme-04.png?v=${v}`,
+				enabled: false,
+			},
+		];
+	}
+
+	theme_icon_version() {
+		return "5";
+	}
+
+	theme_icon_url(theme_id) {
+		const theme = this.available_themes().find((item) => item.id === theme_id);
+		if (theme && theme.icon) return theme.icon;
+		return `/assets/ltl_quote/image/purple-theme.png?v=${this.theme_icon_version()}`;
+	}
+
+	default_theme() {
+		return "compact-purple";
+	}
+
+	normalize_theme(theme) {
+		const match = this.available_themes().find((item) => item.id === theme && item.enabled !== false);
+		return match ? match.id : this.default_theme();
+	}
+
+	saved_theme() {
+		try {
+			return this.normalize_theme(localStorage.getItem(this.theme_storage_key()));
+		} catch (e) {
+			return this.default_theme();
+		}
+	}
+
+	apply_theme(theme) {
+		const id = this.normalize_theme(theme);
+		const icon = this.theme_icon_url(id);
+		const label = (this.available_themes().find((item) => item.id === id) || {}).label || __("Theme");
+		this.body.attr("data-ltl-theme", id);
+		this.body.find(".ltl-theme-btn-icon").attr({
+			src: icon,
+			alt: label,
+		});
+		this.body.find(".ltl-theme-btn").attr("aria-label", __("Theme: {0}", [label]));
+		this.body.find(".ltl-theme-option").each((_, el) => {
+			const selected = el.getAttribute("data-theme") === id;
+			el.classList.toggle("is-selected", selected);
+			el.setAttribute("aria-selected", selected ? "true" : "false");
+		});
+		try {
+			localStorage.setItem(this.theme_storage_key(), id);
+		} catch (e) {
+			/* ignore quota / private mode */
+		}
+	}
+
+	render_theme_picker() {
+		const current = this.normalize_theme(this.saved_theme());
+		const current_icon = this.theme_icon_url(current);
+		const current_label = (this.available_themes().find((item) => item.id === current) || {}).label || __("Theme");
+		const options = this.available_themes()
+			.map((theme) => {
+				const enabled = theme.enabled !== false;
+				const disabled_attr = enabled ? "" : "disabled";
+				const disabled_class = enabled ? "" : " is-disabled";
+				return `<button type="button" class="ltl-theme-option${disabled_class}" role="option" data-theme="${frappe.utils.escape_html(
+					theme.id
+				)}" title="${frappe.utils.escape_html(theme.label)}" aria-label="${frappe.utils.escape_html(
+					theme.label
+				)}" aria-selected="false" ${disabled_attr}>
+						<img class="ltl-theme-option-icon" src="${frappe.utils.escape_html(theme.icon)}" alt="">
+					</button>`;
+			})
+			.join("");
+		return `
+			<div class="ltl-theme-picker">
+				<button type="button" class="ltl-theme-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="${frappe.utils.escape_html(
+					__("Theme: {0}", [current_label])
+				)}">
+					<img class="ltl-theme-btn-icon" src="${frappe.utils.escape_html(current_icon)}" alt="${frappe.utils.escape_html(
+						current_label
+					)}">
+				</button>
+				<div class="ltl-theme-menu" role="listbox">
+					<div class="ltl-theme-menu-label">${__("Available themes")}</div>
+					<div class="ltl-theme-grid">
+						${options}
+					</div>
+				</div>
+			</div>`;
+	}
+
+	theme_menu_open() {
+		return this.body.find(".ltl-theme-picker").hasClass("is-open");
+	}
+
+	open_theme_menu() {
+		this.body.find(".ltl-theme-picker").addClass("is-open");
+		this.body.find(".ltl-theme-btn").attr("aria-expanded", "true");
+	}
+
+	close_theme_menu() {
+		this.body.find(".ltl-theme-picker").removeClass("is-open");
+		this.body.find(".ltl-theme-btn").attr("aria-expanded", "false");
+	}
+
+	toggle_theme_menu() {
+		if (this.theme_menu_open()) this.close_theme_menu();
+		else {
+			this.close_user_menu();
+			this.open_theme_menu();
+		}
+	}
+
+	render_user_menu() {
+		const fullname = frappe.session.user_fullname || frappe.session.user || __("User");
+		const initials = String(fullname)
+			.split(/\s+/)
+			.filter(Boolean)
+			.slice(0, 2)
+			.map((part) => part[0])
+			.join("")
+			.toUpperCase() || "U";
+		const display = initials.length === 1 ? String(fullname).slice(0, 2).toUpperCase() : initials;
+		return `
+			<div class="ltl-user-picker">
+				<button type="button" class="ltl-user" data-action="toggle-user-menu" aria-haspopup="menu" aria-expanded="false" aria-label="${frappe.utils.escape_html(
+					fullname
+				)}">
+					<span class="ltl-avatar">${frappe.utils.escape_html(display)}</span>
+					<span class="ltl-username">${frappe.utils.escape_html(fullname)}</span>
+				</button>
+				<div class="ltl-user-menu" role="menu">
+					<button type="button" class="ltl-user-menu-item" role="menuitem" data-action="logout">
+						<i class="fa fa-sign-out"></i>
+						${__("Log Out")}
+					</button>
+				</div>
+			</div>`;
+	}
+
+	user_menu_open() {
+		return this.body.find(".ltl-user-picker").hasClass("is-open");
+	}
+
+	open_user_menu() {
+		this.close_theme_menu();
+		this.body.find(".ltl-user-picker").addClass("is-open");
+		this.body.find(".ltl-user").attr("aria-expanded", "true");
+	}
+
+	close_user_menu() {
+		this.body.find(".ltl-user-picker").removeClass("is-open");
+		this.body.find(".ltl-user").attr("aria-expanded", "false");
+	}
+
+	toggle_user_menu() {
+		if (this.user_menu_open()) this.close_user_menu();
+		else this.open_user_menu();
+	}
+
+	logout_user() {
+		this.close_user_menu();
+		frappe.call({
+			method: "logout",
+			callback: (r) => {
+				if (r.exc) return;
+				if (frappe.app) frappe.app.logged_out = true;
+				if (frappe.app && typeof frappe.app.redirect_to_login === "function") {
+					frappe.app.redirect_to_login();
+					return;
+				}
+				window.location.href = "/login";
+			},
+		});
+	}
+
+	render() {
+		this.body.html(`
+			<div class="ltl-dashboard">
+				${this.render_sidebar()}
+				<div class="ltl-main">
+					<div class="ltl-topbar">
+						<div class="ltl-breadcrumb">
+							<span>LTL Quote</span>
+							<span class="sep">&rsaquo;</span>
+							<span class="current">New Carrier Quote</span>
+						</div>
+						<div class="ltl-topbar-right">
+							${this.render_theme_picker()}
+							<span class="ltl-bell"><i class="fa fa-bell-o"></i></span>
+							${this.render_user_menu()}
+						</div>
+					</div>
+					<div class="ltl-scroll">
+						<div class="ltl-view ltl-view-quote">
+							${this.render_form_header()}
+							${this.render_shipment_form()}
+							<div class="ltl-card ltl-rates-card" style="display:none;">
+								<div class="ltl-card-head"><i class="fa fa-refresh"></i> Available Carrier Rates</div>
+								<div class="ltl-rates-body"></div>
+							</div>
+							<div class="ltl-card">
+								<div class="ltl-card-head"><i class="fa fa-history"></i> Recent Quote Requests</div>
+								<div class="ltl-recent-body"><div class="ltl-empty">Loading…</div></div>
+							</div>
+						</div>
+						<div class="ltl-view ltl-view-list" style="display:none;">
+							<div class="ltl-page-head">
+								<div class="ltl-page-head-left">
+									<span class="ltl-page-icon ltl-list-icon">${ltl_nav_icon("list")}</span>
+									<div>
+										<div class="ltl-page-title ltl-list-title">List</div>
+										<div class="ltl-page-sub ltl-list-sub"></div>
+									</div>
+								</div>
+								<div class="ltl-page-head-actions">
+									<input type="text" class="ltl-input ltl-list-search" placeholder="Search…" />
+									<button class="ltl-btn ltl-btn-primary ltl-list-new">${ltl_nav_icon("plus")} New</button>
+								</div>
+							</div>
+							<div class="ltl-card">
+								<div class="ltl-list-body"><div class="ltl-empty">Loading…</div></div>
+							</div>
+						</div>
+						<div class="ltl-view ltl-view-detail" style="display:none;">
+							<div class="ltl-detail-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
+						<div class="ltl-view ltl-view-line-item" style="display:none;">
+							<div class="ltl-line-item-edit-body"></div>
+						</div>
+						<div class="ltl-view ltl-view-pickup" style="display:none;">
+							<div class="ltl-pickup-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
+						<div class="ltl-view ltl-view-tracking" style="display:none;">
+							<div class="ltl-tracking-body"><div class="ltl-empty">Loading…</div></div>
+						</div>
+					</div>
+				</div>
+			</div>
+		`);
+	}
+
+	render_sidebar() {
+		const hide_quote_source = this.is_shipper_user();
+		const sections = NAV_SECTIONS.map((section) => {
+			const items = section.items.filter((item) => !(hide_quote_source && item.view === "carriers"));
+			if (!items.length) return "";
+			const title = section.title ? `<div class="ltl-nav-title">${section.title}</div>` : "";
+			const links = items
+				.map((item) => {
+					const badge = item.badge ? `<span class="ltl-nav-badge">${item.badge}</span>` : "";
+					const active = item.active ? "active" : "";
+					return `
+						<a class="ltl-nav-item ${active}" data-view="${item.view}">
+							<span class="ltl-nav-ico">${ltl_nav_icon(item.icon)}</span>
+							<span class="ltl-nav-label">${item.label}</span>
+							${badge}
+						</a>`;
+				})
+				.join("");
+			return `<div class="ltl-nav-section">${title}${links}</div>`;
+		}).join("");
+
+		return `
+			<aside class="ltl-sidebar">
+				<div class="ltl-brand">
+					<span class="ltl-brand-logo">${ltl_nav_icon("cube")}</span>
+					<span class="ltl-brand-text"><b>LTL</b><small>Logistics</small></span>
+				</div>
+				<nav class="ltl-nav">${sections}</nav>
+				<div class="ltl-help">
+					<div class="ltl-help-title">Need Help?</div>
+					<div class="ltl-help-text">Contact our support team for assistance.</div>
+					<button class="ltl-help-btn">Contact Support</button>
+				</div>
+			</aside>`;
+	}
+
+	render_form_header() {
+		return `
+			<div class="ltl-page-head">
+				<div class="ltl-page-head-left">
+					<span class="ltl-page-icon">${ltl_nav_icon("file")}</span>
+					<div>
+						<div class="ltl-page-title">New Carrier Quote Request</div>
+						<div class="ltl-page-sub">Enter shipment details to get the best LTL rates from our carriers.</div>
+					</div>
+				</div>
+				<div class="ltl-page-head-actions">
+					<button class="ltl-btn ltl-btn-light" data-action="clear">Clear All</button>
+					<button class="ltl-btn ltl-btn-primary" data-action="fetch"><i class="fa fa-bolt"></i> Fetch Rates</button>
+				</div>
+			</div>`;
+	}
+
+	freight_options() {
+		const classes = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const options = classes
+			.map((c) => {
+				const value = typeof c === "object" ? c.value : c;
+				const label = typeof c === "object" ? c.label || c.value : c;
+				return `<option value="${frappe.utils.escape_html(String(value))}">${frappe.utils.escape_html(
+					String(label)
+				)}</option>`;
+			})
+			.join("");
+		return `<option value="" selected>Select class</option>${options}`;
+	}
+
+	default_carrier_filter_options() {
+		return [
+			{ id: "SMC3", name: "SMC3" },
+			{ id: "DAYTON", name: "Dayton Freight" },
+			{ id: "TFORCE", name: "TForce Freight" },
+			{ id: "ARCB", name: "ArcBest" },
+		];
+	}
+
+	is_shipper_user() {
+		const user = String(frappe.session.user || "");
+		if (!user || user === "Administrator" || user === "Guest") return false;
+		const roles =
+			(frappe.boot && frappe.boot.user && frappe.boot.user.roles) || frappe.user_roles || [];
+		if (roles.includes("Administrator")) return false;
+		return roles.includes("Shipper");
+	}
+
+	has_enabled_carriers() {
+		return Boolean(this.available_carriers && this.available_carriers.length);
+	}
+
+	no_enabled_carriers_message() {
+		return __("Enable at least one carrier to get quote rates.");
+	}
+
+	carrier_filter_placeholder() {
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			return this.no_enabled_carriers_message();
+		}
+		return __("All enabled carriers");
+	}
+
+	carrier_filter_hint() {
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			return this.no_enabled_carriers_message();
+		}
+		return __("Leave empty to quote all enabled carriers.");
+	}
+
+	carrier_filter_rows() {
+		if (this.carriers_loaded) {
+			return this.available_carriers || [];
+		}
+		return this.available_carriers && this.available_carriers.length
+			? this.available_carriers
+			: this.default_carrier_filter_options();
+	}
+
+	carrier_filter_options_html(selected_ids) {
+		const selected = new Set((selected_ids || []).map(String));
+		return this.carrier_filter_rows()
+			.map((c) => {
+				const raw_id = String(c.id || c.name || "");
+				const raw_name = String(c.name || c.id || "");
+				if (!raw_id) return "";
+				const id = frappe.utils.escape_html(raw_id);
+				const name = frappe.utils.escape_html(raw_name);
+				const checked = selected.has(raw_id) ? "checked" : "";
+				const active = selected.has(raw_id) ? " is-checked" : "";
+				return `<label class="ltl-ms-option${active}">
+					<input type="checkbox" value="${id}" ${checked} />
+					<span class="ltl-ms-option-name">${name}</span>
+				</label>`;
+			})
+			.join("");
+	}
+
+	render_carrier_filter(field) {
+		if (this.is_shipper_user()) return "";
+		return `
+			<div class="ltl-field ltl-field-carriers">
+				<label>${__("Source")}</label>
+				<div class="ltl-ms" data-field="${field}">
+					<button type="button" class="ltl-ms-toggle" data-action="toggle-carriers" aria-haspopup="listbox" aria-expanded="false">
+						<span class="ltl-ms-summary">
+							<span class="ltl-ms-placeholder">${this.carrier_filter_placeholder()}</span>
+						</span>
+						<i class="fa fa-chevron-down ltl-ms-caret"></i>
+					</button>
+					<div class="ltl-ms-panel">
+						<div class="ltl-ms-options">
+							${this.carrier_filter_options_html()}
+						</div>
+					</div>
+				</div>
+				<div class="ltl-field-hint">${this.carrier_filter_hint()}</div>
+			</div>`;
+	}
+
+	carrier_ms(field) {
+		return this.body.find(`.ltl-ms[data-field='${field}']`);
+	}
+
+	selected_carriers_from(field) {
+		const ids = [];
+		this.carrier_ms(field)
+			.find(".ltl-ms-option input:checked")
+			.each(function () {
+				const value = ($(this).val() || "").trim();
+				if (value) ids.push(value);
+			});
+		return ids;
+	}
+
+	selected_carriers() {
+		const field = this.expanded ? "exp_carriers" : "carriers";
+		return this.selected_carriers_from(field);
+	}
+
+	update_carrier_filter_summary($ms) {
+		if (!$ms || !$ms.length) return;
+		const chips = [];
+		$ms.find(".ltl-ms-option input:checked").each(function () {
+			const id = ($(this).val() || "").trim();
+			if (!id) return;
+			const name = (
+				$(this).closest(".ltl-ms-option").find(".ltl-ms-option-name").text() || id
+			).trim();
+			const safe_id = frappe.utils.escape_html(id);
+			chips.push(`<span class="ltl-ms-chip" data-carrier-id="${safe_id}">
+				${frappe.utils.escape_html(name)}
+				<button type="button" class="ltl-ms-chip-remove" data-carrier-id="${safe_id}" aria-label="${frappe.utils.escape_html(
+				__("Remove {0}", [name])
+			)}"><i class="fa fa-times"></i></button>
+			</span>`);
+		});
+		$ms.find(".ltl-ms-summary").html(
+			chips.length
+				? chips.join("")
+				: `<span class="ltl-ms-placeholder">${this.carrier_filter_placeholder()}</span>`
+		);
+	}
+
+	set_carrier_selection(ids) {
+		const selected = new Set((ids || []).map(String));
+		["carriers", "exp_carriers"].forEach((field) => {
+			const $ms = this.carrier_ms(field);
+			$ms.find(".ltl-ms-option input").each(function () {
+				const checked = selected.has(($(this).val() || "").trim());
+				$(this).prop("checked", checked);
+				$(this).closest(".ltl-ms-option").toggleClass("is-checked", checked);
+			});
+			this.update_carrier_filter_summary($ms);
+		});
+	}
+
+	open_carrier_filter($ms) {
+		if (!$ms || !$ms.length) return;
+		$ms.addClass("is-open");
+		$ms.find(".ltl-ms-toggle").attr("aria-expanded", "true");
+	}
+
+	close_carrier_filter_menus() {
+		this.body.find(".ltl-ms.is-open").removeClass("is-open");
+		this.body.find(".ltl-ms-toggle").attr("aria-expanded", "false");
+	}
+
+	refresh_carrier_filter_options(available) {
+		if (!Array.isArray(available)) return;
+		this.carriers_loaded = true;
+		this.available_carriers = available;
+		const selected = this.selected_carriers();
+		const html = this.carrier_filter_options_html(selected);
+		["carriers", "exp_carriers"].forEach((field) => {
+			const $ms = this.carrier_ms(field);
+			if (!$ms.length) return;
+			$ms.find(".ltl-ms-options").html(html);
+			this.update_carrier_filter_summary($ms);
+			$ms.closest(".ltl-field-carriers").find(".ltl-field-hint").text(this.carrier_filter_hint());
+		});
+	}
+
+	accessorial_boxes(list, group) {
+		return list
+			.map(
+				(a, i) => `
+			<label class="ltl-check">
+				<input type="checkbox" data-acc="${a.code}" data-group="${group}" data-idx="${i}" />
+				<span>${a.label}</span>
+			</label>`
+			)
+			.join("");
+	}
+
+	render_dayton_extra_boxes(side, group) {
+		const list = (this.dayton_acc_extras && this.dayton_acc_extras[side]) || [];
+		if (!list.length) {
+			return `<div class="ltl-acc-extras-empty">${__(
+				"No additional Dayton services synced yet. Sync Dayton Accessorials from Desk."
+			)}</div>`;
+		}
+		const boxes = list
+			.map(
+				(a, i) => `
+			<label class="ltl-check ltl-check-extra" title="${frappe.utils.escape_html(a.code || "")}">
+				<input type="checkbox" data-acc="${frappe.utils.escape_html(a.code)}"
+					data-group="${group}" data-dayton-extra="1" data-idx="x${i}" />
+				<span>${frappe.utils.escape_html(a.label || a.description || a.code)}</span>
+				<code class="ltl-acc-code">${frappe.utils.escape_html(a.code)}</code>
+			</label>`
+			)
+			.join("");
+		return `
+			<div class="ltl-acc-extras-head">${__("Additional services")}</div>
+			<input type="search" class="ltl-input ltl-acc-extras-filter" data-acc-filter="${group}"
+				placeholder="${__("Filter services…")}" />
+			<div class="ltl-acc-extras-grid">${boxes}</div>`;
+	}
+
+	// Compact 4-field view shown while Shipment Details is collapsed.
+	render_collapsed_fields() {
+		const req = ' <span class="req">*</span>';
+		return `
+			<div class="ltl-ship-collapsed">
+				<div class="ltl-grid ltl-grid-4">
+					<div class="ltl-field">
+						<label>Origin ZIP${req}</label>
+						<input type="text" class="ltl-input" data-field="origin_zip" placeholder="e.g. 60601" />
+					</div>
+					<div class="ltl-field">
+						<label>Destination ZIP${req}</label>
+						<input type="text" class="ltl-input" data-field="destination_zip" placeholder="e.g. 75201" />
+					</div>
+					<div class="ltl-field">
+						<label>Total Weight (lbs)${req}</label>
+						<input type="number" class="ltl-input" data-field="weight" placeholder="2500" />
+					</div>
+					<div class="ltl-field">
+						<label>Freight Class${req}</label>
+						<select class="ltl-input" data-field="freight_class">${this.freight_options()}</select>
+					</div>
+				</div>
+				${
+					this.is_shipper_user()
+						? ""
+						: `<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+					${this.render_carrier_filter("carriers")}
+				</div>`
+				}
+			</div>`;
+	}
+
+	// Detailed Origin / Destination card with Details + Accessorials tabs.
+	render_od_card(side) {
+		const is_origin = side === "origin";
+		const title = is_origin ? "Origin" : "Destination";
+		const loc_label = is_origin ? "Pickup Location" : "Delivery Location";
+		const city_label = is_origin ? "Pickup City" : "Delivery City";
+		const date_label = is_origin ? "Pickup Date" : "Delivery Date";
+		const hours_label = is_origin ? "Pickup Hours" : "Delivery Hours";
+		const pfx = `exp_${side}_`;
+		const acc = is_origin ? this.acc_options.pickup : this.acc_options.delivery;
+		const req = ' <span class="req">*</span>';
+		return `
+			<div class="ltl-od-card">
+				<div class="ltl-od-title">${title}</div>
+				<div class="ltl-tabs">
+					<span class="ltl-tab active" data-tab-target="${side}-details">Details</span>
+					<span class="ltl-tab" data-tab-target="${side}-acc">Accessorials</span>
+				</div>
+				<div class="ltl-tab-pane" data-tab-pane="${side}-details">
+					<div class="ltl-grid ltl-grid-2">
+						<div class="ltl-field"><label>Zip${req}</label>
+							<input type="text" class="ltl-input" data-field="exp_${side}_zip" placeholder="e.g. ${is_origin ? "60601" : "75201"}" /></div>
+						<div class="ltl-field"><label>${loc_label}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}location" /></div>
+						<div class="ltl-field"><label>Street Address</label>
+							<input type="text" class="ltl-input" data-field="${pfx}address" /></div>
+						<div class="ltl-field"><label>${city_label}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}city" /></div>
+						<div class="ltl-field"><label>State</label>
+							<select class="ltl-input" data-field="${pfx}state">${this.state_province_options_html()}</select></div>
+						<div class="ltl-field"><label>Country</label>
+							<input type="text" class="ltl-input" data-field="${pfx}country" placeholder="USA" /></div>
+						<div class="ltl-field"><label>${date_label}</label>
+							<input type="date" class="ltl-input" data-field="${pfx}date" /></div>
+						<div class="ltl-field"><label>${hours_label}</label>
+							<input type="text" class="ltl-input" data-field="${pfx}hours" placeholder="0800-1700" /></div>
+					</div>
+					<div class="ltl-grid ltl-grid-2">
+						<div class="ltl-field"><label>Contact</label>
+							<input type="text" class="ltl-input" data-field="${pfx}contact" /></div>
+						<div class="ltl-field"><label>Email</label>
+							<input type="email" class="ltl-input" data-field="${pfx}email" placeholder="name@example.com" /></div>
+					</div>
+				</div>
+				<div class="ltl-tab-pane ltl-od-acc-pane" data-tab-pane="${side}-acc" style="display:none;">
+					<div class="ltl-od-acc-panel">
+						<div class="ltl-acc-grid ltl-acc-grid-od">${this.accessorial_boxes(acc, side)}</div>
+						<div class="ltl-acc-extras" data-dayton-extras="${side}">
+							${this.render_dayton_extra_boxes(is_origin ? "pickup" : "delivery", side)}
+						</div>
+					</div>
+				</div>
+			</div>`;
+	}
+
+	// Full detailed view shown while Shipment Details is expanded.
+	render_expanded_fields() {
+		return `
+			<div class="ltl-ship-expanded" style="display:none;">
+				<div class="ltl-od-grid">
+					${this.render_od_card("origin")}
+					${this.render_od_card("destination")}
+				</div>
+				<div class="ltl-grid ltl-grid-2" style="margin-top:18px;">
+					<div class="ltl-field">
+						<label>Total Weight (lbs) <span class="req">*</span></label>
+						<input type="number" class="ltl-input" data-field="exp_weight" placeholder="2500" />
+					</div>
+					<div class="ltl-field">
+						<label>Freight Class <span class="req">*</span></label>
+						<select class="ltl-input" data-field="exp_freight_class">${this.freight_options()}</select>
+					</div>
+				</div>
+				${
+					this.is_shipper_user()
+						? ""
+						: `<div class="ltl-grid ltl-grid-1" style="margin-top:14px;">
+					${this.render_carrier_filter("exp_carriers")}
+				</div>`
+				}
+				<div class="ltl-collapse-card ltl-load-acc-card" style="margin-top:18px;">
+					<div class="ltl-collapse-head" data-action="toggle-load-acc">
+						<span><i class="fa fa-chevron-down ltl-chevron"></i> Load Based Accessorials</span>
+					</div>
+					<div class="ltl-collapse-body" style="display:none;">
+						<div class="ltl-acc-grid">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
+					</div>
+				</div>
+				${this.render_line_items_bar()}
+			</div>`;
+	}
+
+	render_line_items_bar() {
+		return `
+			<div class="ltl-collapse-card ltl-line-items">
+				<div class="ltl-collapse-head ltl-line-items-head" data-action="toggle-line-items">
+					<div class="ltl-line-items-head-left">
+						<i class="fa fa-chevron-down ltl-chevron"></i>
+						<span class="ltl-line-items-icon"><i class="fa fa-list-ul"></i></span>
+						<div>
+							<div class="ltl-line-items-title">Line Items</div>
+							<div class="ltl-line-items-sub">Manage line items for this shipment</div>
+						</div>
+					</div>
+					<button type="button" class="ltl-btn ltl-btn-line-add" data-action="add-line-item">
+						<i class="fa fa-plus"></i> Add Line Item
+					</button>
+				</div>
+				<div class="ltl-collapse-body" style="display:none;">
+					<div class="ltl-line-items-card">
+						<div class="ltl-line-items-card-head">
+							<span class="ltl-line-items-card-icon"><i class="fa fa-file-text-o"></i></span>
+							<div>
+								<div class="ltl-line-items-card-title">Line Items</div>
+								<div class="ltl-line-items-count">0 items</div>
+							</div>
+						</div>
+						<div class="ltl-line-items-table-wrap">
+							<table class="ltl-table ltl-line-items-table">
+								<thead>
+									<tr>
+										<th class="ltl-li-check"><input type="checkbox" class="ltl-li-select-all" /></th>
+										<th class="ltl-li-no">No.</th>
+										<th>Item Description <span class="req">*</span></th>
+										<th>Item Number</th>
+										<th>NMFC Class <span class="req">*</span></th>
+										<th>NMFC Number</th>
+										<th class="ltl-li-actions"></th>
+									</tr>
+								</thead>
+								<tbody class="ltl-line-items-body"></tbody>
+							</table>
+						</div>
+						<div class="ltl-line-items-footer">
+							<span class="ltl-line-items-showing">Showing 0 of 0 items</span>
+						</div>
+					</div>
+				</div>
+			</div>`;
+	}
+
+	refresh_line_items_table() {
+		const body = this.body.find(".ltl-line-items-body");
+		if (!body.length) return;
+		const items = this.line_items || [];
+		if (!items.length) {
+			body.html(`<tr><td colspan="7" class="ltl-empty-cell">No line items yet. Click + Add Line Item to begin.</td></tr>`);
+		} else {
+			body.html(items.map((item, idx) => this.render_line_item_row(idx + 1, item)).join(""));
+		}
+		const count = items.length;
+		const label = count === 1 ? "1 item" : `${count} items`;
+		this.body.find(".ltl-line-items-count").text(label);
+		this.body.find(".ltl-line-items-showing").text(`Showing ${count} of ${count} item${count === 1 ? "" : "s"}`);
+		this.body.find(".ltl-li-select-all").prop("checked", false);
+	}
+
+	render_line_item_row(no, data = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const trunc = (v, n = 42) => {
+			const s = String(v || "");
+			return s.length > n ? `${s.slice(0, n)}…` : s;
+		};
+		const desc = data.description || data.item_name || "—";
+		return `
+			<tr class="ltl-line-item-row" data-line-id="${esc(data.id || "")}">
+				<td class="ltl-li-check"><input type="checkbox" class="ltl-li-row-check" /></td>
+				<td class="ltl-li-no">${no}</td>
+				<td title="${esc(desc)}">${esc(trunc(desc))}</td>
+				<td>${esc(data.item_number || "—")}</td>
+				<td>${esc(data.nmfc_class || "—")}</td>
+				<td>${esc(data.nmfc_number || "—")}</td>
+				<td class="ltl-li-actions">
+					<button type="button" class="ltl-li-icon-btn" data-action="edit-line-item" title="${__("Edit")}">
+						<i class="fa fa-pencil"></i>
+					</button>
+					<button type="button" class="ltl-li-icon-btn ltl-li-remove" data-action="remove-line-item" title="${__("Remove")}">
+						<i class="fa fa-trash-o"></i>
+					</button>
+				</td>
+			</tr>`;
+	}
+
+	li_input(label, key, opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = esc((this.editing_line_item && this.editing_line_item[key]) || "");
+		const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : "";
+		const req = opts.required ? ' <span class="ltl-required" aria-hidden="true">*</span>' : "";
+		const req_attr = opts.required ? ' required aria-required="true"' : "";
+		if (opts.type === "textarea") {
+			return `
+				<div class="ltl-field ${opts.className || ""}">
+					<label>${label}${req}</label>
+					<textarea class="ltl-input" data-li-edit="${key}" rows="${opts.rows || 4}"${ph}${req_attr}>${val}</textarea>
+				</div>`;
+		}
+		if (opts.type === "select") {
+			const selected = val || String(opts.default || "");
+			const includeEmpty = opts.includeEmpty !== false;
+			const emptyOpt = includeEmpty ? `<option value="">Select</option>` : "";
+			const options = (opts.options || [])
+				.map((c) => {
+					const value = typeof c === "object" ? c.value : c;
+					const label = typeof c === "object" ? c.label || c.value : c;
+					return `<option value="${esc(value)}" ${selected === String(value) ? "selected" : ""}>${esc(label)}</option>`;
+				})
+				.join("");
+			return `
+				<div class="ltl-field ${opts.className || ""}">
+					<label>${label}${req}</label>
+					<select class="ltl-input" data-li-edit="${key}"${req_attr}>
+						${emptyOpt}${options}
+					</select>
+				</div>`;
+		}
+		return `
+			<div class="ltl-field ${opts.className || ""}">
+				<label>${label}${req}</label>
+				<input type="${opts.type || "text"}" class="ltl-input" data-li-edit="${key}" value="${val}"${ph}${req_attr} />
+			</div>`;
+	}
+
+	render_line_item_editor(item) {
+		this.editing_line_item = item;
+		const class_opts = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const nmfc_opts = { type: "select", options: class_opts };
+		const packaging_opts = {
+			type: "select",
+			options: this.packaging_type_options || [],
+		};
+		return `
+			<div class="ltl-line-item-edit">
+				<div class="ltl-line-item-edit-hero">
+					<div class="ltl-line-item-edit-hero-left">
+						<span class="ltl-line-item-edit-hero-icon"><i class="fa fa-cube"></i></span>
+						<div>
+							<div class="ltl-line-item-edit-hero-title">Line Item Details</div>
+							<div class="ltl-line-item-edit-hero-sub">Edit commodity, dimensions, classification, and locations</div>
+						</div>
+					</div>
+				</div>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-cube"></i> Item Details</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("Item Number", "item_number")}
+							${this.li_input("Item Name", "item_name")}
+							${this.li_input("Item ID", "item_id")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Rate", "rate", { type: "number", placeholder: "0.00" })}
+							${this.li_input("Description", "description", { type: "textarea", rows: 5, required: true })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Units", "units")}
+							${this.li_input("Quantity", "quantity", { type: "number", required: true })}
+							${this.li_input("Packaging Units", "packaging_units", packaging_opts)}
+							${this.li_input("Packaging Unit Count", "packaging_unit_count", { type: "number" })}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-arrows-h"></i> Dimensions &amp; Weight</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("Dimension Units", "dimension_units", {
+								type: "select",
+								options: [
+									{ value: "IN", label: "IN" },
+									{ value: "CM", label: "CM" },
+								],
+								default: "IN",
+								includeEmpty: false,
+							})}
+							${this.li_input("Length", "length", { type: "number", required: true })}
+							${this.li_input("Width", "width", { type: "number", required: true })}
+							${this.li_input("Height", "height", { type: "number", required: true })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Volume Units", "volume_units")}
+							${this.li_input("Volume", "volume", { type: "number" })}
+							${this.li_input("Area Units", "area_units")}
+							${this.li_input("Area", "area", { type: "number" })}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Weight Units", "weight_units", { placeholder: "LBS" })}
+							${this.li_input("Weight", "weight", { type: "number", required: true })}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-tag"></i> Commodity &amp; Classification</div>
+					<div class="ltl-li-edit-grid ltl-li-edit-grid-3">
+						<div class="ltl-li-edit-col">
+							${this.li_input("HazMat Class/Division", "hazmat_class_division")}
+							${this.li_input("HAZ Mat Phone Number", "hazmat_phone")}
+							${this.li_input("HAZ Mat Contact Company", "hazmat_contact_company")}
+							${this.li_input("HazMat Contact", "hazmat_contact")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("HazMat Number", "hazmat_number")}
+							${this.li_input("HazMat Packaging Group", "hazmat_packaging_group")}
+							${this.li_input("HazMat", "hazmat")}
+							${this.li_input("HazMat Number Type", "hazmat_number_type")}
+						</div>
+						<div class="ltl-li-edit-col">
+							${this.li_input("Linear Feet", "linear_feet", { type: "number" })}
+							${this.li_input("NMFC Class", "nmfc_class", { ...nmfc_opts, required: true })}
+							${this.li_input("NMFC Number", "nmfc_number")}
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-li-edit-section">
+					<div class="ltl-li-edit-section-head"><i class="fa fa-map-marker"></i> Locations</div>
+					<div class="ltl-li-edit-locations">
+						<div class="ltl-li-edit-loc-block">
+							<div class="ltl-li-edit-loc-title">Pickup</div>
+							<div class="ltl-li-edit-grid ltl-li-edit-grid-2">
+								${this.li_input("Pickup Stop Location", "pickup_stop_location")}
+								${this.li_input("Pickup", "pickup")}
+							</div>
+						</div>
+						<div class="ltl-li-edit-loc-block">
+							<div class="ltl-li-edit-loc-title">Drop</div>
+							<div class="ltl-li-edit-grid ltl-li-edit-grid-2">
+								${this.li_input("Drop Stop Location", "drop_stop_location")}
+								${this.li_input("Drop", "drop")}
+							</div>
+						</div>
+					</div>
+				</section>
+
+				<div class="ltl-li-edit-footer">
+					<button type="button" class="ltl-btn ltl-btn-line-cancel" data-action="cancel-line-item">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="save-line-item">
+						Save Item Details
+					</button>
+				</div>
+			</div>`;
+	}
+
+	open_line_item_editor(item, is_new) {
+		this.editing_line_item = Object.assign({}, item);
+		this.editing_line_item_is_new = !!is_new;
+		if (!(this.packaging_type_options || []).length) {
+			frappe.call({
+				method: "ltl_quote.api.shipping.get_packaging_type_options",
+				callback: (r) => {
+					this.packaging_type_options = r.message || [];
+					this.body.find(".ltl-line-item-edit-body").html(this.render_line_item_editor(this.editing_line_item));
+				},
+			});
+		}
+		this.body.find(".ltl-line-item-edit-body").html(this.render_line_item_editor(this.editing_line_item));
+		this.show_view("line-item");
+	}
+
+	close_line_item_editor() {
+		this.editing_line_item = null;
+		this.editing_line_item_is_new = false;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+		this.show_view("quote");
+		if (!this.expanded) this.toggle_shipment(true);
+		else {
+			this.body.find(".ltl-ship-card").addClass("expanded");
+			this.body.find(".ltl-ship-collapsed").hide();
+			this.body.find(".ltl-ship-expanded").show();
+			this.body.find(".ltl-quick-quotes-check").prop("checked", false);
+		}
+		this.refresh_line_items_table();
+		this.ensure_line_items_expanded();
+		const el = this.body.find(".ltl-line-items")[0];
+		if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+	}
+
+	collect_line_item_form() {
+		const data = Object.assign({}, this.editing_line_item || new_line_item());
+		this.body.find("[data-li-edit]").each(function () {
+			const key = $(this).attr("data-li-edit");
+			data[key] = ($(this).val() || "").toString().trim();
+		});
+		return data;
+	}
+
+	save_line_item_editor() {
+		const data = this.collect_line_item_form();
+		const required = [
+			{ key: "description", label: __("Description") },
+			{ key: "quantity", label: __("Quantity") },
+			{ key: "weight", label: __("Weight") },
+			{ key: "nmfc_class", label: __("NMFC Class") },
+			{ key: "length", label: __("Length") },
+			{ key: "width", label: __("Width") },
+			{ key: "height", label: __("Height") },
+		];
+		const missing = required.filter((f) => !String(data[f.key] || "").trim());
+		if (missing.length) {
+			frappe.show_alert(
+				{
+					message: __("Please fill required fields: {0}", [missing.map((f) => f.label).join(", ")]),
+					indicator: "orange",
+				},
+				6
+			);
+			const first = missing[0].key;
+			const el = this.body.find(`[data-li-edit="${first}"]`);
+			if (el.length) {
+				el.addClass("ltl-input-invalid").focus();
+				setTimeout(() => el.removeClass("ltl-input-invalid"), 2500);
+			}
+			return;
+		}
+
+		if (this.editing_line_item_is_new) {
+			this.line_items.push(data);
+		} else {
+			const idx = this.line_items.findIndex((r) => r.id === data.id);
+			if (idx >= 0) this.line_items[idx] = data;
+			else this.line_items.push(data);
+		}
+		frappe.show_alert({ message: __("Item details saved"), indicator: "green" }, 3);
+		this.close_line_item_editor();
+	}
+
+	collect_line_items() {
+		return (this.line_items || [])
+			.filter((row) => row.description || row.item_name || row.item_number || row.nmfc_class)
+			.map((row) => ({
+				...row,
+				classification: row.nmfc_class,
+				freight_class: row.nmfc_class,
+				nmfc: row.nmfc_number,
+				qty: parseInt(row.quantity || 1, 10) || 1,
+				quantity: parseInt(row.quantity || 1, 10) || 1,
+				weight: row.weight || "",
+				dimension_units: row.dimension_units || row.dimension_unit || "IN",
+				dimension_unit: row.dimension_unit || row.dimension_units || "IN",
+			}));
+	}
+
+	require_line_items() {
+		const items = this.collect_line_items();
+		const valid = items.filter(
+			(row) =>
+				(row.description || row.item_name) &&
+				(row.nmfc_class || row.freight_class) &&
+				row.quantity &&
+				row.weight &&
+				row.length &&
+				row.width &&
+				row.height
+		);
+		if (!valid.length) {
+			frappe.show_alert(
+				{
+					message: __(
+						"Add at least one complete Line Item (Description, Quantity, Weight, NMFC Class, Length, Width, Height), then click Save Item Details."
+					),
+					indicator: "orange",
+				},
+				8
+			);
+			if (!this.expanded) this.toggle_shipment(true);
+			this.ensure_line_items_expanded();
+			const el = this.body.find(".ltl-line-items")[0];
+			if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+			return null;
+		}
+		return valid;
+	}
+
+	render_shipment_form() {
+		return `
+			<div class="ltl-card ltl-ship-card">
+				<div class="ltl-card-head ltl-ship-head" data-action="toggle-ship">
+					<span>
+						<span class="ltl-ship-head-title">
+							<i class="fa fa-chevron-down ltl-chevron"></i>
+							${__("Shipment Details")}
+						</span>
+						<label class="ltl-quick-quotes">
+							<input type="checkbox" class="ltl-quick-quotes-check" checked />
+							${__("Quick Quotes")}
+						</label>
+					</span>
+				</div>
+				${this.render_collapsed_fields()}
+				${this.render_expanded_fields()}
+			</div>`;
+	}
+
+	bind_events() {
+		this.body.on("click", ".ltl-theme-btn", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggle_theme_menu();
+		});
+		this.body.on("click", ".ltl-theme-option", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const $option = $(e.currentTarget);
+			if ($option.hasClass("is-disabled") || $option.prop("disabled")) return;
+			this.apply_theme($option.attr("data-theme"));
+			this.close_theme_menu();
+		});
+		this.body.on("click", (e) => {
+			if (!$(e.target).closest(".ltl-theme-picker").length) this.close_theme_menu();
+			if (!$(e.target).closest(".ltl-user-picker").length) this.close_user_menu();
+		});
+		this.body.on("keydown", ".ltl-theme-btn, .ltl-theme-option", (e) => {
+			if (e.key === "Escape") this.close_theme_menu();
+		});
+		this.body.on("click", "[data-action='toggle-user-menu']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggle_user_menu();
+		});
+		this.body.on("click", "[data-action='logout']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.logout_user();
+		});
+		this.body.on("keydown", ".ltl-user, .ltl-user-menu-item", (e) => {
+			if (e.key === "Escape") this.close_user_menu();
+		});
+
+		this.body.on("click", "[data-action='toggle-carriers']", (e) => {
+			if ($(e.target).closest(".ltl-ms-chip-remove").length) return;
+			e.preventDefault();
+			e.stopPropagation();
+			const $ms = $(e.currentTarget).closest(".ltl-ms");
+			const opening = !$ms.hasClass("is-open");
+			this.close_carrier_filter_menus();
+			if (opening) this.open_carrier_filter($ms);
+		});
+		this.body.on("click", ".ltl-ms-chip-remove", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).attr("data-carrier-id");
+			this.set_carrier_selection(this.selected_carriers().filter((value) => value !== id));
+		});
+		this.body.on("change", ".ltl-ms-option input", (e) => {
+			const $ms = $(e.currentTarget).closest(".ltl-ms");
+			this.set_carrier_selection(this.selected_carriers_from($ms.attr("data-field")));
+		});
+		this.body.on("click", (e) => {
+			if (!$(e.target).closest(".ltl-ms").length) this.close_carrier_filter_menus();
+		});
+		this.body.on("keydown", ".ltl-ms-toggle, .ltl-ms-option input", (e) => {
+			if (e.key === "Escape") this.close_carrier_filter_menus();
+		});
+
+		this.body.on("click", "[data-action='fetch']", () => this.fetch_rates());
+		this.body.on("click", "[data-action='clear']", () => this.clear_form());
+		this.body.on("click", "[data-action='new_quote']", () => this.clear_form());
+		this.body.on("click", "[data-action='dashboard']", () => this.body[0].querySelector(".ltl-scroll").scrollTo(0, 0));
+		this.body.on("click", ".ltl-help-btn", () => frappe.msgprint(__("Please reach out to your platform administrator.")));
+
+		this.body.on("click", ".ltl-nav-item[data-view]", (e) => {
+			this.body.find(".ltl-nav-item").removeClass("active");
+			$(e.currentTarget).addClass("active");
+			this.show_view($(e.currentTarget).attr("data-view"));
+		});
+
+		this.body.on("click", ".ltl-list-new", () => {
+			if (this.current_list) frappe.new_doc(this.current_list.doctype);
+		});
+
+		this.body.on("click", ".ltl-list-row", (e) => {
+			if ($(e.target).closest(".ltl-list-actions, .ltl-bol-attach, .ltl-recent-view").length) return;
+			const name = $(e.currentTarget).attr("data-name");
+			if (!this.current_list || !name) return;
+			if (this.current_list.doctype === "LTL Quote Request") {
+				this.open_quote_detail(name);
+				return;
+			}
+			if (this.current_list.doctype === "LTL Shipment") {
+				this.open_shipment_detail(name);
+				return;
+			}
+			if (this.current_list.doctype === "LTL Accessorial") {
+				this.open_accessorial_detail(name);
+				return;
+			}
+			if (this.current_list.doctype === "LTL Carrier") {
+				this.open_carrier_detail(name);
+				return;
+			}
+			frappe.set_route("Form", this.current_list.doctype, name);
+		});
+
+		this.body.on("click", ".ltl-bol-attach:not(.ltl-bol-attach-muted), .ltl-detail-view-bol:not(:disabled), .ltl-view-bol-btn, .ltl-detail-view-bol-image:not(:disabled)", (e) => {
+			e.stopPropagation();
+			const url = $(e.currentTarget).attr("data-bol-url") || $(e.currentTarget).attr("data-bol-image-url");
+			if (url) window.open(url, "_blank");
+		});
+
+		this.body.on("click", ".ltl-detail-refresh-bol:not(:disabled)", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $btn = $(e.currentTarget);
+			$btn.prop("disabled", true);
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.refresh_shipment_bol",
+				args: { name: shipment },
+				freeze: true,
+				freeze_message: __("Downloading BOL from Dayton…"),
+				callback: (r) => {
+					const result = r.message || {};
+					if (result.success) {
+						frappe.show_alert({ message: __("BOL downloaded"), indicator: "green" });
+						this.open_shipment_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("BOL Not Available"),
+						indicator: result.status === "info" ? "orange" : "red",
+						message: result.message || result.error || __("Could not retrieve BOL from Dayton."),
+					});
+					$btn.prop("disabled", false);
+				},
+				error: () => {
+					$btn.prop("disabled", false);
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-view-pickup", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.open_pickup_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-pickup-back", (e) => {
+			e.stopPropagation();
+			this.close_pickup_view();
+		});
+
+		this.body.on("click", ".ltl-pickup-refresh", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.load_pickup_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-pickup-create", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment || this._scheduling_pickup) return;
+			const $btn = $(e.currentTarget);
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
+			const comments = this.body.find(".ltl-pickup-create-comments").val() || "";
+			const connector = ltl_connector_key(
+				(this.pickup_doc && (this.pickup_doc.carrier || (this.pickup_doc.doc && this.pickup_doc.doc.carrier))) || ""
+			);
+			const done = () => {
+				this._scheduling_pickup = false;
+				$btn.prop("disabled", false);
+			};
+			this._scheduling_pickup = true;
+			$btn.prop("disabled", true);
+			const schedule = () => {
+				const carrier = String(
+					(this.pickup_doc && (this.pickup_doc.carrier || (this.pickup_doc.doc && this.pickup_doc.doc.carrier))) || ""
+				);
+				const label = ltl_connector_label(carrier);
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.schedule_shipment_pickup",
+					args: { name: shipment },
+					freeze: true,
+					freeze_message: __("Scheduling pickup with {0}…", [label]),
+					callback: (r) => {
+						const result = r.message || {};
+						if (ltl_pickup_ok(result)) {
+							frappe.show_alert({ message: __("Pickup scheduled"), indicator: "green" });
+							this.load_pickup_detail(shipment);
+							return;
+						}
+						done();
+						frappe.msgprint({
+							title: __("Pickup Failed"),
+							indicator: "red",
+							message: result.message || __("Could not schedule pickup."),
+						});
+					},
+					error: done,
+				});
+			};
+			const persist_comments_then_schedule = () => {
+				if (comments) {
+					frappe.db.set_value("LTL Shipment", shipment, "pickup_comments", comments).then(schedule, done);
+				} else {
+					schedule();
+				}
+			};
+			if (connector === "SMC3" && $root.find("[data-pickup-party]").length) {
+				const parties = this.collect_pickup_parties($root);
+				if (comments) parties.pickup_comments = comments;
+				const missing = this.validate_smc3_pickup_parties(parties);
+				if (missing.length) {
+					done();
+					frappe.msgprint({
+						title: __("Pickup details required"),
+						indicator: "orange",
+						message: __("Please fill: {0}", [missing.join(", ")]),
+					});
+					return;
+				}
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_pickup_dispatch_parties",
+					args: { name: shipment, data: parties },
+					freeze: true,
+					freeze_message: __("Saving pickup contacts…"),
+					callback: () => schedule(),
+					error: done,
+				});
+				return;
+			}
+			persist_comments_then_schedule();
+		});
+
+		this.body.on("click", ".ltl-pickup-update", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
+			const ready = $root.find(".ltl-pickup-update-ready").val();
+			const close = $root.find(".ltl-pickup-update-close").val();
+			const contact_name = $root.find(".ltl-pickup-update-contact-name").val();
+			const contact_phone = $root.find(".ltl-pickup-update-contact-phone").val();
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.update_shipment_pickup",
+				args: {
+					name: shipment,
+					data: {
+						ready: ready || undefined,
+						close: close || undefined,
+						contact: { name: contact_name, phone: contact_phone },
+					},
+				},
+				freeze: true,
+				callback: (r) => {
+					const result = r.message || {};
+					if (ltl_pickup_ok(result)) {
+						frappe.show_alert({ message: __("Pickup updated"), indicator: "green" });
+						this.load_pickup_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("Pickup Update Failed"),
+						indicator: "red",
+						message: result.message || __("Could not update pickup."),
+					});
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-pickup-update-psid", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			const $root = $(e.currentTarget).closest(".ltl-pickup-detail");
+			const psid = $root.find(".ltl-pickup-psid").val();
+			if (!psid) {
+				frappe.msgprint(__("PSID is required."));
+				return;
+			}
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.update_shipment_pickup_by_psid",
+				args: {
+					name: shipment,
+					psid,
+					data: {
+						details: {
+							destinationZip: $root.find(".ltl-pickup-psid-zip").val(),
+							handlingUnits: $root.find(".ltl-pickup-psid-hu").val(),
+							weight: $root.find(".ltl-pickup-psid-weight").val(),
+							isHazardous: false,
+							comment: $root.find(".ltl-pickup-psid-comment").val() || "",
+							action: $root.find(".ltl-pickup-psid-action").val() || "Update",
+						},
+					},
+				},
+				freeze: true,
+				callback: (r) => {
+					const result = r.message || {};
+					if (ltl_pickup_ok(result)) {
+						frappe.show_alert({ message: __("Pickup line updated"), indicator: "green" });
+						this.load_pickup_detail(shipment);
+						return;
+					}
+					frappe.msgprint({
+						title: __("PSID Update Failed"),
+						indicator: "red",
+						message: result.message || __("Could not update pickup line."),
+					});
+				},
+			});
+		});
+
+		this.body.on("click", ".ltl-pickup-cancel", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			frappe.confirm(__("Cancel this pickup?"), () => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.cancel_shipment_pickup",
+					args: { name: shipment },
+					freeze: true,
+					callback: (r) => {
+						const result = r.message || {};
+						if (ltl_pickup_ok(result)) {
+							frappe.show_alert({ message: __("Pickup cancelled"), indicator: "green" });
+							this.load_pickup_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("Pickup Cancel Failed"),
+							indicator: "red",
+							message: result.message || __("Could not cancel pickup."),
+						});
+					},
+				});
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-track-shipment", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			if (!shipment) return;
+			this.tracking_return_view =
+				$btn.attr("data-from") ||
+				($btn.closest(".ltl-pickup-detail").length ? "pickup" : "shipment");
+			this.open_tracking_detail(shipment);
+		});
+
+		this.body.on("click", ".ltl-detail-get-next-pro", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			const existing = String($(e.currentTarget).attr("data-pro") || "").trim();
+			if (!shipment) return;
+			const run = (force) => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.assign_smc3_pro",
+					args: { name: shipment, force: force ? 1 : 0 },
+					freeze: true,
+					freeze_message: __("Requesting next PRO from SMC3…"),
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({
+								message: __("PRO {0} assigned", [result.pro_number || ""]),
+								indicator: "green",
+							});
+							this.open_shipment_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("PRO Assignment Failed"),
+							indicator: "red",
+							message: result.message || __("Could not assign a PRO number."),
+						});
+					},
+				});
+			};
+			if (existing) {
+				frappe.confirm(__("PRO {0} is already assigned. Assign a new number?", [existing]), () => run(true));
+			} else {
+				run(false);
+			}
+		});
+
+		this.body.on("click", ".ltl-detail-get-pod", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			const status = String($btn.attr("data-status") || "").trim();
+			if (!shipment) return;
+			if (status !== "Delivered") {
+				frappe.msgprint({
+					title: __("Proof of Delivery"),
+					indicator: "orange",
+					message: __("POD is only available for Delivered shipments"),
+				});
+				return;
+			}
+			this.fetch_smc3_document(shipment, {
+				scac: $btn.attr("data-scac") || "",
+				pro_number: $btn.attr("data-pro") || "",
+				document_type: "POD",
+				status,
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-get-dr", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			const shipment = $btn.attr("data-shipment");
+			if (!shipment) return;
+			this.fetch_smc3_document(shipment, {
+				scac: $btn.attr("data-scac") || "",
+				pro_number: $btn.attr("data-pro") || "",
+				document_type: "DR",
+				status: $btn.attr("data-status") || "",
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-terminal-lookup", (e) => {
+			e.stopPropagation();
+			const $btn = $(e.currentTarget);
+			if ($btn.prop("disabled") || $btn.is("[disabled]")) return;
+			this.lookup_smc3_terminal({
+				shipment: $btn.attr("data-shipment") || "",
+				scac: $btn.attr("data-scac") || "",
+				postal_code: $btn.attr("data-zip") || "",
+				lane: $btn.attr("data-lane") || "origin",
+			});
+		});
+
+		this.body.on("click", ".ltl-detail-cancel-bol", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (!shipment) return;
+			frappe.confirm(__("Cancel this SMC3 bill of lading?"), () => {
+				frappe.call({
+					method: "ltl_quote.freight.page.ltl_quote.ltl_quote.cancel_smc3_bol",
+					args: { name: shipment },
+					freeze: true,
+					freeze_message: __("Cancelling BOL…"),
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.status === "success") {
+							frappe.show_alert({ message: __("BOL cancelled"), indicator: "green" });
+							this.open_shipment_detail(shipment);
+							return;
+						}
+						frappe.msgprint({
+							title: __("BOL Cancel Failed"),
+							indicator: "red",
+							message: result.message || __("Could not cancel the bill of lading."),
+						});
+					},
+				});
+			});
+		});
+
+		this.body.on("click", ".ltl-tracking-back, .ltl-tracking-view-details", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment") || this.tracking_shipment_name;
+			if ($(e.currentTarget).hasClass("ltl-tracking-view-details") && shipment) {
+				this.open_shipment_detail(shipment);
+				return;
+			}
+			this.close_tracking_view();
+		});
+
+		this.body.on("click", ".ltl-tracking-open-quote", (e) => {
+			e.stopPropagation();
+			const quote = $(e.currentTarget).attr("data-quote");
+			if (quote) this.open_quote_detail(quote);
+		});
+
+		this.body.on("click", ".ltl-tracking-refresh", (e) => {
+			e.stopPropagation();
+			const shipment = $(e.currentTarget).attr("data-shipment") || this.tracking_shipment_name;
+			if (!shipment) return;
+			frappe.call({
+				method: "ltl_quote.freight.page.ltl_quote.ltl_quote.refresh_shipment_tracking",
+				args: { name: shipment },
+				freeze: true,
+				freeze_message: __("Refreshing tracking…"),
+				callback: (r) => {
+					const result = r.message || {};
+					const refresh = result.refresh_result || {};
+					if (refresh.status === "error") {
+						frappe.msgprint({
+							title: __("Tracking Refresh"),
+							indicator: "red",
+							message: refresh.message || __("Could not refresh tracking."),
+						});
+					} else if (refresh.status === "success") {
+						frappe.show_alert({ message: __("Tracking updated"), indicator: "green" });
+					}
+					if (result.doc) {
+						this.destroy_tracking_map();
+						this.tracking_doc = result;
+						this.body.find(".ltl-tracking-body").html(this.render_tracking_detail(result));
+						this.init_tracking_map(result.route || {});
+					} else {
+						this.load_tracking_detail(shipment, 0);
+					}
+				},
+			});
+		});
+
+		this.body.on(
+			"input",
+			".ltl-list-search",
+			frappe.utils.debounce((e) => this.filter_list($(e.currentTarget).val()), 250)
+		);
+
+		this.body.on("click", ".ltl-book-btn", (e) => {
+			const idx = parseInt($(e.currentTarget).attr("data-idx"), 10);
+			this.book_shipment(idx);
+		});
+
+		this.body.on("click", ".ltl-view-shipment-btn", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const shipment =
+				$(e.currentTarget).attr("data-shipment") || this.booking_context?.shipment || "";
+			this.open_booked_shipment(shipment);
+		});
+
+		this.body.on("click", ".ltl-recent-view", (e) => {
+			e.stopPropagation();
+			const name =
+				$(e.currentTarget).attr("data-name") ||
+				$(e.currentTarget).closest("tr").attr("data-name");
+			if (!name) return;
+			if (this.current_list && this.current_list.doctype === "LTL Shipment") {
+				this.open_shipment_detail(name);
+				return;
+			}
+			if (this.current_list && this.current_list.doctype === "LTL Accessorial") {
+				this.open_accessorial_detail(name);
+				return;
+			}
+			if (this.current_list && this.current_list.doctype === "LTL Carrier") {
+				this.open_carrier_detail(name);
+				return;
+			}
+			if (this.current_list && this.current_list.doctype !== "LTL Quote Request") {
+				frappe.set_route("Form", this.current_list.doctype, name);
+				return;
+			}
+			this.open_quote_detail(name);
+		});
+
+		this.body.on("click", "[data-action='detail-cancel']", () => this.close_detail_view());
+		this.body.on("change", "[data-carrier-enabled]", (e) => this.save_carrier_enabled(e));
+		this.body.on("change", "[data-smc3-network-enabled]", (e) => this.save_smc3_network_enabled(e));
+		this.body.on("click", "[data-action='detail-save']", () => {
+			if (this.detail_type === "shipment") this.save_shipment_detail();
+			else this.save_quote_detail();
+		});
+		this.body.on("click", "[data-action='open-desk-form']", (e) => {
+			const name = $(e.currentTarget).attr("data-name");
+			const doctype = $(e.currentTarget).attr("data-doctype") || "LTL Quote Request";
+			if (name) frappe.set_route("Form", doctype, name);
+		});
+		this.body.on("click", ".ltl-detail-shipment-link", (e) => {
+			e.preventDefault();
+			const shipment = $(e.currentTarget).attr("data-shipment");
+			if (shipment) this.open_shipment_detail(shipment);
+		});
+		this.body.on("click", ".ltl-detail-quote-link", (e) => {
+			e.preventDefault();
+			const quote =
+				$(e.currentTarget).attr("data-quote") || $(e.currentTarget).val();
+			if (quote) this.open_quote_detail(quote);
+		});
+
+		const zip_selector =
+			"[data-field='origin_zip'],[data-field='destination_zip']," +
+			"[data-field='exp_origin_zip'],[data-field='exp_destination_zip']";
+		const debounced_recent = frappe.utils.debounce(() => this.load_recent_requests(), 400);
+		this.body.on("input", zip_selector, debounced_recent);
+
+		this.body.on("click", "[data-action='toggle-ship']", (e) => {
+			if ($(e.target).closest(".ltl-quick-quotes").length) return;
+			this.toggle_shipment();
+		});
+		this.body.on("click", ".ltl-quick-quotes", (e) => e.stopPropagation());
+		this.body.on("change", ".ltl-quick-quotes-check", (e) => {
+			const quick = $(e.currentTarget).is(":checked");
+			this.toggle_shipment(!quick);
+		});
+		this.body.on("click", "[data-action='toggle-load-acc']", () => this.toggle_load_accessorials());
+		this.body.on("click", "[data-action='toggle-line-items']", (e) => {
+			if ($(e.target).closest("[data-action='add-line-item']").length) return;
+			this.toggle_line_items_section();
+		});
+
+		this.body.on("click", ".ltl-tab", (e) => {
+			const target = $(e.currentTarget).attr("data-tab-target");
+			const card = $(e.currentTarget).closest(".ltl-od-card");
+			card.find(".ltl-tab").removeClass("active");
+			$(e.currentTarget).addClass("active");
+			card.find(".ltl-tab-pane").hide();
+			card.find(`[data-tab-pane='${target}']`).show();
+		});
+
+		this.body.on("input", ".ltl-acc-extras-filter", (e) => {
+			const q = (($(e.currentTarget).val() || "") + "").trim().toLowerCase();
+			const host = $(e.currentTarget).closest(".ltl-acc-extras");
+			host.find(".ltl-check-extra").each(function () {
+				const text = ($(this).text() || "").toLowerCase();
+				$(this).toggle(!q || text.includes(q));
+			});
+		});
+
+		this.body.on("click", "[data-action='add-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.ensure_line_items_expanded();
+			this.open_line_item_editor(new_line_item(), true);
+		});
+
+		this.body.on("click", "[data-action='edit-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).closest(".ltl-line-item-row").attr("data-line-id");
+			const item = (this.line_items || []).find((r) => r.id === id);
+			if (!item) return;
+			this.open_line_item_editor(item, false);
+		});
+
+		this.body.on("click", "[data-action='remove-line-item']", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const id = $(e.currentTarget).closest(".ltl-line-item-row").attr("data-line-id");
+			this.line_items = (this.line_items || []).filter((r) => r.id !== id);
+			this.refresh_line_items_table();
+		});
+
+		this.body.on("click", "[data-action='cancel-line-item']", () => this.close_line_item_editor());
+		this.body.on("click", "[data-action='save-line-item']", () => this.save_line_item_editor());
+
+		this.body.on("change", ".ltl-li-select-all", (e) => {
+			const checked = $(e.currentTarget).is(":checked");
+			this.body.find(".ltl-li-row-check").prop("checked", checked);
+		});
+	}
+
+	toggle_shipment(expanded) {
+		const next = typeof expanded === "boolean" ? expanded : !this.expanded;
+		if (next !== this.expanded) {
+			this.sync_core_fields(next);
+		}
+		this.expanded = next;
+		const card = this.body.find(".ltl-ship-card");
+		card.toggleClass("expanded", this.expanded);
+		card.find(".ltl-ship-collapsed").toggle(!this.expanded);
+		card.find(".ltl-ship-expanded").toggle(this.expanded);
+		this.body.find(".ltl-quick-quotes-check").prop("checked", !this.expanded);
+		this.load_recent_requests();
+	}
+
+	toggle_load_accessorials() {
+		this.load_acc_expanded = !this.load_acc_expanded;
+		const card = this.body.find(".ltl-load-acc-card");
+		card.toggleClass("expanded", this.load_acc_expanded);
+		card.children(".ltl-collapse-body").toggle(this.load_acc_expanded);
+	}
+
+	toggle_line_items_section(force_open) {
+		if (force_open === true) this.line_items_expanded = true;
+		else if (force_open === false) this.line_items_expanded = false;
+		else this.line_items_expanded = !this.line_items_expanded;
+		const card = this.body.find(".ltl-line-items");
+		card.toggleClass("expanded", this.line_items_expanded);
+		card.children(".ltl-collapse-body").toggle(this.line_items_expanded);
+	}
+
+	ensure_line_items_expanded() {
+		if (!this.line_items_expanded) this.toggle_line_items_section(true);
+	}
+
+	// Keep the shared core fields (zip / weight / class) in sync across the two views.
+	sync_core_fields(to_expanded) {
+		const set = (field, value) => this.body.find(`[data-field='${field}']`).val(value);
+		const get = (field) => this.body.find(`[data-field='${field}']`).val();
+		const pairs = [
+			["origin_zip", "exp_origin_zip"],
+			["destination_zip", "exp_destination_zip"],
+			["weight", "exp_weight"],
+			["freight_class", "exp_freight_class"],
+		];
+		pairs.forEach(([collapsed, expanded]) => {
+			if (to_expanded) {
+				set(expanded, get(collapsed));
+			} else {
+				set(collapsed, get(expanded));
+			}
+		});
+		this.set_carrier_selection(
+			this.selected_carriers_from(to_expanded ? "carriers" : "exp_carriers")
+		);
+	}
+
+	collect_payload() {
+		const val = (field) => (this.body.find(`[data-field='${field}']`).val() || "").trim();
+		const accessorials = [];
+		const codes = [];
+		this.body.find("input[data-acc]:checked").each(function () {
+			const code = $(this).attr("data-acc");
+			const group = $(this).attr("data-group") || "";
+			const label = ($(this).closest("label").find("span").first().text() || "").trim();
+			if (!code) return;
+			accessorials.push({ code, group, service_group: group, label });
+			if (!codes.includes(code)) codes.push(code);
+		});
+
+		const pfx = this.expanded ? "exp_" : "";
+		const payload = {
+			origin_zip: val(`${pfx}origin_zip`),
+			destination_zip: val(`${pfx}destination_zip`),
+			weight: val(`${pfx}weight`),
+			freight_class: val(`${pfx}freight_class`),
+			pieces: 1,
+			accessorial_codes: codes,
+			accessorials,
+		};
+
+		if (this.expanded) {
+			Object.assign(payload, {
+				origin_city: val("exp_origin_city"),
+				origin_state: val("exp_origin_state"),
+				destination_city: val("exp_destination_city"),
+				destination_state: val("exp_destination_state"),
+				shipper_company_name: val("exp_origin_location"),
+				shipper_address: val("exp_origin_address"),
+				consignee_company_name: val("exp_destination_location"),
+				consignee_address: val("exp_destination_address"),
+				contact_name: val("exp_origin_contact"),
+				origin_contact_name: val("exp_origin_contact"),
+				origin_contact_email: val("exp_origin_email"),
+				destination_contact_name: val("exp_destination_contact"),
+				destination_contact_email: val("exp_destination_email"),
+				origin_country: val("exp_origin_country") || "USA",
+				destination_country: val("exp_destination_country") || "USA",
+				pickup_date: val("exp_origin_date"),
+				pickup_hours: val("exp_origin_hours"),
+				delivery_date: val("exp_destination_date"),
+				delivery_hours: val("exp_destination_hours"),
+			});
+		}
+
+		const line_items = this.collect_line_items();
+		if (line_items.length) {
+			payload.items = line_items;
+			payload.commodity_description = line_items[0].description || line_items[0].item_name || "";
+			payload.nmfc = line_items[0].nmfc || line_items[0].nmfc_number || "";
+			const item_class = line_items[0].nmfc_class || line_items[0].freight_class;
+			if (item_class) {
+				payload.freight_class = item_class;
+			}
+
+			const rolled_weight = line_items.reduce((sum, row) => {
+				const w = parseFloat(row.weight);
+				const qty = Math.max(parseInt(row.quantity || row.qty || 1, 10) || 1, 1);
+				return sum + (Number.isFinite(w) ? w * qty : 0);
+			}, 0);
+			if (rolled_weight > 0) {
+				payload.weight = String(rolled_weight);
+			}
+
+			const rolled_pieces = line_items.reduce((sum, row) => {
+				return sum + Math.max(parseInt(row.quantity || row.qty || 1, 10) || 1, 1);
+			}, 0);
+			if (rolled_pieces > 0) {
+				payload.pieces = rolled_pieces;
+			}
+
+			const first_with_dims = line_items.find((row) => row.length && row.width && row.height);
+			if (first_with_dims) {
+				payload.length = first_with_dims.length;
+				payload.width = first_with_dims.width;
+				payload.height = first_with_dims.height;
+				payload.dimension_uom = first_with_dims.dimension_unit || first_with_dims.dimension_units || "IN";
+			}
+		}
+
+		const carriers = this.selected_carriers();
+		if (carriers.length) {
+			payload.carriers = carriers;
+			payload.source = carriers;
+		}
+
+		return payload;
+	}
+
+	fetch_rates() {
+		const has_line_items = Boolean((this.line_items || []).length);
+		if (this.expanded || has_line_items) {
+			if (!this.require_line_items()) return;
+		}
+
+		const payload = this.collect_payload();
+		const missing = [];
+		if (!payload.origin_zip) missing.push("Origin ZIP");
+		if (!payload.destination_zip) missing.push("Destination ZIP");
+		if (!payload.weight) missing.push("Total Weight");
+		if (!payload.freight_class) missing.push("Freight Class");
+
+		if (missing.length) {
+			frappe.show_alert({ message: __("Please fill: {0}", [missing.join(", ")]), indicator: "orange" }, 6);
+			return;
+		}
+
+		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+			frappe.show_alert({ message: this.no_enabled_carriers_message(), indicator: "orange" }, 6);
+			return;
+		}
+
+		const $btn = this.body.find("[data-action='fetch']");
+		$btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin"></i> Fetching…');
+
+		frappe.call({
+			method: "ltl_quote.api.quote.get_ltl_rates",
+			args: { payload: JSON.stringify(payload) },
+			silent: true,
+			callback: (r) => {
+				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
+				const res = r.message || {};
+				this.refresh_carrier_filter_options((res.data || {}).available_carriers);
+				if (res.status !== "success" || !res.data || !(res.data.quotes || []).length) {
+					const err = (res.errors && res.errors.length && (res.errors[0].error || res.errors[0])) || res.error;
+					this.quotes = [];
+					this.rate_errors = this.sanitize_rate_errors(res.errors || []);
+					this.quote_request_id = res.quote_request_id || null;
+					this.render_rates();
+					frappe.show_alert(
+						{
+							message: this.friendly_fetch_error(err) || __("No carrier quotes were returned"),
+							indicator: "orange",
+						},
+						7
+					);
+					return;
+				}
+				this.quote_request_id = res.quote_request_id;
+				this.quotes = res.data.quotes;
+				this.rate_errors = this.sanitize_rate_errors(res.errors || []);
+				this.booking_context = null;
+				this.load_booking_context(this.quote_request_id, () => {
+					this.render_rates();
+					frappe.show_alert(
+						{ message: __("Quotes received — {0} carrier rates", [this.quotes.length]), indicator: "green" },
+						7
+					);
+				});
+			},
+			error: () => {
+				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
+				this.quotes = [];
+				this.rate_errors = [];
+				this.render_rates();
+				frappe.show_alert(
+					{ message: __("Could not refresh carrier rates. Please try again."), indicator: "orange" },
+					7
+				);
+			},
+		});
+	}
+
+	render_rates() {
+		const card = this.body.find(".ltl-rates-card");
+		const container = this.body.find(".ltl-rates-body");
+		if (!this.quotes.length) {
+			card.hide();
+			container.empty();
+			return;
+		}
+		const tag_badge = (t) =>
+			`<span class="ltl-tag ltl-tag-${t.toLowerCase().replace(/\s+/g, "-")}">${this.tag_icon(t)} ${t}</span>`;
+
+		const rows = this.quotes
+			.map((q, idx) => {
+				const currency = q.currency || "USD";
+				const total = format_currency(q.total_charge != null ? q.total_charge : q.total_cost, currency);
+				const base = format_currency(q.linehaul_charge || 0, currency);
+				const acc = format_currency(q.accessorial_charge || 0, currency);
+				const transit = q.transit_days ? `${q.transit_days} Business Days` : "—";
+				const centerLine = this.format_service_center_line(q.service_eligibility);
+				const service = frappe.utils.escape_html(q.service_level || "Standard LTL");
+				const rating = q.reliability_score ? (q.reliability_score / 20).toFixed(1) : "—";
+				const tags = q.tags || (q.tag ? [q.tag] : []);
+				const tag_cells = tags.length
+					? tags.map(tag_badge).join(" ")
+					: '<span class="ltl-tag-none">—</span>';
+				const recommended = tags.length ? "ltl-row-recommended" : "";
+				return `
+					<tr class="${recommended}">
+						<td>${this.render_carrier_cell(q)}</td>
+						<td><div class="ltl-tag-wrap">${tag_cells}</div></td>
+						<td>${service}</td>
+						<td>
+							<div>${transit}</div>
+							${centerLine ? `<div class="ltl-transit-centers">${centerLine}</div>` : ""}
+						</td>
+						<td class="ltl-total ltl-num">${total}</td>
+						<td class="ltl-num">${base}</td>
+						<td class="ltl-num">${acc}</td>
+						<td><span class="ltl-rating">${rating} <i class="fa fa-star"></i></span></td>
+						<td class="ltl-rate-action-cell">${this.render_rate_action(q, idx)}</td>
+					</tr>`;
+			})
+			.join("");
+
+		const error_rows = (this.rate_errors || [])
+			.map((err) => {
+				const message = this.format_rate_error(err);
+				if (!message) {
+					return "";
+				}
+				const carrier = frappe.utils.escape_html(err.carrier || "Carrier");
+				return `<div class="ltl-rate-error"><strong>${carrier}</strong> did not return a rate: ${frappe.utils.escape_html(message)}</div>`;
+			})
+			.filter(Boolean)
+			.join("");
+
+		container.html(`
+			<div class="ltl-rec-legend">
+				<span class="ltl-tag ltl-tag-cheapest">${this.tag_icon("Cheapest")} Cheapest</span>
+				<span class="ltl-tag ltl-tag-fastest">${this.tag_icon("Fastest")} Fastest</span>
+				<span class="ltl-tag ltl-tag-best-value">${this.tag_icon("Best Value")} Best Value</span>
+				<span class="ltl-rec-hint">Recommendation engine ranks carriers by cost, transit time &amp; reliability.</span>
+			</div>
+			<table class="ltl-table">
+				<thead>
+					<tr>
+						<th>Carrier</th><th>Recommendation</th><th>Service Type</th><th>Transit Time</th>
+						<th>Total Rate</th><th>Base Rate</th><th>Accessorials</th>
+						<th>Rating</th><th>Action</th>
+					</tr>
+				</thead>
+				<tbody>${rows}</tbody>
+			</table>
+			${error_rows ? `<div class="ltl-rate-errors">${error_rows}</div>` : ""}`);
+		card.show();
+	}
+
+	format_rate_error(err) {
+		const raw = String((err && err.error) || err || "").replace(/\s+/g, " ").trim();
+		if (this.is_auth_rate_error(raw)) {
+			return "";
+		}
+		if (/12000\s*lbs/i.test(raw) || /pricing@daytonfreight\.com/i.test(raw)) {
+			return "Shipments over 12,000 lbs cannot be auto-rated. Contact Dayton Pricing at pricing@daytonfreight.com.";
+		}
+		if (/over 10,000 lbs/i.test(raw) && /arcbest/i.test(raw)) {
+			return "Shipments over 10,000 lbs cannot be auto-rated on ArcBest standard LTL. Request a volume/truckload quote.";
+		}
+		if (/Dimensions or Cube is required/i.test(raw)) {
+			return "Shipment is too large for ArcBest standard LTL auto-rating, or dimensions/cube are required.";
+		}
+		if (/requires assistance from customer service/i.test(raw) || /could not auto-rate this shipment/i.test(raw)) {
+			return "This shipment cannot be auto-rated and needs TForce customer service.";
+		}
+		if (/Invalid Commodity Classification/i.test(raw)) {
+			const rejected = (raw.match(/rejected\s+([0-9.]+)/i) || [])[1];
+			return rejected
+				? `SMC3 rejected freight class ${rejected}. Use a standard NMFC class such as 50, 55, 60, 70, 77.5, 85, or 100.`
+				: "SMC3 rejected the freight class. Use a standard NMFC class such as 50, 55, 60, 70, 77.5, 85, or 100.";
+		}
+		if (/SMC3 HTTP \d+/i.test(raw)) {
+			const msg = (raw.match(/Invalid Commodity Classification[^.]*\.?/i) || [])[0];
+			const code = (raw.match(/SMC3 HTTP \d+/) || ["SMC3 request failed"])[0];
+			return msg ? `${code}: ${msg}` : code;
+		}
+		return raw.replace(/\{[\s\S]*\}/, "").replace(/\s+\|\s*$/, "").trim().slice(0, 220) || raw.slice(0, 220);
+	}
+
+	is_auth_rate_error(err) {
+		const raw = String((err && err.error) || err || "");
+		return /invalid access token|access token expired|session expired|unauthorized|\b401\b/i.test(raw);
+	}
+
+	friendly_fetch_error(err) {
+		if (!err) return "";
+		const raw = String((err && err.error) || err || "");
+		if (/Enable at least one carrier/i.test(raw)) {
+			return this.no_enabled_carriers_message();
+		}
+		if (this.is_auth_rate_error(err)) {
+			return __("Could not refresh carrier rates. Please try again.");
+		}
+		const cleaned = this.format_rate_error(err);
+		if (/<!DOCTYPE|<html|Forbidden/i.test(String(cleaned))) {
+			return __("A carrier connection failed. Please try Fetch Rates again.");
+		}
+		return __("No quotes: {0}", [cleaned]);
+	}
+
+	sanitize_rate_errors(errors) {
+		return (errors || [])
+			.filter((err) => !this.is_auth_rate_error(err))
+			.map((err) => {
+				if (typeof err === "string") {
+					return { carrier: "Carrier", error: this.format_rate_error(err) };
+				}
+				return {
+					carrier: err.carrier || "Carrier",
+					error: this.format_rate_error(err),
+				};
+			})
+			.filter((err) => String(err.error || "").trim());
+	}
+
+	carrier_badge_text(quote) {
+		const scac = this.quote_scac(quote);
+		if (scac) return scac.slice(0, 4).toUpperCase();
+		const raw = String(quote?.carrier_name || quote?.carrier || quote?.carrier_code || "?").trim();
+		if (/^SMC3$/i.test(raw) || /^SMC3-/.test(raw.toUpperCase())) return "SMC3";
+		return raw.slice(0, 3).toUpperCase();
+	}
+
+	quote_scac(quote) {
+		const direct = String(quote?.scac || quote?.quoted_scac || "").trim().toUpperCase();
+		if (direct && direct !== "SMC3" && direct !== "SMC" && direct !== "SMCA") return direct;
+		const code = String(quote?.carrier_code || "").toUpperCase();
+		const match = code.match(/^SMC3-([A-Z0-9]{2,5})-/);
+		if (match && match[1] && !["SMC3", "SMC", "SMCA"].includes(match[1])) return match[1];
+		return "";
+	}
+
+	quote_source(quote) {
+		const raw = String(quote?.source || quote?.rate_source || "").trim();
+		const code = String(quote?.carrier_code || quote?.carrier || "").trim();
+		const raw_upper = raw.toUpperCase();
+		const code_upper = code.toUpperCase();
+		if (raw_upper === "SMC3" || code_upper.startsWith("SMC3-")) return "SMC3";
+		const key = ltl_connector_key(raw || code);
+		if (["SMC3", "DAYTON", "TFORCE", "ARCB"].includes(key)) {
+			return ltl_connector_label(key);
+		}
+		return raw_upper;
+	}
+
+	render_source_line(quote) {
+		const source = this.quote_source(quote);
+		if (!source) return "";
+		return `<div class="ltl-carrier-source">${frappe.utils.escape_html(
+			__("SOURCE: {0}", [source])
+		)}</div>`;
+	}
+
+	quote_carrier_name(quote) {
+		const scac = this.quote_scac(quote);
+		const source = this.quote_source(quote);
+		let name = String(quote?.carrier_name || quote?.carrier || "").trim();
+		const is_demo = /demo carrier/i.test(name) || /^SMC3$/i.test(name) || /^SMC3-/.test(name.toUpperCase());
+		if (source === "SMC3") {
+			if (!name || is_demo) {
+				name = (scac && SMC3_SCAC_NAMES[scac] && scac !== "SMCA") || scac || name;
+			}
+		}
+		if (/demo carrier/i.test(name) || /^SMCA$/i.test(name)) {
+			name = (scac && SMC3_SCAC_NAMES[scac] && scac !== "SMCA") || scac || "Network Carrier";
+		}
+		return name || String(quote?.carrier_code || "—");
+	}
+
+	render_carrier_cell(quote) {
+		const esc = frappe.utils.escape_html;
+		const name = this.quote_carrier_name(quote);
+		return `<div class="ltl-carrier-cell">
+			<span class="ltl-carrier-badge">${esc(this.carrier_badge_text(quote))}</span>
+			<div class="ltl-carrier-text">
+				<span class="ltl-carrier-name">${esc(name)}</span>
+				${this.render_source_line(quote)}
+			</div>
+		</div>`;
+	}
+
+	tag_icon(tag) {
+		const t = (tag || "").toLowerCase();
+		if (t.includes("cheap")) return '<i class="fa fa-tag"></i>';
+		if (t.includes("fast")) return '<i class="fa fa-bolt"></i>';
+		if (t.includes("best")) return '<i class="fa fa-star"></i>';
+		return "";
+	}
+
+	format_service_center_line(eligibility) {
+		if (!eligibility) return "";
+		const esc = frappe.utils.escape_html;
+		const origin = eligibility.origin_service_center || {};
+		const destination = eligibility.destination_service_center || {};
+		const originId = origin.id || "";
+		const destId = destination.id || "";
+		if (originId && destId) {
+			return esc(`${originId} → ${destId}`);
+		}
+		const parts = [];
+		if (origin.name) parts.push(origin.name);
+		if (destination.name) parts.push(destination.name);
+		return parts.length ? esc(parts.join(" → ")) : "";
+	}
+
+	format_terminal_detail(center) {
+		if (!center) return "—";
+		const parts = [];
+		if (center.name) parts.push(center.name);
+		if (center.city && center.state) parts.push(`${center.city}, ${center.state}`);
+		else if (center.city) parts.push(center.city);
+		if (center.phone) parts.push(center.phone);
+		return parts.length ? parts.join(" · ") : "—";
+	}
+
+	normalize_carrier_code(code) {
+		const raw = String(code || "")
+			.toUpperCase()
+			.replace(/[^A-Z0-9]/g, "");
+		if (raw.startsWith("SMC3")) return "SMC3";
+		return raw;
+	}
+
+	render_rate_action(q, idx) {
+		const ctx = this.booking_context;
+		if (ctx?.shipment && this.is_booked_rate_row(q)) {
+			const shipment = frappe.utils.escape_html(q.shipment_name || ctx.shipment);
+			const bol_url = ctx.bol_url || "";
+			const bol_btn = bol_url
+				? `<button type="button" class="ltl-btn ltl-view-bol-btn" data-bol-url="${frappe.utils.escape_html(
+						bol_url
+					)}"><i class="fa fa-file-pdf-o"></i> ${__("View BOL")}</button>`
+				: "";
+			return `<span class="ltl-rate-actions">${bol_btn}<button type="button" class="ltl-btn ltl-btn-light ltl-view-shipment-btn" data-idx="${idx}" data-shipment="${shipment}">${__(
+				"View Shipment"
+			)}</button></span>`;
+		}
+		if (ctx?.shipment) {
+			return `<button type="button" class="ltl-btn ltl-btn-light" disabled>${__("Booked")}</button>`;
+		}
+		return `<button class="ltl-btn ltl-btn-primary ltl-book-btn" data-idx="${idx}">${__("Book Shipment")}</button>`;
+	}
+
+	is_booked_rate_row(quote) {
+		const ctx = this.booking_context;
+		if (!ctx?.shipment || !quote) return false;
+
+		const quote_scac = this.quote_scac(quote);
+		const booked_scac = String(ctx.booked_scac || "").trim().toUpperCase();
+		if (quote_scac && booked_scac && quote_scac === booked_scac) {
+			return true;
+		}
+
+		const booked_qid = String(ctx.booked_carrier_quote_id || "").trim();
+		if (booked_qid && String(quote.carrier_quote_id || "").trim() === booked_qid) {
+			return true;
+		}
+
+		const booked_norm = ctx.booked_carrier_code
+			? this.normalize_carrier_code(ctx.booked_carrier_code)
+			: "";
+		const code = this.normalize_carrier_code(quote.carrier_code || quote.carrier);
+		if (!booked_norm || !code || booked_norm !== code) {
+			return false;
+		}
+		// SMC3 network quotes all share connector SMC3 — never treat every row as booked.
+		if (booked_norm === "SMC3" || this.quote_source(quote) === "SMC3") {
+			return false;
+		}
+		return true;
+	}
+
+	load_booking_context(quote_request_id, callback) {
+		if (!quote_request_id) {
+			this.booking_context = null;
+			this.quote_request_status = null;
+			if (callback) callback();
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.quote.get_quote_booking_context",
+			args: { quote_request_id },
+			callback: (r) => {
+				const ctx = r.message || {};
+				if (ctx.is_booked && ctx.shipment) {
+					this.apply_booking_context({
+						shipment: ctx.shipment,
+						booked_carrier: ctx.booked_carrier,
+						booked_scac: ctx.booked_scac,
+						booked_carrier_quote_id: ctx.booked_carrier_quote_id,
+						bol_document_url: ctx.bol_url,
+						bol_image: ctx.bol_image,
+						bol_number: ctx.bol_number,
+					});
+					this.quote_request_status = ctx.quote_status;
+				} else {
+					this.booking_context = null;
+					this.quote_request_status = ctx.quote_status || null;
+				}
+				if (callback) callback();
+			},
+			error: () => {
+				if (callback) callback();
+			},
+		});
+	}
+
+	apply_booking_context(res) {
+		const shipment = res.shipment || (res.data && res.data.shipment);
+		if (!shipment) return false;
+		this.booking_context = {
+			shipment,
+			booked_carrier_code: res.booked_carrier || res.booked_carrier_code || "",
+			booked_scac: res.booked_scac || "",
+			booked_carrier_quote_id: res.booked_carrier_quote_id || "",
+			bol_url: res.bol_document_url || res.bol_url || (res.data && res.data.bol_document_url) || "",
+			bol_image: res.bol_image || res.bol_image_url || (res.data && res.data.bol_image) || "",
+			bol_number: res.bol_number || "",
+		};
+		this.quote_request_status = "Booked";
+		const shipment_name = String(shipment || "").trim();
+		(this.quotes || []).forEach((quote) => {
+			if (this.is_booked_rate_row(quote)) {
+				quote.shipment_name = shipment_name;
+			}
+		});
+		return true;
+	}
+
+	open_shipment_view(shipmentName) {
+		if (!shipmentName) return;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="shipments"]').addClass("active");
+		this.show_view("shipments");
+		const cfg = LIST_VIEWS.shipments;
+		this.current_list = cfg;
+		frappe.db
+			.get_list(cfg.doctype, {
+				fields: cfg.fields,
+				order_by: cfg.order_by,
+				limit: 100,
+			})
+			.then((rows) => {
+				this.list_rows = rows || [];
+				this.render_list_table(this.list_rows);
+				frappe.set_route("Form", "LTL Shipment", shipmentName);
+			});
+	}
+
+	book_shipment(idx) {
+		const quote = this.quotes[idx];
+		if (!quote || !this.quote_request_id) return;
+
+		if (!this.require_line_items()) return;
+
+		if (this.booking_context?.shipment) {
+			if (this.is_booked_rate_row(quote)) {
+				this.open_booked_shipment(this.booking_context.shipment);
+			}
+			return;
+		}
+		this.show_booking_modal(idx);
+	}
+
+	open_booked_shipment(shipmentName) {
+		const name = String(shipmentName || "").trim();
+		if (!name) return;
+		this.open_shipment_detail(name);
+	}
+
+	show_booking_modal(idx) {
+		const quote = this.quotes[idx];
+		if (!quote) return;
+
+		const shipment = this.collect_payload();
+		const dialog = new frappe.ui.Dialog({
+			title: __("Confirm Booking"),
+			size: "large",
+			fields: [{ fieldtype: "HTML", fieldname: "summary" }],
+			primary_action_label: __("Confirm Booking"),
+			primary_action: () => {
+				if (!this.require_line_items()) return;
+				dialog.hide();
+				this.execute_booking(quote);
+			},
+		});
+
+		dialog.$wrapper.addClass("ltl-book-dialog");
+		dialog.fields_dict.summary.$wrapper.html(this.render_booking_modal_html(quote, shipment));
+		dialog.show();
+	}
+
+	render_booking_modal_html(quote, shipment) {
+		const esc = frappe.utils.escape_html;
+		const currency = quote.currency || "USD";
+		const carrier_name = this.quote_carrier_name(quote);
+		const carrier_code = this.carrier_badge_text(quote);
+		const source_line = this.render_source_line(quote);
+		const service = esc(quote.service_level || "Standard LTL");
+		const rating = quote.reliability_score ? (quote.reliability_score / 20).toFixed(1) : null;
+		const tags = quote.tags || (quote.tag ? [quote.tag] : []);
+		const tag_badge = (t) =>
+			`<span class="ltl-tag ltl-tag-${t.toLowerCase().replace(/\s+/g, "-")}">${this.tag_icon(t)} ${esc(t)}</span>`;
+		const tag_html = tags.length
+			? tags.map(tag_badge).join(" ")
+			: '<span class="ltl-tag-none">—</span>';
+
+		const transit_days = quote.transit_days || 0;
+		const transit_label =
+			transit_days === 1
+				? __("1 Business Day")
+				: transit_days
+					? __("{0} Business Days", [transit_days])
+					: "—";
+
+		const origin_zip = esc(shipment.origin_zip || "—");
+		const destination_zip = esc(shipment.destination_zip || "—");
+		const weight = shipment.weight ? `${Number(shipment.weight).toLocaleString()} lbs` : "—";
+		const freight_class = shipment.freight_class ? __("Class {0}", [esc(shipment.freight_class)]) : "—";
+
+		const detail_row = (label, value) =>
+			`<div class="ltl-book-row"><span class="ltl-book-label">${label}</span><span class="ltl-book-value">${value}</span></div>`;
+
+		const cost_row = (label, amount, extra_class = "") =>
+			`<div class="ltl-book-row ${extra_class}"><span class="ltl-book-label">${label}</span><span class="ltl-book-value">${amount}</span></div>`;
+
+		const fuel_surcharge = Number(quote.fuel_surcharge) || 0;
+		const fuel_row = fuel_surcharge > 0
+			? cost_row(__("Fuel Surcharge"), format_currency(fuel_surcharge, currency))
+			: "";
+
+		const accessorial = Number(quote.accessorial_charge) || 0;
+		const accessorial_display =
+			accessorial > 0
+				? `+ ${format_currency(accessorial, currency)}`
+				: format_currency(accessorial, currency);
+
+		const elig = quote.service_eligibility || null;
+		const origin_terminal = elig
+			? esc(this.format_terminal_detail(elig.origin_service_center))
+			: null;
+		const destination_terminal = elig
+			? esc(this.format_terminal_detail(elig.destination_service_center))
+			: null;
+		const terminal_rows =
+			origin_terminal || destination_terminal
+				? `${detail_row(__("Origin Terminal"), origin_terminal || "—")}${detail_row(
+						__("Destination Terminal"),
+						destination_terminal || "—"
+					)}`
+				: "";
+
+		return `
+			<div class="ltl-book-modal">
+				<div class="ltl-book-header">
+					<div class="ltl-book-carrier">
+						<span class="ltl-carrier-badge">${esc(carrier_code)}</span>
+						<div>
+							<div class="ltl-book-carrier-name">${esc(carrier_name)}</div>
+							${source_line}
+							<div class="ltl-book-meta">
+								<span>${service}</span>
+								${rating ? `<span class="ltl-rating">${rating} <i class="fa fa-star"></i></span>` : ""}
+							</div>
+						</div>
+					</div>
+					<div class="ltl-tag-wrap ltl-book-tags">${tag_html}</div>
+				</div>
+				<div class="ltl-book-grid">
+					<div class="ltl-book-panel">
+						<div class="ltl-book-panel-head">${__("Operational Details")}</div>
+						<div class="ltl-book-panel-body">
+							${detail_row(__("Transit Window"), esc(transit_label))}
+							${terminal_rows}
+							${detail_row(__("Route Lane"), `${origin_zip} <i class="fa fa-long-arrow-right ltl-book-arrow"></i> ${destination_zip}`)}
+							${detail_row(__("Shipment Mass"), esc(weight))}
+							${detail_row(__("Freight Class"), freight_class)}
+						</div>
+					</div>
+					<div class="ltl-book-panel">
+						<div class="ltl-book-panel-head">${__("Cost Summary")}</div>
+						<div class="ltl-book-panel-body">
+							${cost_row(__("Base Linehaul"), format_currency(quote.linehaul_charge || 0, currency))}
+							${fuel_row}
+							${cost_row(__("Accessorials"), accessorial_display)}
+							${cost_row(__("Total Rate"), format_currency(quote.total_charge != null ? quote.total_charge : quote.total_cost, currency), "ltl-book-total")}
+						</div>
+					</div>
+				</div>
+				<p class="ltl-book-footer">${__(
+					"Review details before confirming booking with the carrier."
+				)}</p>
+			</div>`;
+	}
+
+	execute_booking(quote) {
+		const line_items = this.require_line_items();
+		if (!line_items) return;
+
+		const first = line_items[0] || {};
+		frappe.call({
+			method: "ltl_quote.api.quote.accept_carrier_quote",
+			args: {
+				quote_request_id: this.quote_request_id,
+				carrier_code: quote.carrier_code,
+				total_charge: quote.total_charge != null ? quote.total_charge : quote.total_cost,
+				carrier_quote_id: quote.carrier_quote_id || "",
+				items: JSON.stringify(line_items),
+				commodity_description: first.description || first.item_name || "",
+				nmfc: first.nmfc || first.nmfc_number || "",
+			},
+			freeze: true,
+			freeze_message: __("Generating BOL, and fetching BOL image…"),
+			callback: (r) => {
+				const res = r.message || {};
+				if (res.status === "success" || res.status === "already_booked") {
+					if (!res.booked_scac) {
+						res.booked_scac = this.quote_scac(quote);
+					}
+					if (!res.booked_carrier_quote_id) {
+						res.booked_carrier_quote_id = quote.carrier_quote_id || "";
+					}
+					const booked = this.apply_booking_context(res);
+					if (booked) {
+						this.render_rates();
+						const msg =
+							res.status === "already_booked"
+								? __("Shipment already booked")
+								: __("Shipment booked — PRO {0}", [res.pro_number || res.bol_number || "Pending"]);
+						frappe.show_alert({ message: msg, indicator: "green" }, 8);
+						this.load_recent_requests();
+						return;
+					}
+				}
+				if (res.status === "success") {
+					frappe.show_alert(
+						{ message: __("Shipment booked — PRO {0}", [res.pro_number || res.bol_number || "Pending"]), indicator: "green" },
+						8
+					);
+					this.load_recent_requests();
+				} else {
+					frappe.msgprint({
+						title: __("Booking Failed"),
+						message: res.message || res.error || __("Unknown error"),
+						indicator: "red",
+					});
+				}
+			},
+		});
+	}
+
+	current_zips() {
+		const pfx = this.expanded ? "exp_" : "";
+		const val = (f) => (this.body.find(`[data-field='${f}']`).val() || "").trim();
+		return { origin_zip: val(`${pfx}origin_zip`), destination_zip: val(`${pfx}destination_zip`) };
+	}
+
+	load_recent_requests() {
+		const { origin_zip, destination_zip } = this.current_zips();
+		const filtered = !!(origin_zip || destination_zip);
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_recent_quote_requests",
+			args: { limit: 8, origin_zip: origin_zip, destination_zip: destination_zip },
+			callback: (r) => this.render_recent(r.message || [], filtered),
+		});
+	}
+
+	render_recent(rows, filtered) {
+		const container = this.body.find(".ltl-recent-body");
+		if (!rows.length) {
+			container.html(
+				`<div class="ltl-empty">${
+					filtered
+						? "No quote requests match the entered origin / destination ZIP."
+						: "No quote requests yet."
+				}</div>`
+			);
+			return;
+		}
+		const loc = (city, state, zip) =>
+			frappe.utils.escape_html([city, state].filter(Boolean).join(", ") || zip || "—");
+		const status_class = (s) =>
+			({
+				"Quotes Received": "green",
+				Booked: "blue",
+				Accepted: "blue",
+				Draft: "grey",
+				Pending: "orange",
+				"API Error": "red",
+			}[s] || "grey");
+
+		const body = rows
+			.map((row) => {
+				const carrier =
+					row.carrier_name || row.final_carrier
+						? frappe.utils.escape_html(row.carrier_name || row.final_carrier)
+						: "—";
+				const rate =
+					row.final_charge != null && row.final_charge !== ""
+						? format_currency(row.final_charge, "USD")
+						: "—";
+				return `
+			<tr>
+				<td class="ltl-id">${frappe.utils.escape_html(row.name)}</td>
+				<td>${loc(row.origin_city, row.origin_state, row.origin_zip)}</td>
+				<td>${loc(row.destination_city, row.destination_state, row.destination_zip)}</td>
+				<td class="ltl-num">${row.total_weight ? Number(row.total_weight).toLocaleString() : "—"}</td>
+				<td>${carrier}</td>
+				<td class="ltl-num">${rate}</td>
+				<td>${frappe.datetime.str_to_user(row.creation)}</td>
+				<td><span class="ltl-status ltl-status-${status_class(row.status)}">${frappe.utils.escape_html(row.status || "—")}</span></td>
+				<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="View">${ltl_nav_icon("eye")}</span></td>
+			</tr>`;
+			})
+			.join("");
+
+		container.html(`
+			<table class="ltl-table">
+				<thead>
+					<tr><th>Request ID</th><th>Origin</th><th>Destination</th><th>Weight (lbs)</th><th>Carrier</th><th>Rate</th><th>Created On</th><th>Status</th><th>Action</th></tr>
+				</thead>
+				<tbody>${body}</tbody>
+			</table>`);
+	}
+
+	show_view(key) {
+		if (key === "carriers" && this.is_shipper_user()) {
+			key = "quote";
+		}
+		const is_quote = key === "quote";
+		const is_detail = key === "detail";
+		const is_line_item = key === "line-item";
+		const is_pickup = key === "pickup";
+		const is_tracking = key === "tracking";
+		this.body.find(".ltl-view-quote").toggle(is_quote);
+		this.body.find(".ltl-view-list").toggle(!is_quote && !is_detail && !is_line_item && !is_pickup && !is_tracking);
+		this.body.find(".ltl-view-detail").toggle(is_detail);
+		this.body.find(".ltl-view-line-item").toggle(is_line_item);
+		this.body.find(".ltl-view-pickup").toggle(is_pickup);
+		this.body.find(".ltl-view-tracking").toggle(is_tracking);
+		this.body.find(".ltl-scroll")[0].scrollTo(0, 0);
+
+		if (is_quote) {
+			this.current_list = null;
+			this.detail_doc = null;
+			this.detail_type = null;
+			this.body.find(".ltl-breadcrumb .current").text("New Carrier Quote");
+			return;
+		}
+
+		if (is_line_item) {
+			this.body.find(".ltl-breadcrumb .current").text("Line Item Details");
+			return;
+		}
+
+		if (is_pickup) {
+			this.body.find(".ltl-breadcrumb .current").text(__("Pickup"));
+			return;
+		}
+
+		if (is_tracking) {
+			this.body.find(".ltl-breadcrumb .current").text("Tracking");
+			return;
+		}
+
+		if (is_detail) {
+			const label =
+				this.detail_type === "shipment"
+					? "Shipment"
+					: this.detail_type === "accessorial"
+						? "Accessorial"
+						: this.detail_type === "carrier"
+							? "Quote Source"
+							: "Quote Request";
+			this.body.find(".ltl-breadcrumb .current").text(label);
+			return;
+		}
+
+		const cfg = LIST_VIEWS[key];
+		if (!cfg) return;
+		this.current_list = cfg;
+		this.detail_doc = null;
+		this.detail_type = null;
+		this.body.find(".ltl-breadcrumb .current").text(cfg.title);
+		this.body.find(".ltl-list-title").text(cfg.title);
+		this.body.find(".ltl-list-sub").text(cfg.sub || "");
+		this.body.find(".ltl-list-icon").html(ltl_nav_icon(cfg.icon || "list"));
+		this.body.find(".ltl-list-new").html(`${ltl_nav_icon("plus")} New ${frappe.utils.escape_html(cfg.title)}`);
+		this.body.find(".ltl-list-search").val("");
+		this.load_list(cfg);
+	}
+
+	open_quote_detail(name) {
+		if (!name) return;
+		this.detail_return_view = this.current_list
+			? this.current_list.doctype === "LTL Shipment"
+				? "shipments"
+				: "quotes"
+			: this.detail_type === "shipment"
+				? "shipments"
+				: "quote";
+		this.detail_type = "quote";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="quotes"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_quote_request_detail",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load quote request.</div>');
+					return;
+				}
+				this.detail_doc = r.message;
+				container.html(this.render_quote_detail(r.message));
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load quote request.</div>');
+			},
+		});
+	}
+
+	fetch_smc3_document(shipment, opts) {
+		opts = opts || {};
+		const document_type = String(opts.document_type || "POD").toUpperCase();
+		const is_dr = document_type === "DR";
+		if (String(opts.status || "").trim() !== "Delivered") {
+			frappe.msgprint({
+				title: is_dr ? __("Delivery Receipt") : __("Proof of Delivery"),
+				indicator: "orange",
+				message: is_dr
+					? __("Delivery receipt is only available for Delivered shipments")
+					: __("POD is only available for Delivered shipments"),
+			});
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.smc3.get_smc3_document",
+			args: {
+				shipment,
+				scac: opts.scac || "",
+				pro_number: opts.pro_number || "",
+				document_type,
+				file_type: "PDF",
+			},
+			freeze: true,
+			freeze_message: is_dr
+				? __("Fetching delivery receipt PDF from SMC3…")
+				: __("Fetching POD PDF from SMC3…"),
+			callback: (r) => {
+				const result = r.message || {};
+				if (result.status === "success") {
+					if (result.file_url) {
+						window.open(result.file_url, "_blank", "noopener,noreferrer");
+					} else if (result.pod_name) {
+						frappe.set_route("Form", "LTL POD", result.pod_name);
+					}
+					frappe.show_alert({
+						message:
+							result.message ||
+							(is_dr
+								? __("Delivery receipt attached.")
+								: result.pod_name
+									? __("POD attached as {0}.", [result.pod_name])
+									: __("POD PDF opened.")),
+						indicator: "green",
+					});
+					this.open_shipment_detail(shipment);
+					return;
+				}
+				frappe.msgprint({
+					title: is_dr ? __("Get DR Failed") : __("Get POD Failed"),
+					indicator: "red",
+					message:
+						result.message ||
+						(is_dr
+							? __("Could not retrieve the delivery receipt.")
+							: __("Could not retrieve the proof of delivery.")),
+				});
+			},
+		});
+	}
+
+	lookup_smc3_terminal(opts) {
+		opts = opts || {};
+		const lane = String(opts.lane || "origin").toLowerCase();
+		const is_dest = lane.indexOf("dest") >= 0;
+		const title = is_dest ? __("Destination Terminal") : __("Origin Terminal");
+		const postal_code = String(opts.postal_code || "").trim();
+		if (!postal_code) {
+			frappe.msgprint({
+				title,
+				indicator: "orange",
+				message: __("A {0} ZIP is required to look up the carrier terminal.", [
+					is_dest ? __("destination") : __("origin"),
+				]),
+			});
+			return;
+		}
+		frappe.call({
+			method: "ltl_quote.api.smc3.get_carrier_terminal_info",
+			args: {
+				scac: opts.scac || "",
+				postal_code,
+				shipment: opts.shipment || "",
+				lane: is_dest ? "destination" : "origin",
+			},
+			freeze: true,
+			freeze_message: __("Looking up {0}…", [title]),
+			callback: (r) => this.show_smc3_terminal_dialog(title, r.message || {}),
+		});
+	}
+
+	show_smc3_terminal_dialog(title, result) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null || v === "" ? "—" : v));
+		const terminals = Array.isArray(result.terminals) ? result.terminals : [];
+		if (!terminals.length) {
+			frappe.msgprint({
+				title,
+				indicator: "orange",
+				message: __("No terminal locations were returned for ZIP {0}.", [result.postal_code || "—"]),
+			});
+			return;
+		}
+		const cards = terminals
+			.map((row) => {
+				const city_line = [row.city, row.state].filter(Boolean).join(", ");
+				const loc = `${city_line}${row.zip ? ` ${row.zip}` : ""}`.trim() || "—";
+				return `
+					<div class="ltl-terminal-card">
+						<div class="ltl-terminal-card-head">
+							<strong>${esc(row.name || __("Carrier Terminal"))}</strong>
+							<span class="ltl-terminal-scac">${__("SCAC")}: ${esc(row.scac)}</span>
+						</div>
+						<div class="ltl-terminal-row"><span>${__("Address")}</span><strong>${esc(row.address)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("City / State / ZIP")}</span><strong>${esc(loc)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Phone")}</span><strong>${esc(row.phone)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Contact")}</span><strong>${esc(row.contact)}</strong></div>
+						<div class="ltl-terminal-row"><span>${__("Operating Hours")}</span><strong>${esc(row.hours)}</strong></div>
+					</div>`;
+			})
+			.join("");
+		const dialog = new frappe.ui.Dialog({
+			title,
+			size: "large",
+			fields: [{ fieldtype: "HTML", fieldname: "terminal_info" }],
+		});
+		dialog.fields_dict.terminal_info.$wrapper.html(
+			`<div class="ltl-terminal-dialog">
+				<div class="ltl-terminal-meta">${__("ZIP")} ${esc(result.postal_code)} · ${__("SCAC")} ${esc(result.scac)}</div>
+				${cards}
+			</div>`
+		);
+		dialog.show();
+	}
+
+	open_shipment_detail(name) {
+		if (!name) return;
+		if (this.detail_type !== "quote") {
+			this.detail_return_view = "shipments";
+		}
+		this.detail_type = "shipment";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="shipments"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_shipment_detail",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load shipment.</div>');
+					return;
+				}
+				this.detail_doc = r.message;
+				container.html(this.render_shipment_detail(r.message));
+				this.bind_barcode_popovers(container);
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load shipment.</div>');
+			},
+		});
+	}
+
+	open_accessorial_detail(name) {
+		if (!name) return;
+		if (!this._built) {
+			this._pending_detail = { type: "accessorial", name };
+			return;
+		}
+		this.detail_return_view = "accessorials";
+		this.detail_type = "accessorial";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="accessorials"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.db
+			.get_doc("LTL Accessorial", name)
+			.then((doc) => {
+				if (!doc) {
+					container.html('<div class="ltl-empty">Unable to load accessorial.</div>');
+					return;
+				}
+				this.detail_doc = { doc };
+				container.html(this.render_accessorial_detail(doc));
+			})
+			.catch(() => {
+				container.html('<div class="ltl-empty">Unable to load accessorial.</div>');
+			});
+	}
+
+	save_carrier_enabled(e) {
+		const doc = this.detail_doc && this.detail_doc.doc;
+		if (!doc || !doc.name || this.detail_type !== "carrier") return;
+		const $select = $(e.currentTarget);
+		const as_flag = (value) => (value === 1 || value === true || value === "1" ? 1 : 0);
+		const enabled = as_flag($select.val());
+		const previous = as_flag(doc.enabled);
+		if (enabled === previous) return;
+		$select.prop("disabled", true);
+		const finish = () => $select.prop("disabled", false);
+		frappe.db
+			.set_value("LTL Carrier", doc.name, "enabled", enabled)
+			.then(() => {
+				doc.enabled = enabled;
+				this.body
+					.find(".ltl-carrier-enabled-badge")
+					.text(enabled ? __("Enabled") : __("Disabled"));
+				this.load_enabled_carrier_options();
+				frappe.show_alert({
+					message: enabled ? __("Carrier enabled") : __("Carrier disabled"),
+					indicator: enabled ? "green" : "orange",
+				});
+				finish();
+			})
+			.catch(() => {
+				$select.val(String(previous));
+				frappe.show_alert({
+					message: __("Could not update carrier status."),
+					indicator: "red",
+				});
+				finish();
+			});
+	}
+
+	save_smc3_network_enabled(e) {
+		const doc = this.detail_doc && this.detail_doc.doc;
+		if (!doc || this.detail_type !== "carrier") return;
+		const $select = $(e.currentTarget);
+		const row_name = ($select.attr("data-row-name") || "").trim();
+		if (!row_name) return;
+		const as_flag = (value) => (value === 1 || value === true || value === "1" ? 1 : 0);
+		const enabled = as_flag($select.val());
+		const rows = doc.smc3_network_carriers || [];
+		const row = rows.find((item) => item.name === row_name);
+		const previous = as_flag(row && row.enabled);
+		if (enabled === previous) return;
+		$select.prop("disabled", true);
+		const finish = () => $select.prop("disabled", false);
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.set_smc3_network_carrier_enabled",
+			args: { carrier: doc.name, row_name, enabled },
+			callback: (r) => {
+				if (r.exc) {
+					$select.val(String(previous));
+					finish();
+					return;
+				}
+				const saved = r.message || {};
+				const value = as_flag(saved.enabled);
+				if (row) row.enabled = value;
+				const label = saved.scac || saved.carrier_label || (row && (row.scac || row.carrier_label)) || row_name;
+				frappe.show_alert({
+					message: value ? __("{0} enabled", [label]) : __("{0} disabled", [label]),
+					indicator: value ? "green" : "orange",
+				});
+				finish();
+			},
+			error: () => {
+				$select.val(String(previous));
+				frappe.show_alert({
+					message: __("Could not update network carrier status."),
+					indicator: "red",
+				});
+				finish();
+			},
+		});
+	}
+
+	open_carrier_detail(name) {
+		if (!name) return;
+		if (!this._built) {
+			this._pending_detail = { type: "carrier", name };
+			return;
+		}
+		this.detail_return_view = "carriers";
+		this.detail_type = "carrier";
+		this.body.find(".ltl-nav-item").removeClass("active");
+		this.body.find('.ltl-nav-item[data-view="carriers"]').addClass("active");
+		this.show_view("detail");
+		const container = this.body.find(".ltl-detail-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.db
+			.get_doc("LTL Carrier", name)
+			.then((doc) => {
+				if (!doc) {
+					container.html('<div class="ltl-empty">Unable to load carrier.</div>');
+					return;
+				}
+				this.detail_doc = { doc };
+				container.html(this.render_carrier_detail(doc));
+			})
+			.catch(() => {
+				container.html('<div class="ltl-empty">Unable to load carrier.</div>');
+			});
+	}
+
+	open_pickup_detail(name) {
+		if (!name) return;
+		this.pickup_shipment_name = name;
+		this.show_view("pickup");
+		this.load_pickup_detail(name);
+	}
+
+	load_pickup_detail(name) {
+		const container = this.body.find(".ltl-pickup-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_pickup_page_data",
+			args: { name },
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load pickup.</div>');
+					return;
+				}
+				this.pickup_doc = r.message;
+				container.html(this.render_pickup_detail(r.message));
+				const label = ltl_connector_label(r.message.carrier || (r.message.doc && r.message.doc.carrier));
+				this.body.find(".ltl-breadcrumb .current").text(__("{0} Pickup", [label]));
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load pickup.</div>');
+			},
+		});
+	}
+
+	close_pickup_view() {
+		const shipment = this.pickup_shipment_name;
+		this.pickup_doc = null;
+		if (shipment) {
+			this.open_shipment_detail(shipment);
+			return;
+		}
+		this.show_view("shipments");
+	}
+
+	open_tracking_detail(name) {
+		if (!name) return;
+		this.tracking_shipment_name = name;
+		this.show_view("tracking");
+		this.load_tracking_detail(name);
+	}
+
+	load_tracking_detail(name, refresh = 1) {
+		const container = this.body.find(".ltl-tracking-body");
+		this.destroy_tracking_map();
+		container.html('<div class="ltl-empty">Loading…</div>');
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_tracking_page_data",
+			args: { name, refresh },
+			freeze: Boolean(refresh),
+			freeze_message: __("Refreshing tracking…"),
+			callback: (r) => {
+				if (!r.message || !r.message.doc) {
+					container.html('<div class="ltl-empty">Unable to load tracking.</div>');
+					return;
+				}
+				this.tracking_doc = r.message;
+				container.html(this.render_tracking_detail(r.message));
+				this.init_tracking_map(r.message.route || {});
+			},
+			error: () => {
+				container.html('<div class="ltl-empty">Unable to load tracking.</div>');
+			},
+		});
+	}
+
+	close_tracking_view() {
+		const shipment = this.tracking_shipment_name;
+		const back = this.tracking_return_view;
+		this.destroy_tracking_map();
+		this.tracking_doc = null;
+		this.tracking_return_view = null;
+		if (shipment && back === "pickup") {
+			this.open_pickup_detail(shipment);
+			return;
+		}
+		if (shipment) {
+			this.open_shipment_detail(shipment);
+			return;
+		}
+		this.show_view("shipments");
+	}
+
+	destroy_tracking_map() {
+		if (this._ltl_tracking_map) {
+			try {
+				this._ltl_tracking_map.remove();
+			} catch (e) {
+				/* ignore stale Leaflet cleanup */
+			}
+			this._ltl_tracking_map = null;
+		}
+	}
+
+	init_tracking_map(route) {
+		this.destroy_tracking_map();
+		const el = this.body.find("#ltl-tracking-map").get(0);
+		if (!el || typeof L === "undefined") {
+			return;
+		}
+
+		const origin = route.origin || {};
+		const destination = route.destination || {};
+		const current = route.current_stop || {};
+		const points = [];
+
+		const push_point = (place, role) => {
+			const lat = place && place.lat != null ? Number(place.lat) : NaN;
+			const lng = place && place.lng != null ? Number(place.lng) : NaN;
+			if (Number.isNaN(lat) || Number.isNaN(lng)) return;
+			points.push({ lat, lng, role, label: place.label || "" });
+		};
+
+		push_point(origin, "origin");
+		const mid_distinct =
+			current.lat != null &&
+			current.lng != null &&
+			(Number(current.lat) !== Number(origin.lat) || Number(current.lng) !== Number(origin.lng)) &&
+			(Number(current.lat) !== Number(destination.lat) || Number(current.lng) !== Number(destination.lng));
+		if (mid_distinct) {
+			push_point(current, "current");
+		}
+		push_point(destination, "destination");
+
+		if (!points.length) {
+			el.innerHTML = `<div class="ltl-tracking-map-empty">${__(
+				"Map unavailable — ZIP coordinates could not be resolved."
+			)}</div>`;
+			return;
+		}
+
+		if (frappe.utils.map_defaults && frappe.utils.map_defaults.image_path) {
+			L.Icon.Default.imagePath = frappe.utils.map_defaults.image_path;
+		}
+
+		const map = L.map(el, { scrollWheelZoom: false });
+		this._ltl_tracking_map = map;
+		const tiles =
+			(frappe.utils.map_defaults && frappe.utils.map_defaults.tiles) ||
+			"https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+		const tile_opts =
+			(frappe.utils.map_defaults && frappe.utils.map_defaults.options) || {
+				attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
+			};
+		L.tileLayer(tiles, tile_opts).addTo(map);
+
+		const color_for = (role) => {
+			if (role === "destination") return "#dc2626";
+			return "#e87722";
+		};
+
+		const latlngs = [];
+		points.forEach((p) => {
+			const ll = [p.lat, p.lng];
+			latlngs.push(ll);
+			const marker = L.circleMarker(ll, {
+				radius: p.role === "current" ? 9 : 8,
+				color: color_for(p.role),
+				fillColor: color_for(p.role),
+				fillOpacity: p.role === "origin" ? 0.35 : 0.9,
+				weight: 3,
+			}).addTo(map);
+			if (p.label) {
+				marker.bindPopup(frappe.utils.escape_html(p.label));
+			}
+		});
+
+		if (latlngs.length >= 2) {
+			L.polyline(latlngs, {
+				color: "#e87722",
+				weight: 3,
+				opacity: 0.75,
+				dashArray: "8 6",
+			}).addTo(map);
+		}
+
+		if (latlngs.length === 1) {
+			map.setView(latlngs[0], 8);
+		} else {
+			map.fitBounds(L.latLngBounds(latlngs), { padding: [36, 36] });
+		}
+
+		setTimeout(() => {
+			try {
+				map.invalidateSize();
+			} catch (e) {
+				/* map may already be destroyed */
+			}
+		}, 50);
+	}
+
+	close_detail_view() {
+		const back =
+			this.detail_return_view ||
+			(this.detail_type === "shipment"
+				? "shipments"
+				: this.detail_type === "accessorial"
+					? "accessorials"
+					: this.detail_type === "carrier"
+						? "carriers"
+						: "quotes");
+		this.detail_doc = null;
+		this.detail_type = null;
+		this.body.find(".ltl-nav-item").removeClass("active");
+		const nav = back === "quote" ? "quote" : back;
+		this.body.find(`.ltl-nav-item[data-view="${nav}"]`).addClass("active");
+		this.show_view(back === "quote" ? "quote" : back);
+	}
+
+	close_quote_detail() {
+		this.close_detail_view();
+	}
+
+	render_accessorial_detail(doc) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v || "—");
+		const code = doc.accessorial_code || doc.name || "—";
+		const amount =
+			doc.default_amount != null && doc.default_amount !== ""
+				? format_currency(doc.default_amount, doc.currency || "USD")
+				: "—";
+		return `
+			<div class="ltl-detail ltl-accessorial-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
+							<i class="fa fa-arrow-left"></i> ${__("Back to Accessorials")}
+						</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-tags"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Accessorial")}</div>
+							<div class="ltl-detail-hero-sub">${val(doc.accessorial_name)}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Accessorial Details")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Code")}</label>
+							<input class="ltl-input" value="${esc(code)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Accessorial Name")}</label>
+							<input class="ltl-input" value="${val(doc.accessorial_name)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Charge Type")}</label>
+							<input class="ltl-input" value="${val(doc.charge_type)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Currency")}</label>
+							<input class="ltl-input" value="${val(doc.currency)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Default Amount")}</label>
+							<input class="ltl-input" value="${esc(amount)}" readonly /></div>
+						<div class="ltl-field ltl-field-span-2"><label>${__("Description")}</label>
+							<textarea class="ltl-input" rows="4" readonly>${val(doc.description)}</textarea></div>
+					</div>
+				</section>
+			</div>`;
+	}
+
+	masked_secret(value) {
+		const text = String(value == null ? "" : value).trim();
+		if (!text) return "—";
+		return "••••••••";
+	}
+
+	render_carrier_detail(doc) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v || "—");
+		const code = doc.carrier_code || doc.name || "—";
+		const is_on = (value) => value === 1 || value === true || value === "1";
+		const enabled = is_on(doc.enabled);
+		const score =
+			doc.reliability_score != null && doc.reliability_score !== ""
+				? Number(doc.reliability_score).toFixed(3)
+				: "—";
+		const mappings = doc.accessorial_mappings || [];
+		const mapping_rows = mappings.length
+			? mappings
+					.map((row, idx) => {
+						const on = is_on(row.enabled);
+						return `<tr>
+							<td>${idx + 1}</td>
+							<td>${esc(row.accessorial || "—")}</td>
+							<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+							<td>${esc(row.service_group || "—")}</td>
+							<td class="ltl-mono">${esc(row.carrier_accessorial_code || "—")}</td>
+							<td>${
+								on
+									? '<span class="ltl-status ltl-status-green">Yes</span>'
+									: '<span class="ltl-status ltl-status-grey">No</span>'
+							}</td>
+						</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="6" class="ltl-empty-cell">${__("No accessorial mappings")}</td></tr>`;
+		const is_smc3 = String(doc.connector_type || "") === "SMC3";
+		const network = doc.smc3_network_carriers || [];
+		const network_rows = network.length
+			? network
+					.map((row, idx) => {
+						const on = is_on(row.enabled);
+						const row_name = esc(row.name || "");
+						return `<tr>
+							<td>${idx + 1}</td>
+							<td class="ltl-mono">${esc(row.scac || "—")}</td>
+							<td>${esc(row.carrier_label || "—")}</td>
+							<td class="ltl-mono">${esc(row.eva_access_id || "—")}</td>
+							<td>
+								<select class="ltl-input ltl-input-compact" data-smc3-network-enabled data-row-name="${row_name}">
+									<option value="1" ${on ? "selected" : ""}>${__("Yes")}</option>
+									<option value="0" ${!on ? "selected" : ""}>${__("No")}</option>
+								</select>
+							</td>
+							<td>${is_on(row.contract_pricing) ? __("Yes") : __("No")}</td>
+							<td>${is_on(row.dynamic_pricing) ? __("Yes") : __("No")}</td>
+						</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">${__("No SMC3 network carriers")}</td></tr>`;
+		const smc3_card = is_smc3
+			? `<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-sitemap"></i> ${__("SMC3 Network Carriers")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th><th>${__("SCAC")}</th><th>${__("Carrier Name")}</th><th>${__("EVA Access ID")}</th>
+							<th>${__("Enabled")}</th><th>${__("Contract")}</th><th>${__("Dynamic")}</th>
+						</tr></thead>
+						<tbody>${network_rows}</tbody>
+					</table>
+				</section>`
+			: "";
+		return `
+			<div class="ltl-detail ltl-carrier-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
+							<i class="fa fa-arrow-left"></i> ${__("Back to Quote Source")}
+						</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-users"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Carrier Details")}</div>
+							<div class="ltl-detail-hero-sub">${val(doc.carrier_name)}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
+						<div class="ltl-detail-hero-badge ltl-carrier-enabled-badge">${
+							enabled ? __("Enabled") : __("Disabled")
+						}</div>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Carrier Details")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Carrier Name")}</label>
+							<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Enabled")}</label>
+							<select class="ltl-input" data-carrier-enabled>
+								<option value="1" ${enabled ? "selected" : ""}>${__("Yes")}</option>
+								<option value="0" ${!enabled ? "selected" : ""}>${__("No")}</option>
+							</select></div>
+						<div class="ltl-field"><label>${__("SCAC")}</label>
+							<input class="ltl-input" value="${val(doc.scac)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Reliability Score")}</label>
+							<input class="ltl-input" value="${esc(score)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Carrier Code")}</label>
+							<input class="ltl-input" value="${esc(code)}" readonly /></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-plug"></i> ${__("API Integration")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Connector Type")}</label>
+							<input class="ltl-input" value="${val(doc.connector_type)}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Key")}</label>
+							<input class="ltl-input" value="${esc(this.masked_secret(doc.api_key))}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Base URL")}</label>
+							<input class="ltl-input" value="${val(doc.api_base_url)}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Secret")}</label>
+							<input class="ltl-input" value="${esc(this.masked_secret(doc.api_secret))}" readonly /></div>
+						<div class="ltl-field"><label>${__("API Version")}</label>
+							<input class="ltl-input" value="${val(doc.api_version)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Account Number")}</label>
+							<input class="ltl-input" value="${val(doc.account_number)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Auth Type")}</label>
+							<input class="ltl-input" value="${val(doc.auth_type)}" readonly /></div>
+						<div class="ltl-field ltl-field-span-2"><label>${__("Notes")}</label>
+							<textarea class="ltl-input" rows="3" readonly>${val(doc.notes)}</textarea></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> ${__("Accessorial Mapping")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th>
+							<th>${__("Accessorial")}</th>
+							<th>${__("Internal Code")}</th>
+							<th>${__("Service Group")}</th>
+							<th>${__("Carrier Code / Flag")}</th>
+							<th>${__("Enabled")}</th>
+						</tr></thead>
+						<tbody>${mapping_rows}</tbody>
+					</table>
+				</section>
+				${smc3_card}
+			</div>`;
+	}
+
+	render_accessorial_detail_rows(accessorials) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const group_label = (g) => {
+			const value = String(g || "").trim().toLowerCase();
+			if (value === "pickup" || value === "origin") return "Origin";
+			if (value === "delivery" || value === "destination") return "Destination";
+			if (value === "load") return "Load";
+			return value ? value : "—";
+		};
+		if (!(accessorials || []).length) {
+			return `<tr><td colspan="5" class="ltl-empty-cell">${__("No accessorials selected")}</td></tr>`;
+		}
+		return accessorials
+			.map(
+				(row, idx) => `
+			<tr>
+				<td>${idx + 1}</td>
+				<td><span class="ltl-acc-group-pill">${esc(group_label(row.service_group || row.group))}</span></td>
+				<td>${esc(row.accessorial_name || row.accessorial || "—")}</td>
+				<td class="ltl-mono">${esc(row.accessorial_code || "—")}</td>
+				<td>${esc(row.quantity || 1)}</td>
+			</tr>`
+			)
+			.join("");
+	}
+
+	render_bol_preview_card(opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const bol_url = String(opts.bol_url || "").trim();
+		const bol_number = opts.bol_number || "";
+		const pro_number = opts.pro_number || "";
+		if (!bol_url && !bol_number && !pro_number) {
+			return "";
+		}
+		const is_image = is_bol_image_url(bol_url);
+		const open_label = is_image ? __("Open BOL") : __("Open PDF");
+		const open_btn = bol_url
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-view-bol-btn" data-bol-url="${esc(
+					bol_url
+				)}"><i class="fa fa-external-link"></i> ${open_label}</button>`
+			: "";
+		let preview;
+		if (!bol_url) {
+			preview = `<div class="ltl-empty">${__("BOL is not attached yet.")}</div>`;
+		} else if (is_image) {
+			preview = `<img class="ltl-bol-iframe ltl-bol-image" src="${esc(bol_url)}" alt="${__("Bill of Lading")}" />`;
+		} else {
+			preview = `<iframe class="ltl-bol-iframe" src="${esc(bol_url)}" title="${__("Bill of Lading")}"></iframe>`;
+		}
+		const inner = `
+				<div class="ltl-detail-card-head">
+					<span><i class="fa ${is_image ? "fa-file-image-o" : "fa-file-pdf-o"}"></i> ${__("Bill of Lading")}</span>
+					<div class="ltl-bol-preview-meta">
+						${bol_number ? `<span>${__("BOL")} #${esc(bol_number)}</span>` : ""}
+						${pro_number ? `<span>${__("PRO")} #${esc(pro_number)}</span>` : ""}
+						${open_btn}
+					</div>
+				</div>
+				${preview}`;
+		if (opts.embedded) {
+			return `<div class="ltl-bol-preview-embed">${inner}</div>`;
+		}
+		return `
+			<section class="ltl-detail-card ltl-bol-preview-card">
+				${inner}
+			</section>`;
+	}
+
+	render_shipment_connections_card(opts = {}) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const bol_url = String(opts.bol_url || "").trim();
+		const bol_number = String(opts.bol_number || "").trim();
+		const chip = bol_url
+			? `<button type="button" class="ltl-detail-conn-tab active ltl-view-bol-btn"
+					data-bol-url="${esc(bol_url)}"
+					title="${esc(bol_number ? __("Open BOL {0}", [bol_number]) : __("Open Bill of Lading"))}">
+					1 ${__("Bill of Lading")}
+				</button>`
+			: `<span class="ltl-detail-conn-empty">${__("No BOL attached")}</span>`;
+		return `
+			<section class="ltl-detail-card ltl-ship-connections-card">
+				<div class="ltl-detail-card-head"><i class="fa fa-link"></i> ${__("CONNECTIONS")}</div>
+				<div class="ltl-detail-conn-row">${chip}</div>
+			</section>`;
+	}
+
+	render_smc3_barcode_note(barcode) {
+		const data = barcode || {};
+		const symbology = String(data.symbology || "").trim();
+		const printing = String(data.printing_requirements || "").trim();
+		if (!symbology && !printing) return "";
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const spec = [symbology, printing].filter(Boolean).join("\n\n");
+		return `<div class="ltl-barcode-note">
+			<span>${__("GS1-128 / UCC-128 compliant carrier tracking barcode.")}</span>
+			<i class="fa fa-info-circle ltl-pro-barcode-info" tabindex="0" role="img"
+				aria-label="${esc(__("Barcode specification"))}"
+				data-barcode-spec="${esc(spec)}"></i>
+		</div>`;
+	}
+
+	bind_barcode_popovers($root) {
+		const $icons = ($root || this.body).find(".ltl-pro-barcode-info");
+		$icons.each(function () {
+			const $el = $(this);
+			if (typeof $el.popover !== "function") {
+				$el.attr("title", $el.attr("data-barcode-spec") || "");
+				return;
+			}
+			if ($el.data("bs.popover") || $el.data("popover")) {
+				try {
+					$el.popover("dispose");
+				} catch (e) {
+					try {
+						$el.popover("destroy");
+					} catch (e2) {
+						/* ignore */
+					}
+				}
+			}
+			const spec = String($el.attr("data-barcode-spec") || "").trim();
+			const html = frappe.utils.escape_html(spec).replace(/\n/g, "<br>");
+			$el.popover({
+				trigger: "hover focus",
+				placement: "auto",
+				container: "body",
+				html: true,
+				sanitize: false,
+				title: __("Barcode specification"),
+				content: html,
+			});
+		});
+	}
+
+	render_quote_detail(payload) {
+		const doc = payload.doc || {};
+		const accessorials = payload.accessorials || [];
+		const shipments = payload.shipments || [];
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v);
+		const readonly = ["Booked", "Cancelled"].includes(doc.status);
+		const ro = readonly ? "readonly" : "";
+		const dis = readonly ? "disabled" : "";
+		const final_carrier = String(doc.final_carrier || "").trim().toUpperCase();
+		const linked =
+			(final_carrier
+				? shipments.find((s) => String(s.carrier || "").trim().toUpperCase() === final_carrier)
+				: null) ||
+			shipments[0] ||
+			{};
+		const linked_shipment = String(linked.name || "").trim();
+		const view_shipment_btn = linked_shipment
+			? `<button type="button" class="ltl-btn ltl-detail-view-shipment ltl-view-shipment-btn" data-shipment="${esc(linked_shipment)}">
+					<i class="fa fa-truck"></i> ${__("View Shipment")}
+				</button>`
+			: doc.status === "Booked"
+				? `<button type="button" class="ltl-btn ltl-detail-view-shipment ltl-detail-view-shipment-muted" disabled title="${__(
+						"No linked shipment"
+					)}">
+					<i class="fa fa-truck"></i> ${__("View Shipment")}
+				</button>`
+				: "";
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
+		const tz = frappe.boot.time_zone?.user || frappe.boot.time_zone || "";
+
+		const class_opts = (this.shipping_class_options || []).length
+			? this.shipping_class_options
+			: FREIGHT_CLASSES.map((c) => ({ value: c, label: c }));
+		const freight_opts = class_opts
+			.map((c) => {
+				const value = typeof c === "object" ? c.value : c;
+				const label = typeof c === "object" ? c.label || c.value : c;
+				return `<option value="${esc(value)}" ${String(doc.freight_class) === String(value) ? "selected" : ""}>${esc(
+					label
+				)}</option>`;
+			})
+			.join("");
+		const acc_rows = this.render_accessorial_detail_rows(accessorials);
+
+		return `
+			<div class="ltl-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">LTL Quote Request</div>
+							<div class="ltl-detail-hero-sub">Create and manage LTL shipment quote requests</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">Quote ID: ${esc(doc.name)}</div>
+						${view_shipment_btn}
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-link"></i> 1. CONNECTIONS</div>
+					<div class="ltl-detail-grid ltl-detail-grid-3">
+						<div class="ltl-field">
+							<label>Status</label>
+							<input class="ltl-input ltl-detail-status" value="${val(doc.status)}" readonly />
+						</div>
+						<div class="ltl-field">
+							<label>Requested On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.requested_on))}" readonly />
+							<small class="ltl-tz">${esc(tz)}</small>
+						</div>
+						<div class="ltl-field">
+							<label>Rates Aggregated On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.aggregated_on))}" readonly />
+							<small class="ltl-tz">${esc(tz)}</small>
+						</div>
+						<div class="ltl-field">
+							<label>${__("BOL Number")}</label>
+							<input class="ltl-input" value="${val(doc.bol_number || linked.bol_number || "—")}" readonly />
+						</div>
+						<div class="ltl-field">
+							<label>${__("PRO / Tracking Number")}</label>
+							<input class="ltl-input" value="${val(doc.pro_number || linked.pro_number || "—")}" readonly />
+						</div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> 2. LANE &amp; LOCATIONS</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Origin ZIP <span class="req">*</span></label>
+							<input class="ltl-input" data-detail="origin_zip" value="${val(doc.origin_zip)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination ZIP <span class="req">*</span></label>
+							<input class="ltl-input" data-detail="destination_zip" value="${val(doc.destination_zip)}" ${ro} /></div>
+						<div class="ltl-field"><label>Origin City</label>
+							<input class="ltl-input" data-detail="origin_city" value="${val(doc.origin_city)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination City</label>
+							<input class="ltl-input" data-detail="destination_city" value="${val(doc.destination_city)}" ${ro} /></div>
+						<div class="ltl-field"><label>Origin State</label>
+							<input class="ltl-input" data-detail="origin_state" value="${val(doc.origin_state)}" ${ro} /></div>
+						<div class="ltl-field"><label>Destination State</label>
+							<input class="ltl-input" data-detail="destination_state" value="${val(doc.destination_state)}" ${ro} /></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-truck"></i> 3. PICKUP &amp; DELIVERY ADDRESSES</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Shipper Company Name</label>
+							<input class="ltl-input" data-detail="shipper_company_name" value="${val(doc.shipper_company_name)}"
+								placeholder="Enter shipper company name" ${ro} /></div>
+						<div class="ltl-field"><label>Consignee Company Name</label>
+							<input class="ltl-input" data-detail="consignee_company_name" value="${val(doc.consignee_company_name)}"
+								placeholder="Enter consignee company name" ${ro} /></div>
+						<div class="ltl-field"><label>Shipper Address</label>
+							<textarea class="ltl-input" data-detail="shipper_address" rows="3"
+								placeholder="Enter shipper address" ${ro}>${val(doc.shipper_address)}</textarea></div>
+						<div class="ltl-field"><label>Consignee Address</label>
+							<textarea class="ltl-input" data-detail="consignee_address" rows="3"
+								placeholder="Enter consignee address" ${ro}>${val(doc.consignee_address)}</textarea></div>
+					</div>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-cube"></i> 4. FREIGHT DETAILS</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>Total Weight <span class="req">*</span></label>
+							<input type="number" class="ltl-input" data-detail="total_weight" value="${val(doc.total_weight)}" ${ro} /></div>
+						<div class="ltl-field"><label>Length</label>
+							<input type="number" class="ltl-input" data-detail="length" value="${val(doc.length || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Weight UOM</label>
+							<select class="ltl-input" data-detail="weight_uom" ${dis}>
+								<option value="LB" ${doc.weight_uom === "LB" || !doc.weight_uom ? "selected" : ""}>LB</option>
+								<option value="KG" ${doc.weight_uom === "KG" ? "selected" : ""}>KG</option>
+							</select></div>
+						<div class="ltl-field"><label>Width</label>
+							<input type="number" class="ltl-input" data-detail="width" value="${val(doc.width || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Freight Class <span class="req">*</span></label>
+							<select class="ltl-input" data-detail="freight_class" ${dis}>${freight_opts}</select></div>
+						<div class="ltl-field"><label>Height</label>
+							<input type="number" class="ltl-input" data-detail="height" value="${val(doc.height || 0)}" ${ro} /></div>
+						<div class="ltl-field"><label>Dimension UOM</label>
+							<select class="ltl-input" data-detail="dimension_uom" ${dis}>
+								<option value="IN" ${doc.dimension_uom === "IN" || !doc.dimension_uom ? "selected" : ""}>IN</option>
+								<option value="CM" ${doc.dimension_uom === "CM" ? "selected" : ""}>CM</option>
+							</select></div>
+						<div class="ltl-field"><label>Pieces / Pallets</label>
+							<input type="number" class="ltl-input" data-detail="pieces" value="${val(doc.pieces || 1)}" ${ro} /></div>
+					</div>
+					<label class="ltl-check ltl-detail-stackable">
+						<input type="checkbox" data-detail="stackable" ${doc.stackable ? "checked" : ""} ${dis} />
+						<span>Stackable</span>
+					</label>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-th-large"></i> 5. ACCESSORIALS</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead>
+							<tr><th>No.</th><th>Group</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr>
+						</thead>
+						<tbody>${acc_rows}</tbody>
+					</table>
+				</section>
+
+				<div class="ltl-detail-footer">
+					<button type="button" class="ltl-btn" data-action="detail-cancel">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="detail-save" ${dis}>
+						<i class="fa fa-save"></i> Save Quote Request
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
+	save_quote_detail() {
+		if (!this.detail_doc || !this.detail_doc.doc) return;
+		const name = this.detail_doc.doc.name;
+		const data = {};
+		this.body.find("[data-detail]").each(function () {
+			const key = $(this).attr("data-detail");
+			if ($(this).attr("type") === "checkbox") {
+				data[key] = $(this).is(":checked") ? 1 : 0;
+			} else {
+				data[key] = ($(this).val() || "").toString().trim();
+			}
+		});
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_quote_request_detail",
+			args: { name, data: JSON.stringify(data) },
+			freeze: true,
+			freeze_message: __("Saving quote request..."),
+			callback: (r) => {
+				if (r.exc) return;
+				frappe.show_alert({ message: __("Quote request saved"), indicator: "green" }, 4);
+				this.open_quote_detail(name);
+			},
+		});
+	}
+
+	render_dayton_bol_status(doc, dayton_documents) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const carrier = String(doc.carrier || "").toUpperCase();
+		const pro = String(doc.pro_number || "").trim();
+		if (carrier !== "DAYTON" || !pro) {
+			return { badge: "", refresh_btn: "" };
+		}
+
+		const docs = dayton_documents || {};
+		let badge_class = "ltl-bol-status-unknown";
+		let badge_label = __("BOL status unknown");
+		if (docs.checked && docs.bol_available) {
+			badge_class = "ltl-bol-status-ready";
+			badge_label = __("BOL indexed on Dayton");
+		} else if (docs.checked && !docs.bol_available) {
+			badge_class = "ltl-bol-status-scanning";
+			badge_label = __("BOL scanning at Dayton");
+		}
+
+		const indexed_types = (docs.documents || [])
+			.map((row) => String(row.type || "").trim())
+			.filter(Boolean);
+		const indexed_hint = indexed_types.length
+			? ` title="${esc(indexed_types.join(", "))}"`
+			: docs.message
+				? ` title="${esc(docs.message)}"`
+				: "";
+
+		const refresh_enabled = Boolean(docs.bol_available);
+		const refresh_btn = `<button type="button"
+				class="ltl-btn ltl-detail-refresh-bol${refresh_enabled ? "" : " ltl-detail-refresh-bol-muted"}"
+				data-shipment="${esc(doc.name)}"
+				${refresh_enabled ? "" : "disabled"}
+				title="${esc(
+					refresh_enabled
+						? __("Download BOL from Dayton")
+						: docs.message || __("BOL is not indexed on Dayton yet")
+				)}">
+				<i class="fa fa-refresh"></i> ${__("Refresh BOL")}
+			</button>`;
+
+		return {
+			badge: `<span class="ltl-bol-status-badge ${badge_class}"${indexed_hint}>${badge_label}</span>`,
+			refresh_btn,
+		};
+	}
+
+	render_dayton_pickup_status(doc, pickup, carrier_hint) {
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const carrier = String(carrier_hint || doc.carrier || "").toUpperCase();
+		const is_tforce = ltl_connector_key(carrier) === "TFORCE";
+		const is_arcbest = ltl_connector_key(carrier) === "ARCB";
+		const is_smc3 = ltl_connector_key(carrier) === "SMC3";
+		const pro = String(doc.pro_number || "").trim();
+		if (!ltl_supports_pickup(carrier)) {
+			return { badge: "", actions: "" };
+		}
+
+		const info = pickup || {};
+		const pickup_number = String(doc.pickup_number || info.pickup_number || "").trim();
+		const status = String(doc.pickup_status || info.status || "").trim();
+		const shipment_status = String(doc.status || "");
+		const can_view = ["Booked", "Dispatched", "In Transit", "Out for Delivery"].includes(shipment_status)
+			&& (is_tforce || is_arcbest || is_smc3 || Boolean(pro));
+		const has_scheduled_pickup = is_smc3 ? Boolean(status) : Boolean(pickup_number);
+
+		let badge_class = "ltl-pickup-status-pending";
+		let badge_label = __("Pickup not scheduled");
+		if (has_scheduled_pickup) {
+			badge_class = status === "Cancelled" ? "ltl-pickup-status-cancelled" : "ltl-pickup-status-assigned";
+			if (status === "PickedUp") {
+				badge_class = "ltl-pickup-status-complete";
+				badge_label = __("Pickup complete");
+			} else if (status === "Cancelled") {
+				badge_label = __("Pickup cancelled");
+			} else if (status) {
+				badge_label = __("Pickup {0}", [status]);
+			} else {
+				badge_label = __("Pickup {0}", [pickup_number]);
+			}
+		}
+
+		const view_btn = can_view
+			? `<button type="button" class="ltl-btn ltl-detail-view-pickup" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-calendar"></i> ${has_scheduled_pickup ? __("View Pickup") : __("Pickup Request")}
+				</button>`
+			: "";
+
+		return {
+			badge: can_view || has_scheduled_pickup
+				? `<span class="ltl-pickup-status-badge ${badge_class}" title="${esc(pickup_number || status || "")}">${badge_label}</span>`
+				: "",
+			actions: view_btn,
+		};
+	}
+
+	pickup_party_val(...values) {
+		for (const value of values) {
+			const text = String(value == null ? "" : value).trim();
+			if (text && text !== "—") return text;
+		}
+		return "";
+	}
+
+	pickup_party_field(key, label, value, { required = true, type = "text", placeholder = "" } = {}) {
+		const req = required ? ` <span class="req">*</span>` : "";
+		const ph = placeholder ? ` placeholder="${frappe.utils.escape_html(placeholder)}"` : "";
+		return `<div class="ltl-field"><label>${label}${req}</label>
+			<input type="${type}" class="ltl-input ltl-pickup-party" data-pickup-party="${frappe.utils.escape_html(key)}" value="${frappe.utils.escape_html(value || "")}"${ph} /></div>`;
+	}
+
+	collect_pickup_parties($root) {
+		const data = {};
+		($root || this.body).find("[data-pickup-party]").each(function () {
+			const key = ($(this).attr("data-pickup-party") || "").trim();
+			if (key) data[key] = ($(this).val() || "").trim();
+		});
+		return data;
+	}
+
+	validate_smc3_pickup_parties(data) {
+		const required = [
+			["bol_shipper_name", __("Shipper Company Name")],
+			["bol_shipper_address1", __("Shipper Address")],
+			["bol_shipper_city", __("Shipper City")],
+			["bol_shipper_state", __("Shipper State")],
+			["bol_shipper_postal_code", __("Origin ZIP")],
+			["bol_shipper_contact_name", __("Shipper Contact Name")],
+			["bol_consignee_name", __("Consignee Company Name")],
+			["bol_consignee_address1", __("Consignee Address")],
+			["bol_consignee_city", __("Consignee City")],
+			["bol_consignee_state", __("Consignee State")],
+			["bol_consignee_postal_code", __("Destination ZIP")],
+			["bol_consignee_contact_name", __("Consignee Contact Name")],
+		];
+		const missing = required.filter(([key]) => !String(data[key] || "").trim()).map(([, label]) => label);
+		const phone_ok = (value) => String(value || "").replace(/\D/g, "").length >= 10;
+		const email_ok = (value) => /@/.test(String(value || "").trim());
+		if (!phone_ok(data.bol_shipper_contact_phone)) missing.push(__("Shipper Contact Phone"));
+		if (!email_ok(data.origin_contact_email)) missing.push(__("Shipper Contact Email"));
+		if (!phone_ok(data.bol_consignee_contact_phone)) missing.push(__("Consignee Contact Phone"));
+		if (!email_ok(data.destination_contact_email)) missing.push(__("Consignee Contact Email"));
+		return missing;
+	}
+
+	render_smc3_party_forms(doc, quote, raw) {
+		const shipper = raw.shipper || {};
+		const shipper_addr = shipper.address || {};
+		const contact = raw.contact || {};
+		const dest = raw.consignee || raw.destination || {};
+		const dest_addr = dest.address || {};
+		const dest_contact = dest.contact || {};
+		const field = (key, label, value, opts) => this.pickup_party_field(key, label, value, opts);
+		const shipper_fields = [
+			field("bol_shipper_name", __("Shipper Company Name"), this.pickup_party_val(doc.bol_shipper_name, quote.shipper_company_name, shipper.name)),
+			field("bol_shipper_address1", __("Shipper Address"), this.pickup_party_val(doc.bol_shipper_address1, quote.shipper_address, shipper_addr.line1 || shipper_addr.address1)),
+			field("bol_shipper_city", __("Shipper City"), this.pickup_party_val(doc.bol_shipper_city, quote.origin_city, shipper_addr.city)),
+			field("bol_shipper_state", __("Shipper State"), this.pickup_party_val(doc.bol_shipper_state, quote.origin_state, shipper_addr.state)),
+			field("bol_shipper_postal_code", __("Origin ZIP"), this.pickup_party_val(doc.bol_shipper_postal_code, quote.origin_zip, shipper_addr.zip)),
+			field("bol_shipper_contact_name", __("Contact Name"), this.pickup_party_val(doc.bol_shipper_contact_name, quote.contact_name, contact.name)),
+			field("bol_shipper_contact_phone", __("Contact Phone"), this.pickup_party_val(doc.bol_shipper_contact_phone, quote.contact_phone, contact.phone), { placeholder: "10-digit phone" }),
+			field("origin_contact_email", __("Contact Email"), this.pickup_party_val(quote.origin_contact_email, contact.email), { type: "email" }),
+		].join("");
+		const consignee_fields = [
+			field("bol_consignee_name", __("Consignee Company Name"), this.pickup_party_val(doc.bol_consignee_name, quote.consignee_company_name, dest.name)),
+			field("bol_consignee_address1", __("Consignee Address"), this.pickup_party_val(doc.bol_consignee_address1, quote.consignee_address, dest_addr.line1 || dest_addr.address1)),
+			field("bol_consignee_city", __("Consignee City"), this.pickup_party_val(doc.bol_consignee_city, quote.destination_city, dest_addr.city)),
+			field("bol_consignee_state", __("Consignee State"), this.pickup_party_val(doc.bol_consignee_state, quote.destination_state, dest_addr.state)),
+			field("bol_consignee_postal_code", __("Destination ZIP"), this.pickup_party_val(doc.bol_consignee_postal_code, quote.destination_zip, dest_addr.zip)),
+			field("bol_consignee_contact_name", __("Contact Name"), this.pickup_party_val(doc.bol_consignee_contact_name, quote.destination_contact_name, dest_contact.name)),
+			field("bol_consignee_contact_phone", __("Contact Phone"), this.pickup_party_val(doc.bol_consignee_contact_phone, quote.destination_contact_phone, dest_contact.phone), { placeholder: "10-digit phone" }),
+			field("destination_contact_email", __("Contact Email"), this.pickup_party_val(quote.destination_contact_email, dest_contact.email), { type: "email" }),
+		].join("");
+		return `
+			<div class="ltl-pickup-parties">
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper")}</div>
+					<p class="ltl-pickup-action-desc">${__("Required by SMC3 Dispatch before a pickup can be requested.")}</p>
+					<div class="ltl-detail-grid ltl-detail-grid-2">${shipper_fields}</div>
+				</section>
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Consignee")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">${consignee_fields}</div>
+				</section>
+			</div>`;
+	}
+
+	render_pickup_detail(payload) {
+		const doc = payload.doc || {};
+		const pickup = payload.pickup || {};
+		const raw = payload.raw || {};
+		const quote = payload.quote || {};
+		const items = payload.items || [];
+		const carrier = String(payload.carrier || doc.carrier || "").toUpperCase();
+		const connector = ltl_connector_key(carrier);
+		const is_tforce = connector === "TFORCE";
+		const is_arcbest = connector === "ARCB";
+		const is_smc3 = connector === "SMC3";
+		const hide_dayton_fields = is_tforce || is_arcbest || is_smc3;
+		const carrier_title = ltl_connector_label(carrier);
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
+		const shipment = esc(doc.name);
+		const pickup_number = String(pickup.pickup_number || doc.pickup_number || "").trim();
+		const status = String(pickup.status || doc.pickup_status || "").trim();
+		const psid = pickup.psid || doc.pickup_psid || "";
+		const is_cancelled = status === "Cancelled";
+		const has_pickup = is_smc3 ? Boolean(status) : Boolean(pickup_number);
+		const tracking_btn = `<button type="button" class="ltl-btn ltl-pickup-hero-track ltl-detail-track-shipment" data-shipment="${shipment}" data-from="pickup" title="${__("Open shipment tracking")}">
+							<i class="fa fa-map-marker"></i> ${__("Shipment Tracking")}
+						</button>`;
+		const shipper = raw.shipper || {};
+		const shipper_addr = shipper.address || {};
+		const contact = raw.contact || {};
+		const requester = raw.requester || {};
+
+		const item_rows = items.length
+			? items
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td class="ltl-mono">${esc(row.psid || row.id || "—")}</td>
+					<td class="ltl-mono">${esc(row.pro || "—")}</td>
+					<td>${esc(row.destinationZip || "—")}</td>
+					<td>${esc(row.handlingUnits != null ? row.handlingUnits : "—")}</td>
+					<td>${esc(row.weight != null ? row.weight : "—")}</td>
+					<td>${row.isHazardous ? __("Yes") : __("No")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">${__("No pickup line items")}</td></tr>`;
+
+		const ready_val = pickup.ready || doc.pickup_ready || "";
+		const close_val = pickup.close || doc.pickup_close || "";
+		const to_local_input = (v) => {
+			if (!v) return "";
+			const d = frappe.datetime.str_to_obj(v);
+			if (!d || Number.isNaN(d.getTime())) return "";
+			const pad = (n) => String(n).padStart(2, "0");
+			return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+		};
+
+		const tforce_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("TForce Pickup API Actions")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">POST</span> /pickup/request — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a TForce pickup for this shipment after BOL booking.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("TForce does not expose a pickup GET. This confirmation was stored from /pickup/request.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">DELETE</span> /pickup/request/{confirmationNumber} — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup with TForce.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
+
+		const arcbest_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("ArcBest Pickup")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Schedule from BOL")}</div>
+						<p class="ltl-pickup-action-desc">${__("ArcBest has no separate pickup API. Scheduling stores the BOL/PRO as the pickup number using the BOL ship date.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("Pickup is recorded from the ArcBest BOL ship date. There is no live GET, update, or PSID call.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title">${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Mark this pickup cancelled locally. Contact ArcBest to change a tendered pickup.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
+
+		const smc3_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("SMC3 Dispatch API")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">POST</span> /dispatch/v1/app/{SCAC} — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a carrier pickup through SMC3 Dispatch after the BOL is booked.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional dock or handling notes")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title">${__("Confirmation")}</div>
+						<p class="ltl-pickup-action-desc">${__("This confirmation was stored from the SMC3 Dispatch response.")}</p>
+					</div>
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">POST</span> dispatchCode CANCEL — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup request with SMC3.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>`}
+				</section>`;
+
+		const dayton_actions = `
+				<section class="ltl-detail-card ltl-pickup-actions-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Dayton Pickup API Actions")}</div>
+
+					${!has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method put">PUT</span> /api/Pickup — ${__("Create Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Schedule a new pickup for this shipment after eBOL booking.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Comments")}</label>
+								<input class="ltl-input ltl-pickup-create-comments" placeholder="${__("Optional — use TESTING for a dry run")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-pickup-create" data-shipment="${shipment}">
+							<i class="fa fa-calendar-plus-o"></i> ${__("Schedule Pickup")}
+						</button>
+					</div>` : ""}
+
+					${has_pickup ? `
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method get">GET</span> /api/Pickup — ${__("Refresh")}</div>
+						<p class="ltl-pickup-action-desc">${__("Fetch the latest pickup status from Dayton.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-refresh" data-shipment="${shipment}">
+							<i class="fa fa-refresh"></i> ${__("Refresh from Dayton")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method post">POST</span> /api/Pickup — ${__("Update Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Update ready/close window and contact details.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Ready")}</label>
+								<input type="datetime-local" class="ltl-input ltl-pickup-update-ready" value="${esc(to_local_input(ready_val))}" /></div>
+							<div class="ltl-field"><label>${__("Close")}</label>
+								<input type="datetime-local" class="ltl-input ltl-pickup-update-close" value="${esc(to_local_input(close_val))}" /></div>
+							<div class="ltl-field"><label>${__("Contact Name")}</label>
+								<input class="ltl-input ltl-pickup-update-contact-name" value="${esc(contact.name || "")}" /></div>
+							<div class="ltl-field"><label>${__("Contact Phone")}</label>
+								<input class="ltl-input ltl-pickup-update-contact-phone" value="${esc(contact.phone || "")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-pickup-update" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-save"></i> ${__("Update Pickup")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method post">POST</span> /api/Pickup/ByPSID — ${__("Update Line Item")}</div>
+						<p class="ltl-pickup-action-desc">${__("Update or delete a specific pickup shipment line by PSID.")}</p>
+						<div class="ltl-detail-grid ltl-detail-grid-3">
+							<div class="ltl-field"><label>${__("PSID")}</label>
+								<input class="ltl-input ltl-pickup-psid" value="${esc(psid || "")}" /></div>
+							<div class="ltl-field"><label>${__("Destination ZIP")}</label>
+								<input class="ltl-input ltl-pickup-psid-zip" value="${esc(quote.destination_zip || "")}" /></div>
+							<div class="ltl-field"><label>${__("Handling Units")}</label>
+								<input type="number" class="ltl-input ltl-pickup-psid-hu" value="${esc(quote.pieces || 1)}" /></div>
+							<div class="ltl-field"><label>${__("Weight (lbs)")}</label>
+								<input type="number" class="ltl-input ltl-pickup-psid-weight" value="${esc(quote.total_weight || "")}" /></div>
+							<div class="ltl-field"><label>${__("Action")}</label>
+								<select class="ltl-input ltl-pickup-psid-action">
+									<option value="Update">Update</option>
+									<option value="Delete">Delete</option>
+								</select></div>
+							<div class="ltl-field"><label>${__("Line Comment")}</label>
+								<input class="ltl-input ltl-pickup-psid-comment" placeholder="${__("Optional")}" /></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-pickup-update-psid" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-pencil"></i> ${__("Update by PSID")}
+						</button>
+					</div>
+
+					<div class="ltl-pickup-action-block ltl-pickup-action-danger">
+						<div class="ltl-pickup-action-title"><span class="ltl-pickup-method delete">DELETE</span> /api/Pickup/Cancel — ${__("Cancel Pickup")}</div>
+						<p class="ltl-pickup-action-desc">${__("Cancel this pickup with Dayton.")}</p>
+						<button type="button" class="ltl-btn ltl-pickup-cancel" data-shipment="${shipment}" ${is_cancelled ? "disabled" : ""}>
+							<i class="fa fa-times"></i> ${__("Cancel Pickup")}
+						</button>
+					</div>` : ""}
+				</section>`;
+
+		const pickup_actions = is_tforce
+			? tforce_actions
+			: is_arcbest
+				? arcbest_actions
+				: is_smc3
+					? smc3_actions
+					: dayton_actions;
+
+		return `
+			<div class="ltl-detail ltl-pickup-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back"><i class="fa fa-arrow-left"></i> ${__("Back to Shipment")}</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-calendar"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("{0} Pickup", [carrier_title])}</div>
+							<div class="ltl-detail-hero-sub">${__("Manage pickup scheduling and carrier API actions")}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
+						${has_pickup ? `<div class="ltl-detail-hero-badge">${__("Pickup")}: ${esc(pickup_number)}</div>` : ""}
+						${has_pickup ? tracking_btn : ""}
+					</div>
+				</div>
+
+				<div class="ltl-pickup-grid">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Pickup Overview")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Pickup Number")}</label><input class="ltl-input" value="${esc(pickup_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Status")}</label><input class="ltl-input" value="${esc(status || "—")}" readonly /></div>
+							${!hide_dayton_fields ? `<div class="ltl-field"><label>${__("PSID")}</label><input class="ltl-input" value="${esc(psid || "—")}" readonly /></div>` : ""}
+							<div class="ltl-field"><label>${__("PRO")}</label><input class="ltl-input" value="${esc(doc.pro_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Ready")}</label><input class="ltl-input" value="${esc(fmt_dt(ready_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("Close")}</label><input class="ltl-input" value="${esc(fmt_dt(close_val))}" readonly /></div>
+							<div class="ltl-field"><label>${__("BOL")}</label><input class="ltl-input" value="${esc(doc.bol_number || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Comments")}</label><input class="ltl-input" value="${esc(pickup.comments || doc.pickup_comments || "—")}" readonly /></div>
+						</div>
+					</section>
+
+					${is_smc3 && !has_pickup ? this.render_smc3_party_forms(doc, quote, raw) : `
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> ${__("Shipper & Contacts")}</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>${__("Shipper")}</label><input class="ltl-input" value="${esc(shipper.name || doc.bol_shipper_name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Origin ZIP")}</label><input class="ltl-input" value="${esc(shipper_addr.zip || quote.origin_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Destination ZIP")}</label><input class="ltl-input" value="${esc(quote.destination_zip || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact")}</label><input class="ltl-input" value="${esc(contact.name || doc.bol_shipper_contact_name || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Contact Phone")}</label><input class="ltl-input" value="${esc(contact.phone || doc.bol_shipper_contact_phone || "—")}" readonly /></div>
+							<div class="ltl-field"><label>${__("Requester")}</label><input class="ltl-input" value="${esc(requester.name || "—")}" readonly /></div>
+						</div>
+					</section>`}
+				</div>
+
+				${!hide_dayton_fields ? `
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-list"></i> ${__("Pickup Line Items")}</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr>
+							<th>#</th><th>${__("PSID")}</th><th>${__("PRO")}</th><th>${__("Dest ZIP")}</th>
+							<th>${__("H/U")}</th><th>${__("Weight")}</th><th>${__("Hazmat")}</th>
+						</tr></thead>
+						<tbody>${item_rows}</tbody>
+					</table>
+				</section>` : ""}
+
+				${pickup_actions}
+			</div>`;
+	}
+
+	render_tracking_detail(payload) {
+		const doc = payload.doc || {};
+		const quote = payload.quote || {};
+		const tracking = payload.tracking || {};
+		const route = payload.route || {};
+		const summary = payload.summary || {};
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "—");
+		const shipment = esc(doc.name);
+		const events = tracking.events || [];
+		const milestones = tracking.milestones || [];
+
+		const milestone_html = milestones
+			.map((m, idx) => {
+				const cls = [
+					"ltl-tracking-milestone",
+					m.completed ? "is-done" : "",
+					m.current ? "is-current" : "",
+				]
+					.filter(Boolean)
+					.join(" ");
+				return `
+					<div class="${cls}">
+						${idx ? `<div class="ltl-tracking-milestone-line"></div>` : ""}
+						<div class="ltl-tracking-milestone-node"><i class="fa ${esc(m.icon || "fa-circle")}"></i></div>
+						<div class="ltl-tracking-milestone-label">${esc(m.label)}</div>
+					</div>`;
+			})
+			.join("");
+
+		const event_rows = events.length
+			? events
+					.map((row) => {
+						const exception_cls = row.is_exception ? " ltl-tracking-event-exception" : "";
+						const seed_cls = row.is_seed ? " ltl-tracking-event-seed" : "";
+						const detail = row.is_exception
+							? __("Exception")
+							: row.is_seed
+								? __("Lifecycle")
+								: __("Update");
+						return `
+				<tr class="${exception_cls}${seed_cls}">
+					<td>${esc(fmt_dt(row.event_datetime))}</td>
+					<td>
+						<span class="ltl-tracking-event-code">${esc(row.status_code || "—")}</span>
+						<div>${esc(row.status_description || "—")}</div>
+					</td>
+					<td>${esc(row.location || "—")}</td>
+					<td>${esc(detail)}</td>
+				</tr>`;
+					})
+					.join("")
+			: `<tr><td colspan="4" class="ltl-empty-cell">${__(
+					"No lifecycle or carrier events yet."
+			  )}</td></tr>`;
+
+		const origin = route.origin || {};
+		const destination = route.destination || {};
+		const current_stop = route.current_stop || {};
+		const next_stop = route.next_stop || {};
+		const show_mid =
+			current_stop.label &&
+			current_stop.label !== origin.label &&
+			current_stop.label !== "—" &&
+			current_stop.label !== destination.label;
+		const awaiting = Boolean(tracking.awaiting_carrier_scan);
+		const carrier_title = ltl_connector_label(payload.carrier || doc.carrier);
+		const waiting_banner = awaiting
+			? `<div class="ltl-tracking-waiting-banner" role="status">
+					<i class="fa fa-clock-o"></i>
+					<span>${__(
+						"Waiting for {0} to scan this PRO. Events appear after pickup is completed and scanned.",
+						[carrier_title]
+					)}</span>
+				</div>`
+			: "";
+
+		const pieces = quote.pieces != null ? quote.pieces : "—";
+		const weight = quote.total_weight != null ? quote.total_weight : "—";
+		const freight_class = quote.freight_class || "—";
+		const back_label = this.tracking_return_view === "pickup" ? __("Back to Pickup") : __("Back to Shipment");
+
+		return `
+			<div class="ltl-detail ltl-tracking-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-tracking-back"><i class="fa fa-arrow-left"></i> ${back_label}</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div class="ltl-detail-hero-text">
+							<div class="ltl-detail-hero-title">${__("LTL Shipment Tracking")}</div>
+							<div class="ltl-detail-hero-sub">${__("Track shipment from origin to destination")}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						${
+							summary.quote_request
+								? `<button type="button" class="ltl-btn ltl-detail-hero-badge ltl-tracking-open-quote" data-quote="${esc(summary.quote_request)}">
+									${__("Quote Request")}: ${esc(summary.quote_request)}
+								</button>`
+								: ""
+						}
+						<div class="ltl-detail-hero-badge">${__("Shipment")}: ${shipment}</div>
+					</div>
+				</div>
+
+				<section class="ltl-tracking-summary">
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-info-circle"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Status")}</div>
+							<span class="ltl-tracking-status-pill">${esc(summary.status || tracking.current_status || "—")}</span>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-barcode"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("PRO / Tracking Number")}</div>
+							<div class="ltl-tracking-summary-value ltl-mono">${esc(summary.pro || "—")}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-building"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Carrier")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.carrier_name || "—")}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-map-marker"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Pickup")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.pickup_label || "—")}</div>
+							<div class="ltl-tracking-summary-sub">${esc(fmt_dt(summary.pickup_when))}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-item">
+						<span class="ltl-tracking-summary-ico"><i class="fa fa-flag"></i></span>
+						<div>
+							<div class="ltl-tracking-summary-label">${__("Delivery")}</div>
+							<div class="ltl-tracking-summary-value">${esc(summary.delivery_label || "—")}</div>
+							<div class="ltl-tracking-summary-sub">${esc(fmt_dt(summary.delivery_when))}${summary.delivery_when && !doc.actual_delivery_date ? ` (${__("Est.")})` : ""}</div>
+						</div>
+					</div>
+					<div class="ltl-tracking-summary-actions">
+						<button type="button" class="ltl-btn ltl-tracking-view-details" data-shipment="${shipment}">
+							${__("View Details")}
+						</button>
+					</div>
+				</section>
+
+				<div class="ltl-tracking-progress-grid">
+					<section class="ltl-detail-card ltl-tracking-progress-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-road"></i> ${__("Shipment Progress")}</div>
+						<div class="ltl-tracking-timeline">${milestone_html}</div>
+					</section>
+					<section class="ltl-detail-card ltl-tracking-status-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-location-arrow"></i> ${__("Current Status")}</div>
+						<div class="ltl-tracking-status-rows">
+							<div><span>${__("Current Status")}</span><strong class="ltl-tracking-status-pill">${esc(tracking.current_status || "—")}</strong></div>
+							<div><span>${__("Last Updated")}</span><strong>${esc(fmt_dt(tracking.last_tracking_update))}</strong></div>
+							<div><span>${__("Location")}</span><strong>${esc(tracking.current_location || "—")}</strong></div>
+							<div><span>${__("Next Stop")}</span><strong>${esc((next_stop && next_stop.label) || "—")}</strong></div>
+						</div>
+						<button type="button" class="ltl-btn ltl-btn-primary ltl-tracking-refresh" data-shipment="${shipment}">
+							<i class="fa fa-refresh"></i> ${__("Refresh Tracking")}
+						</button>
+					</section>
+				</div>
+
+				<div class="ltl-tracking-lower-grid">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-list-ul"></i> ${__("Shipment Events")}</div>
+						${waiting_banner}
+						<table class="ltl-table ltl-tracking-events">
+							<thead><tr>
+								<th>${__("Date & Time")}</th>
+								<th>${__("Event")}</th>
+								<th>${__("Location")}</th>
+								<th>${__("Details")}</th>
+							</tr></thead>
+							<tbody>${event_rows}</tbody>
+						</table>
+					</section>
+
+					<section class="ltl-detail-card ltl-tracking-route-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map"></i> ${__("Shipment Route")}</div>
+						<div id="ltl-tracking-map" class="ltl-tracking-map"></div>
+						<div class="ltl-tracking-map-legend">
+							<span class="ltl-tracking-map-legend-item is-origin"><i></i>${esc(origin.label || __("Origin"))}</span>
+							${
+								show_mid
+									? `<span class="ltl-tracking-map-legend-item is-current"><i></i>${esc(
+											current_stop.label
+									  )} (${__("Current")})</span>`
+									: ""
+							}
+							<span class="ltl-tracking-map-legend-item is-destination"><i></i>${esc(
+								destination.label || __("Destination")
+							)}${tracking.eta ? ` · ${esc(fmt_dt(tracking.eta))}` : ""}</span>
+						</div>
+					</section>
+				</div>
+
+				<section class="ltl-tracking-facts">
+					<div class="ltl-tracking-fact"><i class="fa fa-map-marker"></i><div><span>${__("Origin")}</span><strong>${esc(origin.label || "—")}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-flag"></i><div><span>${__("Destination")}</span><strong>${esc(destination.label || "—")}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-balance-scale"></i><div><span>${__("Total Weight")}</span><strong>${esc(weight)} lbs</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-cubes"></i><div><span>${__("Pieces / Pallets")}</span><strong>${esc(pieces)}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-tag"></i><div><span>${__("Freight Class")}</span><strong>${esc(freight_class)}</strong></div></div>
+					<div class="ltl-tracking-fact"><i class="fa fa-truck"></i><div><span>${__("Service")}</span><strong>${__("Standard LTL")}</strong></div></div>
+				</section>
+			</div>`;
+	}
+
+	render_shipment_detail(payload) {
+		const doc = payload.doc || {};
+		const line_items = payload.line_items || [];
+		const tracking_events = payload.tracking_events || [];
+		const accessorials = payload.accessorials || [];
+		const esc = (v) => frappe.utils.escape_html(String(v == null ? "" : v));
+		const val = (v) => esc(v);
+		const readonly = ["Delivered", "Cancelled"].includes(doc.status);
+		const ro = readonly ? "readonly" : "";
+		const dis = readonly ? "disabled" : "";
+		const fmt_dt = (v) => (v ? frappe.datetime.str_to_user(v) : "");
+
+		const status_opts = ["Draft", "Booked", "Dispatched", "In Transit", "Out for Delivery", "Delivered", "Cancelled", "Exception"]
+			.map((s) => `<option value="${s}" ${doc.current_status === s || (!doc.current_status && doc.status === s) ? "selected" : ""}>${s}</option>`)
+			.join("");
+		const dispatch_opts = ["Pending", "Sent to Carrier", "Acknowledged", "Failed"]
+			.map((s) => `<option value="${s}" ${doc.dispatch_status === s ? "selected" : ""}>${s}</option>`)
+			.join("");
+
+		const tracking_rows = tracking_events.length
+			? tracking_events
+					.map(
+						(row) => `
+				<tr>
+					<td>${esc(fmt_dt(row.event_datetime))}</td>
+					<td class="ltl-mono">${esc(row.status_code || "—")}</td>
+					<td>${esc(row.status_description || "—")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="3" class="ltl-empty-cell">No Data</td></tr>`;
+
+		const line_rows = line_items.length
+			? line_items
+					.map(
+						(row, idx) => `
+				<tr>
+					<td>${idx + 1}</td>
+					<td>${esc(row.idx_line_no || idx + 1)}</td>
+					<td>${esc(row.handling_unit_qty || "—")}</td>
+					<td>${esc(row.handling_unit_type || "—")}</td>
+					<td>${esc(row.freight_class || "—")}</td>
+					<td>${esc(row.commodity_description || "—")}</td>
+					<td>${esc(row.weight != null ? row.weight : "—")}</td>
+				</tr>`
+					)
+					.join("")
+			: `<tr><td colspan="7" class="ltl-empty-cell">No Data</td></tr>`;
+
+		const acc_rows = this.render_accessorial_detail_rows(accessorials);
+
+		const quote = payload.quote || {};
+		const origin_zip = String(doc.bol_shipper_postal_code || quote.origin_zip || "").trim();
+		const destination_zip = String(doc.bol_consignee_postal_code || quote.destination_zip || "").trim();
+		const show_terminals = ltl_supports_smc3_bol(payload.carrier || doc.carrier);
+		const terminal_btn = (lane, zip, label) =>
+			`<button type="button" class="ltl-btn ltl-detail-terminal-lookup" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || doc.bol_scac || "")}" data-zip="${esc(zip)}" data-lane="${lane}" ${
+				zip ? "" : "disabled"
+			} title="${zip ? __("Look up the {0} terminal", [label]) : __("A ZIP is required")}">
+				<i class="fa fa-building-o"></i> ${label}
+			</button>`;
+
+		const bol_url = resolve_bol_url(doc);
+		const dayton_bol_ui = this.render_dayton_bol_status(doc, payload.dayton_documents);
+		const dayton_pickup_ui = this.render_dayton_pickup_status(doc, payload.pickup, payload.carrier);
+		const quote_name = String(doc.quote_request || quote.name || "").trim();
+		const view_quote_btn = quote_name
+			? `<button type="button" class="ltl-btn ltl-detail-view-quote ltl-detail-quote-link" data-quote="${esc(quote_name)}">
+					<i class="fa fa-file-text-o"></i> ${__("View Quote")}
+				</button>`
+			: `<button type="button" class="ltl-btn ltl-detail-view-quote ltl-detail-view-quote-muted" disabled title="${__(
+					"No linked quote request"
+				)}">
+					<i class="fa fa-file-text-o"></i> ${__("View Quote")}
+				</button>`;
+		const can_track =
+			ltl_supports_tracking(payload.carrier || doc.carrier)
+			&& Boolean(String(doc.pro_number || "").trim())
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const track_btn = can_track
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-track-shipment" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-map-marker"></i> ${__("Tracking")}
+				</button>`
+			: `<button type="button" class="ltl-btn" disabled title="${__("Tracking is not available yet")}">
+					<i class="fa fa-map-marker"></i> ${__("Tracking")}
+				</button>`;
+		const can_get_pro =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""));
+		const get_pro_btn = can_get_pro
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-get-next-pro" data-shipment="${esc(doc.name)}" data-pro="${esc(doc.pro_number || "")}">
+					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
+				</button>`
+			: `<button type="button" class="ltl-btn" disabled title="${__("Get Next PRO is not available for this carrier")}">
+					<i class="fa fa-barcode"></i> ${__("Get Next PRO")}
+				</button>`;
+		const can_cancel_bol =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& !["Cancelled", "Delivered"].includes(String(doc.status || ""))
+			&& Boolean(String(doc.pro_number || doc.bol_number || "").trim());
+		const cancel_bol_btn = can_cancel_bol
+			? `<button type="button" class="ltl-btn ltl-detail-cancel-bol" data-shipment="${esc(doc.name)}">
+					<i class="fa fa-times"></i> ${__("Cancel BOL")}
+				</button>`
+			: "";
+		const can_get_pod =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& Boolean(String(doc.pro_number || doc.bol_number || "").trim());
+		const pod_delivered = String(doc.status || "") === "Delivered";
+		const get_pod_btn = can_get_pod
+			? `<button type="button" class="ltl-btn ${pod_delivered ? "ltl-btn-primary" : ""} ltl-detail-get-pod" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || "")}" data-pro="${esc(doc.pro_number || "")}" data-status="${esc(doc.status || "")}" ${pod_delivered ? "" : `title="${__("POD is only available for Delivered shipments")}"`}>
+					<i class="fa fa-file-text-o"></i> ${__("Get POD")}
+				</button>`
+			: "";
+		const can_get_dr =
+			ltl_supports_smc3_bol(payload.carrier || doc.carrier)
+			&& pod_delivered
+			&& Boolean(String(doc.pro_number || "").trim());
+		const get_dr_btn = can_get_dr
+			? `<button type="button" class="ltl-btn ltl-btn-primary ltl-detail-get-dr" data-shipment="${esc(doc.name)}" data-scac="${esc(doc.carrier || "")}" data-pro="${esc(doc.pro_number || "")}" data-status="${esc(doc.status || "")}">
+					<i class="fa fa-file-text-o"></i> ${__("Get DR")}
+				</button>`
+			: "";
+		const extra_action_fields = [
+			can_get_pod ? `<div class="ltl-field"><label>${__("Get POD")}</label>${get_pod_btn}</div>` : "",
+			can_get_dr ? `<div class="ltl-field"><label>${__("Get DR")}</label>${get_dr_btn}</div>` : "",
+			can_cancel_bol ? `<div class="ltl-field"><label>${__("Cancel BOL")}</label>${cancel_bol_btn}</div>` : "",
+		].filter(Boolean).join("");
+		const actions_card = `
+			<section class="ltl-detail-card ltl-ship-actions-card">
+				<div class="ltl-detail-card-head"><i class="fa fa-bolt"></i> ${__("Actions")}</div>
+				<div class="ltl-detail-grid ltl-detail-grid-2">
+					<div class="ltl-field"><label>${__("Get Next PRO")}</label>${get_pro_btn}</div>
+					<div class="ltl-field"><label>${__("Tracking")}</label>${track_btn}</div>
+					${extra_action_fields}
+				</div>
+			</section>`;
+		const connections_card = this.render_shipment_connections_card({
+			bol_url,
+			bol_number: doc.bol_number,
+		});
+
+		return `
+			<div class="ltl-detail ltl-shipment-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<span class="ltl-detail-hero-icon"><i class="fa fa-truck"></i></span>
+						<div class="ltl-detail-hero-text">
+							<div class="ltl-detail-hero-title">LTL Shipment</div>
+							<div class="ltl-detail-hero-sub">Track booked shipments, BOL details, and delivery status</div>
+							<div class="ltl-detail-hero-badge ltl-detail-hero-id">Shipment ID: ${esc(doc.name)}</div>
+							<div class="ltl-detail-hero-status-row">
+								${dayton_pickup_ui.badge}
+								${dayton_bol_ui.badge}
+							</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						${view_quote_btn}
+						${dayton_pickup_ui.actions}
+					</div>
+				</div>
+
+				<div class="ltl-ship-detail-parties ltl-ship-actions-connections">
+					${connections_card}
+					${actions_card}
+				</div>
+
+				<div class="ltl-ship-detail-columns">
+					<div class="ltl-ship-detail-col">
+						<section class="ltl-detail-card">
+							<div class="ltl-detail-card-head"><i class="fa fa-file-text-o"></i> Shipment Overview</div>
+							<div class="ltl-detail-grid ltl-detail-grid-1">
+								<div class="ltl-field"><label>Status</label>
+									<input class="ltl-input ltl-detail-status" value="${val(doc.status)}" readonly /></div>
+								<div class="ltl-field"><label>Quote Request</label>
+									<input class="ltl-input ltl-detail-quote-link" data-quote="${esc(doc.quote_request)}"
+										value="${val(doc.quote_request)}" readonly style="cursor:pointer;color:var(--ltl-orange);font-weight:600;" /></div>
+								<div class="ltl-field"><label>Carrier</label>
+									<input class="ltl-input" value="${val(doc.carrier)}" readonly /></div>
+								<div class="ltl-field"><label>Carrier Name</label>
+									<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
+							</div>
+						</section>
+					</div>
+
+					<div class="ltl-ship-detail-col">
+						<section class="ltl-detail-card">
+							<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> Visibility &amp; Tracking</div>
+							<div class="ltl-detail-grid ltl-detail-grid-2">
+								<div class="ltl-field"><label>Current Status</label>
+									<select class="ltl-input" data-detail="current_status" ${dis}>${status_opts}</select></div>
+								<div class="ltl-field" style="display:flex;align-items:flex-end;">
+									<label class="ltl-check"><input type="checkbox" data-detail="has_exception" ${doc.has_exception ? "checked" : ""} ${dis} />
+										<span>Has Exception</span></label>
+								</div>
+							</div>
+							<div class="ltl-detail-card-head" style="margin-top:14px;margin-bottom:8px;">Tracking Events</div>
+							<table class="ltl-table ltl-detail-acc-table">
+								<thead><tr><th>Event Time</th><th>Status Code</th><th>Description</th></tr></thead>
+								<tbody>${tracking_rows}</tbody>
+							</table>
+						</section>
+
+						<section class="ltl-detail-card ltl-ship-card-charges">
+							<div class="ltl-detail-card-head"><i class="fa fa-usd"></i> Charges</div>
+							<div class="ltl-detail-grid ltl-detail-grid-3">
+								<div class="ltl-field"><label>Currency</label>
+									<input class="ltl-input" value="${val(doc.currency || "USD")}" readonly /></div>
+								<div class="ltl-field"><label>Transit Days</label>
+									<input class="ltl-input" value="${val(doc.transit_days)}" readonly /></div>
+								<div class="ltl-field"><label>Total Charge</label>
+									<input class="ltl-input" value="${val(doc.total_charge)}" readonly /></div>
+							</div>
+						</section>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card ltl-ship-card-lifecycle">
+					<div class="ltl-detail-card-head"><i class="fa fa-calendar"></i> Shipment Lifecycle</div>
+					<div class="ltl-detail-grid ltl-detail-grid-4">
+						<div class="ltl-field"><label>Booked On</label>
+							<input class="ltl-input" value="${val(fmt_dt(doc.booked_on))}" readonly /></div>
+						<div class="ltl-field"><label>BOL Number</label>
+							<input class="ltl-input" data-detail="bol_number" value="${val(doc.bol_number)}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Date</label>
+							<input type="date" class="ltl-input" data-detail="pickup_date" value="${esc(doc.pickup_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Dayton BOL ID</label>
+							<input class="ltl-input" value="${val(doc.dayton_bol_id)}" readonly /></div>
+						<div class="ltl-field"><label>TForce BOL ID</label>
+							<input class="ltl-input" value="${val(doc.tforce_bol_id)}" readonly /></div>
+						<div class="ltl-field"><label>Estimated Delivery</label>
+							<input type="date" class="ltl-input" data-detail="estimated_delivery_date" value="${esc(doc.estimated_delivery_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>PRO / Tracking Number</label>
+							<input class="ltl-input" data-detail="pro_number" value="${val(doc.pro_number)}" ${ro} />
+							${this.render_smc3_barcode_note(payload.barcode)}
+						</div>
+						<div class="ltl-field"><label>Actual Delivery</label>
+							<input type="date" class="ltl-input" data-detail="actual_delivery_date" value="${esc(doc.actual_delivery_date || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Actual Delivery Time</label>
+							<input class="ltl-input" value="${val(doc.actual_delivery_time || "")}" readonly /></div>
+						<div class="ltl-field"><label>Delivery Signature</label>
+							<input class="ltl-input" value="${val(doc.delivery_signature || "")}" readonly /></div>
+						<div class="ltl-field"><label>Carrier Confirmation #</label>
+							<input class="ltl-input" data-detail="carrier_confirmation" value="${val(doc.carrier_confirmation)}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Number</label>
+							<input class="ltl-input" value="${val(doc.pickup_number)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup Status</label>
+							<input class="ltl-input" value="${val(doc.pickup_status)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup PSID</label>
+							<input class="ltl-input" value="${val(doc.pickup_psid)}" readonly /></div>
+						<div class="ltl-field"><label>Pickup Ready</label>
+							<input class="ltl-input" data-detail="pickup_ready" value="${val(doc.pickup_ready || "")}" ${ro} /></div>
+						<div class="ltl-field"><label>Pickup Close</label>
+							<input class="ltl-input" data-detail="pickup_close" value="${val(doc.pickup_close || "")}" ${ro} /></div>
+						<div class="ltl-field ltl-ship-lifecycle-full">
+							<label>Pickup Comments</label>
+							<textarea class="ltl-input" data-detail="pickup_comments" rows="2" ${ro}>${val(doc.pickup_comments)}</textarea>
+						</div>
+						<div class="ltl-field ltl-ship-lifecycle-dispatch">
+							<label>Dispatch Status</label>
+							<select class="ltl-input ltl-detail-status" data-detail="dispatch_status" ${dis}>${dispatch_opts}</select>
+						</div>
+					</div>
+				</section>
+
+				<div class="ltl-ship-detail-parallel">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-file-text-o"></i> Dayton BOL Details</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Document Type</label>
+								<input class="ltl-input" data-detail="bol_document_type" value="${val(doc.bol_document_type || "Bill of Lading")}" ${ro} /></div>
+							<div class="ltl-field"><label>Payment Terms</label>
+								<input class="ltl-input" data-detail="bol_payment_terms" value="${val(doc.bol_payment_terms)}" ${ro} /></div>
+							<div class="ltl-field"><label>SCAC</label>
+								<input class="ltl-input" data-detail="bol_scac" value="${val(doc.bol_scac)}" ${ro} /></div>
+							<div class="ltl-field"><label>Total Quantity</label>
+								<input type="number" class="ltl-input" data-detail="bol_total_quantity" value="${val(doc.bol_total_quantity)}" ${ro} /></div>
+							<div class="ltl-field"><label>BOL Date</label>
+								<input type="date" class="ltl-input" data-detail="bol_date" value="${esc(doc.bol_date || "")}" ${ro} /></div>
+							<div class="ltl-field"><label>Grand Total Weight</label>
+								<input type="number" class="ltl-input" data-detail="bol_grand_total_weight" value="${val(doc.bol_grand_total_weight)}" ${ro} /></div>
+							<div class="ltl-field"><label>BOL Page Count</label>
+								<input type="number" class="ltl-input" data-detail="bol_page_count" value="${val(doc.bol_page_count)}" ${ro} /></div>
+						</div>
+						<div class="ltl-field" style="margin-top:12px;">
+							<label>Special Instructions</label>
+							<textarea class="ltl-input" data-detail="bol_special_instructions" rows="2" ${ro}>${val(doc.bol_special_instructions)}</textarea>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-users"></i> Bill To / Third Party</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_bill_to_name" value="${val(doc.bol_bill_to_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_bill_to_contact_name" value="${val(doc.bol_bill_to_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_bill_to_address1" value="${val(doc.bol_bill_to_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_bill_to_contact_phone" value="${val(doc.bol_bill_to_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_bill_to_city" value="${val(doc.bol_bill_to_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_bill_to_state" value="${val(doc.bol_bill_to_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_bill_to_postal_code" value="${val(doc.bol_bill_to_postal_code)}" ${ro} /></div>
+						</div>
+					</section>
+				</div>
+
+				<div class="ltl-ship-detail-parties">
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-truck"></i> Ship From</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_shipper_name" value="${val(doc.bol_shipper_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_shipper_contact_name" value="${val(doc.bol_shipper_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_shipper_address1" value="${val(doc.bol_shipper_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_shipper_contact_phone" value="${val(doc.bol_shipper_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_shipper_city" value="${val(doc.bol_shipper_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_shipper_state" value="${val(doc.bol_shipper_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_shipper_postal_code" value="${val(doc.bol_shipper_postal_code)}" ${ro} />
+								${show_terminals ? `<div class="ltl-field-action">${terminal_btn("origin", origin_zip, __("Origin Terminal"))}</div>` : ""}
+							</div>
+						</div>
+					</section>
+
+					<section class="ltl-detail-card">
+						<div class="ltl-detail-card-head"><i class="fa fa-map-marker"></i> Ship To</div>
+						<div class="ltl-detail-grid ltl-detail-grid-2">
+							<div class="ltl-field"><label>Name</label>
+								<input class="ltl-input" data-detail="bol_consignee_name" value="${val(doc.bol_consignee_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Contact</label>
+								<input class="ltl-input" data-detail="bol_consignee_contact_name" value="${val(doc.bol_consignee_contact_name)}" ${ro} /></div>
+							<div class="ltl-field"><label>Address</label>
+								<input class="ltl-input" data-detail="bol_consignee_address1" value="${val(doc.bol_consignee_address1)}" ${ro} /></div>
+							<div class="ltl-field"><label>Phone</label>
+								<input class="ltl-input" data-detail="bol_consignee_contact_phone" value="${val(doc.bol_consignee_contact_phone)}" ${ro} /></div>
+							<div class="ltl-field"><label>City</label>
+								<input class="ltl-input" data-detail="bol_consignee_city" value="${val(doc.bol_consignee_city)}" ${ro} /></div>
+							<div class="ltl-field"><label>State</label>
+								<input class="ltl-input" data-detail="bol_consignee_state" value="${val(doc.bol_consignee_state)}" ${ro} /></div>
+							<div class="ltl-field"><label>ZIP</label>
+								<input class="ltl-input" data-detail="bol_consignee_postal_code" value="${val(doc.bol_consignee_postal_code)}" ${ro} />
+								${show_terminals ? `<div class="ltl-field-action">${terminal_btn("destination", destination_zip, __("Destination Terminal"))}</div>` : ""}
+							</div>
+						</div>
+					</section>
+				</div>
+
+				${show_terminals ? `
+				<section class="ltl-detail-card ltl-terminal-info-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-building-o"></i> ${__("Terminal Info")}</div>
+					<p class="ltl-terminal-info-desc">${__("Look up the SMC3 origin and destination terminals for this shipment.")}</p>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field">
+							<label>${__("Origin ZIP")}</label>
+							<input class="ltl-input" value="${esc(origin_zip || "—")}" readonly />
+							<div class="ltl-field-action">${terminal_btn("origin", origin_zip, __("Origin Terminal"))}</div>
+						</div>
+						<div class="ltl-field">
+							<label>${__("Destination ZIP")}</label>
+							<input class="ltl-input" value="${esc(destination_zip || "—")}" readonly />
+							<div class="ltl-field-action">${terminal_btn("destination", destination_zip, __("Destination Terminal"))}</div>
+						</div>
+					</div>
+				</section>` : ""}
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-list-alt"></i> BOL Commodity / Line Items</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead>
+							<tr><th>No.</th><th>Line No</th><th>HU Qty</th><th>HU Type</th><th>Class</th><th>Description</th><th>Weight</th></tr>
+						</thead>
+						<tbody>${line_rows}</tbody>
+					</table>
+				</section>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> Accessories / Accessorials</div>
+					<table class="ltl-table ltl-detail-acc-table">
+						<thead><tr><th>No.</th><th>Group</th><th>Accessorial</th><th>Code</th><th>Quantity</th></tr></thead>
+						<tbody>${acc_rows}</tbody>
+					</table>
+				</section>
+
+				<div class="ltl-detail-footer">
+					<button type="button" class="ltl-btn" data-action="detail-cancel">Cancel</button>
+					<button type="button" class="ltl-btn ltl-btn-primary" data-action="detail-save" ${dis}>
+						<i class="fa fa-save"></i> Save Shipment
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
+	save_shipment_detail() {
+		if (!this.detail_doc || !this.detail_doc.doc || this.detail_type !== "shipment") return;
+		const name = this.detail_doc.doc.name;
+		const data = {};
+		this.body.find("[data-detail]").each(function () {
+			const key = $(this).attr("data-detail");
+			if ($(this).attr("type") === "checkbox") {
+				data[key] = $(this).is(":checked") ? 1 : 0;
+			} else {
+				data[key] = ($(this).val() || "").toString().trim();
+			}
+		});
+
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.save_shipment_detail",
+			args: { name, data: JSON.stringify(data) },
+			freeze: true,
+			freeze_message: __("Saving shipment..."),
+			callback: (r) => {
+				if (r.exc) return;
+				frappe.show_alert({ message: __("Shipment saved"), indicator: "green" }, 4);
+				this.open_shipment_detail(name);
+			},
+		});
+	}
+
+	is_blank_list_value(value) {
+		const text = String(value == null ? "" : value).trim();
+		return !text || text === "-" || text === "—";
+	}
+
+	sort_list_rows(cfg, rows) {
+		const list = (rows || []).slice();
+		if (!cfg || cfg.doctype !== "LTL Accessorial") return list;
+		const hyphen_row = (row) =>
+			this.is_blank_list_value(row.accessorial_code) && this.is_blank_list_value(row.accessorial_name);
+		const key = (row) =>
+			String(row.accessorial_code || row.accessorial_name || "")
+				.trim()
+				.toLowerCase();
+		list.sort((a, b) => {
+			const aHyphen = hyphen_row(a);
+			const bHyphen = hyphen_row(b);
+			if (aHyphen !== bHyphen) return aHyphen ? 1 : -1;
+			return key(a).localeCompare(key(b), undefined, { sensitivity: "base" });
+		});
+		return list;
+	}
+
+	load_list(cfg) {
+		const container = this.body.find(".ltl-list-body");
+		container.html('<div class="ltl-empty">Loading…</div>');
+		const request_id = (this._list_request_id = (this._list_request_id || 0) + 1);
+		frappe.db
+			.get_list(cfg.doctype, {
+				fields: cfg.fields,
+				order_by: cfg.order_by,
+				limit: cfg.limit || 100,
+			})
+			.then((rows) => {
+				if (request_id !== this._list_request_id) return;
+				if (!this.current_list || this.current_list.doctype !== cfg.doctype) return;
+				this.list_rows = this.sort_list_rows(cfg, rows);
+				this.render_list_table(this.list_rows);
+			})
+			.catch(() => {
+				if (request_id !== this._list_request_id) return;
+				container.html('<div class="ltl-empty">Unable to load records.</div>');
+			});
+	}
+
+	filter_list(term) {
+		if (!this.current_list) return;
+		const q = (term || "").toLowerCase().trim();
+		if (!q) {
+			this.render_list_table(this.list_rows || []);
+			return;
+		}
+		const keys = this.current_list.search || [];
+		const filtered = (this.list_rows || []).filter((row) =>
+			keys.some((k) => String(row[k] || "").toLowerCase().includes(q))
+		);
+		this.render_list_table(filtered);
+	}
+
+	render_list_table(rows) {
+		const cfg = this.current_list;
+		const container = this.body.find(".ltl-list-body");
+		if (!cfg) return;
+		if (!rows.length) {
+			container.html('<div class="ltl-empty">No records found.</div>');
+			return;
+		}
+
+		const head = cfg.columns.map((c) => `<th>${c.label}</th>`).join("") + "<th>Action</th>";
+		const body = rows
+			.map((row) => {
+				const cells = cfg.columns
+					.map((c) => {
+						const num_class = c.type === "money" || c.type === "num" ? ' class="ltl-num"' : "";
+						return `<td${num_class}>${this.format_cell(row, c)}</td>`;
+					})
+					.join("");
+				const actions = this.render_list_actions(row, cfg);
+				return `<tr class="ltl-list-row" data-name="${frappe.utils.escape_html(row.name)}">${cells}${actions}</tr>`;
+			})
+			.join("");
+
+		container.html(`
+			<div class="ltl-list-table-wrap">
+				<table class="ltl-table">
+					<thead><tr>${head}</tr></thead>
+					<tbody>${body}</tbody>
+				</table>
+			</div>`);
+	}
+
+	render_list_actions(row, cfg) {
+		if (cfg.doctype === "LTL Shipment") {
+			const bol_url = resolve_bol_url(row);
+			const bol_icon = bol_url
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No BOL attached")}">${ltl_nav_icon("paperclip")}</span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
+				${bol_icon}
+			</td>`;
+		}
+		if (cfg.doctype === "LTL Quote Request") {
+			const bol_url = resolve_bol_url(row);
+			const bol_icon = bol_url
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}">${ltl_nav_icon("paperclip")}</span>`
+				: "";
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
+				${bol_icon}
+			</td>`;
+		}
+		if (cfg.doctype === "LTL Carrier Invoice") {
+			const url = resolve_file_url(row.carrier_invoice);
+			const attach = url
+				? `<span class="ltl-bol-attach" title="${__("View Invoice")}" data-bol-url="${frappe.utils.escape_html(url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No invoice attached")}">${ltl_nav_icon("paperclip")}</span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
+				${attach}
+			</td>`;
+		}
+		if (cfg.doctype === "LTL POD") {
+			const url = resolve_file_url(row.pod_document);
+			const attach = url
+				? `<span class="ltl-bol-attach" title="${__("View POD")}" data-bol-url="${frappe.utils.escape_html(url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No POD attached")}">${ltl_nav_icon("paperclip")}</span>`;
+			return `<td class="ltl-list-actions">
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
+				${attach}
+			</td>`;
+		}
+		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span></td>`;
+	}
+
+	format_cell(row, col) {
+		const raw = row[col.key] != null ? row[col.key] : col.fallback ? row[col.fallback] : "";
+		switch (col.type) {
+			case "mono":
+				return `<span class="ltl-id">${frappe.utils.escape_html(String(raw || "—"))}</span>`;
+			case "text":
+				return frappe.utils.escape_html(String(raw || "—"));
+			case "num":
+				return raw !== "" && raw != null ? Number(raw).toLocaleString() : "—";
+			case "money":
+				return raw ? format_currency(raw, row.currency || "USD") : "—";
+			case "datetime":
+				return raw ? frappe.datetime.str_to_user(raw) : "—";
+			case "bool":
+				return raw
+					? '<span class="ltl-status ltl-status-green">Yes</span>'
+					: '<span class="ltl-status ltl-status-grey">No</span>';
+			case "status":
+				return `<span class="ltl-status ltl-status-${this.status_class(raw)}">${frappe.utils.escape_html(String(raw || "—"))}</span>`;
+			case "origin":
+				return frappe.utils.escape_html(
+					[row.origin_city, row.origin_state].filter(Boolean).join(", ") || row.origin_zip || "—"
+				);
+			case "destination":
+				return frappe.utils.escape_html(
+					[row.destination_city, row.destination_state].filter(Boolean).join(", ") || row.destination_zip || "—"
+				);
+			default:
+				return frappe.utils.escape_html(String(raw || "—"));
+		}
+	}
+
+	status_class(s) {
+		return (
+			{
+				"Quotes Received": "green",
+				Quoted: "green",
+				Booked: "blue",
+				Accepted: "blue",
+				Delivered: "green",
+				Received: "green",
+				"POD Received": "green",
+				Draft: "grey",
+				Pending: "orange",
+				"In Transit": "orange",
+				"API Error": "red",
+				Cancelled: "red",
+				Exception: "red",
+			}[s] || "grey"
+		);
+	}
+
+	clear_form() {
+		this.body.find(".ltl-view-quote .ltl-input").each(function () {
+			this.value = "";
+		});
+		this.body.find("input[data-acc]").prop("checked", false);
+		this.set_carrier_selection([]);
+		this.close_carrier_filter_menus();
+		this.line_items = [];
+		this.refresh_line_items_table();
+		this.quotes = [];
+		this.quote_request_id = null;
+		this.booking_context = null;
+		this.quote_request_status = null;
+		this.rate_errors = [];
+		if (this.load_acc_expanded) this.toggle_load_accessorials();
+		if (this.line_items_expanded) this.toggle_line_items_section(false);
+		if (this.expanded) this.toggle_shipment(false);
+		this.render_rates();
+		this.load_recent_requests();
+	}
+};

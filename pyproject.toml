@@ -1,0 +1,21 @@
+[project]
+name = "ltl_quote"
+authors = [
+    { name = "LTL Quote", email = "admin@ltlquote.com"}
+]
+description = "Digital freight network and intelligent LTL rating engine"
+requires-python = ">=3.12"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = [
+    # "frappe~=16.0.0" # Installed and managed by bench.
+]
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.dev-dependencies]
+
+[deploy.dependencies.apt]
+packages = []
