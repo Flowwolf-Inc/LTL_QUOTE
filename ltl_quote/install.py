@@ -373,8 +373,8 @@ def _ensure_login_users():
 			page.save(ignore_permissions=True)
 
 	head_snippet = (
-		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css">\n'
-		'<script src="/assets/ltl_quote/js/login_users.js"></script>'
+		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css?v=3">\n'
+		'<script src="/assets/ltl_quote/js/login_users.js?v=3"></script>'
 	)
 	head_html = frappe.db.get_single_value("Website Settings", "head_html") or ""
 	if "login_users.js" not in head_html:

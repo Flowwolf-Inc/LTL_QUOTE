@@ -1,25 +1,5 @@
 import frappe
 
-# Curated shipper-facing accessorials grouped by stage. Each internal code is
-# validated against the LTL Accessorial master before being shown in the UI.
-STANDARD_ACCESSORIALS = {
-	"pickup": [
-		("LIFTGATE", "Liftgate Pickup"),
-		("INSIDE_DELIVERY", "Inside Pickup"),
-	],
-	"delivery": [
-		("LIFTGATE", "Liftgate Delivery"),
-		("INSIDE_DELIVERY", "Inside Delivery"),
-		("RESIDENTIAL", "Residential Delivery"),
-		("APPOINTMENT", "Notify Before Delivery"),
-	],
-	"load": [
-		("LIMITED_ACCESS", "Limited Access"),
-		("HAZMAT", "Hazmat Handling"),
-		("APPOINTMENT", "Delivery Appointment"),
-	],
-}
-
 # Dayton catalog codes already covered by curated checkboxes (avoid duplicate picks).
 CURATED_DAYTON_EXCLUSIONS = {
 	"pickup": {"LFTP", "LIFTPU", "IPU", "IPC"},
@@ -29,32 +9,20 @@ CURATED_DAYTON_EXCLUSIONS = {
 
 @frappe.whitelist()
 def get_accessorial_options() -> dict:
-	"""Return curated accessorials grouped for origin (pickup), destination
-	(delivery), and load-based sections, sourced from LTL Accessorial master data."""
-	# Map of code -> master name for the codes we care about (single query).
-	codes = {code for group in STANDARD_ACCESSORIALS.values() for code, _ in group}
-	rows = frappe.get_all(
-		"LTL Accessorial",
-		filters={"accessorial_code": ["in", list(codes)]},
-		fields=["accessorial_code", "accessorial_name"],
-	)
-	available = {r.accessorial_code: r.accessorial_name for r in rows}
+	"""Return the logged-in user's shown accessorials for the quote form."""
+	from ltl_quote.api.user_settings import accessorial_options_for_form
 
-	result: dict[str, list[dict]] = {}
-	for group, entries in STANDARD_ACCESSORIALS.items():
-		result[group] = [
-			{"code": code, "label": label, "master_name": available.get(code) or label}
-			for code, label in entries
-			if code in available
-		]
-	return result
+	return accessorial_options_for_form()
 
 
 @frappe.whitelist()
 def get_enabled_carrier_options() -> list[dict]:
-	"""Enabled LTL Carriers for the quote Source dropdown."""
+	"""Enabled LTL Carriers for the quote Source dropdown (user prefs ∩ platform)."""
 	from ltl_quote.api.carrier_mapping import enabled_carrier_options
+	from ltl_quote.api.user_settings import ensure_user_settings, session_user
 
+	if session_user():
+		ensure_user_settings()
 	return enabled_carrier_options()
 
 

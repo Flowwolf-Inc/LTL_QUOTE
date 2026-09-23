@@ -94,7 +94,7 @@ def get_rates(payload=None, source=None, **kwargs):
 			carrier_preference=raw_preference,
 			source=source,
 		)
-		require_enabled_carriers(available_carriers)
+		require_enabled_carriers(carrier_docs or available_carriers)
 		filter_active = bool(
 			parse_carrier_tokens(source)
 			or parse_carrier_tokens(raw_carriers)

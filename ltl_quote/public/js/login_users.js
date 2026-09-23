@@ -18,7 +18,13 @@
 			'<div class="ltl-login-user-grid">' +
 			users
 				.map(function (user) {
-					return '<button type="button" class="ltl-login-user" data-user="' + user.id + '">' + user.label + "</button>";
+					return (
+						'<button type="button" class="ltl-login-user" data-user="' +
+						user.id +
+						'">' +
+						user.label +
+						"</button>"
+					);
 				})
 				.join("") +
 			"</div>";
@@ -32,10 +38,7 @@
 				btn.classList.toggle("is-selected", btn.getAttribute("data-user") === user.id);
 			});
 			if (email) email.value = user.usr;
-			if (password) {
-				password.value = user.pwd || "";
-				password.focus();
-			}
+			if (password) password.value = user.pwd || "";
 		}
 
 		wrap.addEventListener("click", function (event) {
@@ -46,6 +49,8 @@
 			});
 			if (user) applyUser(user);
 		});
+
+		applyUser(users[0]);
 	}
 
 	if (document.readyState === "loading") {
@@ -53,4 +58,5 @@
 	} else {
 		init();
 	}
+	document.addEventListener("login_rendered", init);
 })();

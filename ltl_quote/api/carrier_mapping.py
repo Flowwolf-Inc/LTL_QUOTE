@@ -334,16 +334,43 @@ def resolve_rate_source(source=None, *mappings) -> list[str]:
 	return []
 
 
+def _session_enabled_carrier_ids() -> set[str] | None:
+	"""User-enabled carrier names, or None when prefs should not filter rating."""
+	try:
+		from ltl_quote.api.user_settings import get_user_enabled_carrier_ids
+
+		return get_user_enabled_carrier_ids(create=False)
+	except Exception:
+		return None
+
+
+def _filter_carriers_for_user(enabled: list) -> list:
+	user_ids = _session_enabled_carrier_ids()
+	if user_ids is None:
+		return list(enabled)
+	filtered = []
+	for doc in enabled:
+		keys = {
+			str(getattr(doc, "name", None) or "").strip().upper(),
+			str(getattr(doc, "carrier_code", None) or "").strip().upper(),
+		}
+		if keys & user_ids:
+			filtered.append(doc)
+	return filtered
+
+
 def load_carriers_for_rating(requested=None, carrier_preference=None, source=None) -> tuple[list, list, list]:
 	"""Intersect requested aliases with enabled LTL Carriers.
 
 	Returns ``(resolved_carrier_docs, warnings_list, available_carrier_metadata)``.
 	``source`` wins over ``carriers`` and ``carrier_preference`` when provided.
-	Empty source + empty requested + empty preference returns all enabled carriers.
+	Empty source + empty requested + empty preference returns the session user's
+	enabled carriers (or all globally enabled carriers when the user has no prefs).
 	Unknown or disabled tokens are skipped with a warning.
 	"""
 	enabled = get_enabled_carriers() or []
-	available = [_carrier_metadata(doc) for doc in enabled]
+	session_enabled = _filter_carriers_for_user(enabled)
+	available = [_carrier_metadata(doc) for doc in session_enabled]
 	enabled_by_id = _index_enabled_carriers(enabled)
 
 	raw_tokens = _raw_carrier_tokens(source)
@@ -353,7 +380,7 @@ def load_carriers_for_rating(requested=None, carrier_preference=None, source=Non
 		raw_tokens = _raw_carrier_tokens(carrier_preference)
 
 	if not raw_tokens:
-		return list(enabled), [], available
+		return list(session_enabled), [], available
 
 	resolved: list = []
 	warnings: list[dict] = []
@@ -379,8 +406,8 @@ def load_carriers_for_rating(requested=None, carrier_preference=None, source=Non
 
 
 def enabled_carrier_options() -> list[dict]:
-	"""Enabled LTL Carrier rows for the quote Source dropdown."""
-	return [_carrier_metadata(doc) for doc in (get_enabled_carriers() or [])]
+	"""Enabled LTL Carrier rows for the quote Source dropdown (user prefs ∩ platform)."""
+	return [_carrier_metadata(doc) for doc in _filter_carriers_for_user(get_enabled_carriers() or [])]
 
 
 def require_enabled_carriers(available_carriers) -> None:

@@ -39,7 +39,19 @@ function ltl_supports_tracking(carrier) {
 	return ["DAYTON", "TFORCE", "ARCB", "SMC3"].includes(ltl_connector_key(carrier));
 }
 
+function ensure_ltl_fontawesome() {
+	if (document.getElementById("ltl-fontawesome")) {
+		return;
+	}
+	const link = document.createElement("link");
+	link.id = "ltl-fontawesome";
+	link.rel = "stylesheet";
+	link.href = "/assets/frappe/css/fonts/fontawesome/font-awesome.min.css";
+	document.head.appendChild(link);
+}
+
 frappe.pages["ltl-quote"].on_page_load = function (wrapper) {
+	ensure_ltl_fontawesome();
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
 		title: __("LTL Quote"),
@@ -61,18 +73,22 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 	const pending_carrier = window.__ltl_open_carrier;
 	if (pending_carrier) {
 		window.__ltl_open_carrier = null;
-		dash.open_carrier_detail(pending_carrier);
-		return;
+		if (!dash.is_shipper_user()) {
+			dash.open_carrier_detail(pending_carrier);
+			return;
+		}
 	}
 	const pending_accessorial = window.__ltl_open_accessorial;
 	if (pending_accessorial) {
 		window.__ltl_open_accessorial = null;
-		dash.open_accessorial_detail(pending_accessorial);
-		return;
+		if (!dash.is_shipper_user()) {
+			dash.open_accessorial_detail(pending_accessorial);
+			return;
+		}
 	}
 
 	const opts = frappe.route_options || {};
-	const view = opts.ltl_view;
+	let view = opts.ltl_view;
 	const name = opts.ltl_name;
 	if (view || name) {
 		frappe.route_options = {};
@@ -93,24 +109,19 @@ frappe.pages["ltl-quote"].on_page_show = function (wrapper) {
 			return;
 		}
 		if (name && (view === "accessorial" || view === "accessorials")) {
-			dash.open_accessorial_detail(name);
-			return;
-		}
-		if (name && (view === "carrier" || view === "carriers")) {
-			if (dash.is_shipper_user()) {
-				dash.body.find(".ltl-nav-item").removeClass("active");
-				dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
-				dash.show_view("quote");
+			if (!dash.is_shipper_user()) {
+				dash.open_accessorial_detail(name);
 				return;
 			}
-			dash.open_carrier_detail(name);
-			return;
 		}
-		if (view === "carriers" && dash.is_shipper_user()) {
-			dash.body.find(".ltl-nav-item").removeClass("active");
-			dash.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
-			dash.show_view("quote");
-			return;
+		if (name && (view === "carrier" || view === "carriers")) {
+			if (!dash.is_shipper_user()) {
+				dash.open_carrier_detail(name);
+				return;
+			}
+		}
+		if (dash.is_shipper_user() && ltl_is_shipper_hidden_view(view)) {
+			view = "quote";
 		}
 		if (
 			view === "quote" ||
@@ -234,25 +245,49 @@ const SMC3_SCAC_NAMES = {
 	XPOL: "XPO Logistics",
 };
 
+const NAV_ICON_SVG = {
+	file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>`,
+	list: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="17" y2="13"/><line x1="7" y1="17" x2="13" y2="17"/></svg>`,
+	truck: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="7" width="15" height="11" rx="1"/><path d="M16 10h4l3 3v5h-7V10z"/><circle cx="5.5" cy="18.5" r="1.5"/><circle cx="18.5" cy="18.5" r="1.5"/></svg>`,
+	invoice: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`,
+	check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><polyline points="8 12 11 15 16 9"/></svg>`,
+	users: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+	tag: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>`,
+	cube: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
+	plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+	eye: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+	paperclip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`,
+};
+
 const NAV_SECTIONS = [
 	{
 		title: "RATE & BOOKING",
 		items: [
-			{ label: "New Carrier Quote", icon: "fa fa-file-text-o", view: "quote", badge: "+", active: true },
-			{ label: "LTL Quote List", icon: "fa fa-list-alt", view: "quotes" },
-			{ label: "LTL Shipment", icon: "fa fa-truck", view: "shipments" },
-			{ label: "LTL CI", icon: "fa fa-file-text", view: "invoices" },
-			{ label: "LTL POD", icon: "fa fa-check-square-o", view: "pods" },
+			{ label: "New Carrier Quote", icon: "file", view: "quote", badge: "+", active: true },
+			{ label: "LTL Quote List", icon: "list", view: "quotes" },
+			{ label: "LTL Shipment", icon: "truck", view: "shipments" },
+			{ label: "LTL CI", icon: "invoice", view: "invoices" },
+			{ label: "LTL POD", icon: "check", view: "pods" },
 		],
 	},
 	{
 		title: "SETTINGS",
 		items: [
-			{ label: "Quote Source", icon: "fa fa-users", view: "carriers" },
-			{ label: "Accessorials", icon: "fa fa-tags", view: "accessorials" },
+			{ label: "Quote Source", icon: "users", view: "carriers" },
+			{ label: "Accessorials", icon: "tag", view: "accessorials" },
 		],
 	},
 ];
+
+const SHIPPER_HIDDEN_VIEWS = ["invoices", "pods", "carriers", "accessorials"];
+
+function ltl_is_shipper_hidden_view(view) {
+	return SHIPPER_HIDDEN_VIEWS.includes(String(view || ""));
+}
+
+function ltl_nav_icon(name) {
+	return NAV_ICON_SVG[name] || "";
+}
 
 // Themed in-page list views. Each renders inside the dashboard shell.
 const LIST_VIEWS = {
@@ -260,7 +295,7 @@ const LIST_VIEWS = {
 		doctype: "LTL Quote Request",
 		title: "LTL Quote List",
 		sub: "All rate requests across carriers.",
-		icon: "fa fa-list-alt",
+		icon: "list",
 		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation", "bol_number", "pro_number", "bol_document_url"],
 		order_by: "creation desc",
 		search: ["name", "origin_zip", "destination_zip", "origin_city", "destination_city"],
@@ -279,7 +314,7 @@ const LIST_VIEWS = {
 		doctype: "LTL Shipment",
 		title: "LTL Shipment",
 		sub: "Booked shipments and their tracking status.",
-		icon: "fa fa-truck",
+		icon: "truck",
 		fields: ["name", "carrier_name", "carrier", "status", "bol_number", "pro_number", "total_charge", "currency", "transit_days", "booked_on", "creation", "bol_document", "bol_document_url", "bol_image"],
 		order_by: "creation desc",
 		search: ["name", "carrier_name", "bol_number", "pro_number", "status"],
@@ -296,8 +331,9 @@ const LIST_VIEWS = {
 	carriers: {
 		doctype: "LTL Carrier",
 		title: "Quote Source",
-		sub: "Configured carriers and their integrations.",
-		icon: "fa fa-users",
+		sub: "Choose which carriers to use for your quotes.",
+		icon: "users",
+		hide_new: true,
 		fields: ["name", "carrier_code", "carrier_name", "scac", "connector_type", "reliability_score", "enabled"],
 		order_by: "carrier_name asc",
 		search: ["carrier_code", "carrier_name", "scac", "connector_type"],
@@ -307,14 +343,14 @@ const LIST_VIEWS = {
 			{ label: "SCAC", key: "scac" },
 			{ label: "Connector", key: "connector_type" },
 			{ label: "Reliability", type: "num", key: "reliability_score" },
-			{ label: "Enabled", type: "bool", key: "enabled" },
+			{ label: "Enabled for your quotes", type: "user_enabled", key: "enabled" },
 		],
 	},
 	invoices: {
 		doctype: "LTL Carrier Invoice",
 		title: "LTL CI",
 		sub: "Carrier invoices received against booked shipments.",
-		icon: "fa fa-file-text",
+		icon: "invoice",
 		fields: [
 			"name",
 			"shipment",
@@ -350,7 +386,7 @@ const LIST_VIEWS = {
 		doctype: "LTL POD",
 		title: "LTL POD",
 		sub: "Proof of delivery documents for booked shipments.",
-		icon: "fa fa-check-square-o",
+		icon: "check",
 		fields: [
 			"name",
 			"shipment",
@@ -379,12 +415,13 @@ const LIST_VIEWS = {
 	accessorials: {
 		doctype: "LTL Accessorial",
 		title: "Accessorials",
-		sub: "Accessorial service catalog.",
-		icon: "fa fa-tags",
+		sub: "Choose which services appear on your quote form, and which start checked.",
+		icon: "tag",
+		hide_new: true,
 		fields: ["name", "accessorial_code", "accessorial_name", "charge_type", "default_amount", "currency"],
 		order_by: "accessorial_code asc",
 		limit: 500,
-		search: ["accessorial_code", "accessorial_name", "charge_type"],
+		search: ["accessorial_code", "accessorial_name", "code", "label"],
 		columns: [
 			{ label: "Code", type: "mono", key: "accessorial_code" },
 			{ label: "Name", type: "text", key: "accessorial_name" },
@@ -804,6 +841,9 @@ ltl_quote.Dashboard = class Dashboard {
 			<div class="ltl-dashboard">
 				${this.render_sidebar()}
 				<div class="ltl-main">
+					<div class="ltl-page-loader" hidden>
+						<div class="ltl-page-loader-msg"></div>
+					</div>
 					<div class="ltl-topbar">
 						<div class="ltl-breadcrumb">
 							<span>LTL Quote</span>
@@ -832,7 +872,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-view ltl-view-list" style="display:none;">
 							<div class="ltl-page-head">
 								<div class="ltl-page-head-left">
-									<span class="ltl-page-icon"><i class="fa fa-list-alt ltl-list-icon"></i></span>
+									<span class="ltl-page-icon ltl-list-icon">${ltl_nav_icon("list")}</span>
 									<div>
 										<div class="ltl-page-title ltl-list-title">List</div>
 										<div class="ltl-page-sub ltl-list-sub"></div>
@@ -840,7 +880,7 @@ ltl_quote.Dashboard = class Dashboard {
 								</div>
 								<div class="ltl-page-head-actions">
 									<input type="text" class="ltl-input ltl-list-search" placeholder="Search…" />
-									<button class="ltl-btn ltl-btn-primary ltl-list-new"><i class="fa fa-plus"></i> New</button>
+									<button class="ltl-btn ltl-btn-primary ltl-list-new">${ltl_nav_icon("plus")} New</button>
 								</div>
 							</div>
 							<div class="ltl-card">
@@ -866,9 +906,11 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	render_sidebar() {
-		const hide_quote_source = this.is_shipper_user();
+		const hide_shipper_views = this.is_shipper_user();
 		const sections = NAV_SECTIONS.map((section) => {
-			const items = section.items.filter((item) => !(hide_quote_source && item.view === "carriers"));
+			const items = hide_shipper_views
+				? section.items.filter((item) => !ltl_is_shipper_hidden_view(item.view))
+				: section.items;
 			if (!items.length) return "";
 			const title = section.title ? `<div class="ltl-nav-title">${section.title}</div>` : "";
 			const links = items
@@ -877,7 +919,7 @@ ltl_quote.Dashboard = class Dashboard {
 					const active = item.active ? "active" : "";
 					return `
 						<a class="ltl-nav-item ${active}" data-view="${item.view}">
-							<span class="ltl-nav-ico"><i class="${item.icon}"></i></span>
+							<span class="ltl-nav-ico">${ltl_nav_icon(item.icon)}</span>
 							<span class="ltl-nav-label">${item.label}</span>
 							${badge}
 						</a>`;
@@ -889,7 +931,7 @@ ltl_quote.Dashboard = class Dashboard {
 		return `
 			<aside class="ltl-sidebar">
 				<div class="ltl-brand">
-					<span class="ltl-brand-logo"><i class="fa fa-cube"></i></span>
+					<span class="ltl-brand-logo">${ltl_nav_icon("cube")}</span>
 					<span class="ltl-brand-text"><b>LTL</b><small>Logistics</small></span>
 				</div>
 				<nav class="ltl-nav">${sections}</nav>
@@ -905,7 +947,7 @@ ltl_quote.Dashboard = class Dashboard {
 		return `
 			<div class="ltl-page-head">
 				<div class="ltl-page-head-left">
-					<span class="ltl-page-icon"><i class="fa fa-file-text-o"></i></span>
+					<span class="ltl-page-icon">${ltl_nav_icon("file")}</span>
 					<div>
 						<div class="ltl-page-title">New Carrier Quote Request</div>
 						<div class="ltl-page-sub">Enter shipment details to get the best LTL rates from our carriers.</div>
@@ -1108,14 +1150,17 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	accessorial_boxes(list, group) {
-		return list
-			.map(
-				(a, i) => `
+		return (list || [])
+			.map((a, i) => {
+				const code = frappe.utils.escape_html(String(a.code || ""));
+				const label = frappe.utils.escape_html(String(a.label || a.code || ""));
+				const checked = a.default_selected ? "checked" : "";
+				return `
 			<label class="ltl-check">
-				<input type="checkbox" data-acc="${a.code}" data-group="${group}" data-idx="${i}" />
-				<span>${a.label}</span>
-			</label>`
-			)
+				<input type="checkbox" data-acc="${code}" data-group="${group}" data-idx="${i}" ${checked} />
+				<span>${label}</span>
+			</label>`;
+			})
 			.join("");
 	}
 
@@ -1223,7 +1268,7 @@ ltl_quote.Dashboard = class Dashboard {
 				</div>
 				<div class="ltl-tab-pane ltl-od-acc-pane" data-tab-pane="${side}-acc" style="display:none;">
 					<div class="ltl-od-acc-panel">
-						<div class="ltl-acc-grid ltl-acc-grid-od">${this.accessorial_boxes(acc, side)}</div>
+						<div class="ltl-acc-grid ltl-acc-grid-od" data-acc-grid="${side}">${this.accessorial_boxes(acc, side)}</div>
 						<div class="ltl-acc-extras" data-dayton-extras="${side}">
 							${this.render_dayton_extra_boxes(is_origin ? "pickup" : "delivery", side)}
 						</div>
@@ -1262,7 +1307,7 @@ ltl_quote.Dashboard = class Dashboard {
 						<span><i class="fa fa-chevron-down ltl-chevron"></i> Load Based Accessorials</span>
 					</div>
 					<div class="ltl-collapse-body" style="display:none;">
-						<div class="ltl-acc-grid">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
+						<div class="ltl-acc-grid" data-acc-grid="load">${this.accessorial_boxes(this.acc_options.load, "load")}</div>
 					</div>
 				</div>
 				${this.render_line_items_bar()}
@@ -1753,7 +1798,7 @@ ltl_quote.Dashboard = class Dashboard {
 		});
 
 		this.body.on("click", ".ltl-list-row", (e) => {
-			if ($(e.target).closest(".ltl-list-actions, .ltl-bol-attach, .ltl-recent-view").length) return;
+			if ($(e.target).closest(".ltl-list-actions, .ltl-bol-attach, .ltl-recent-view, select, input, label").length) return;
 			const name = $(e.currentTarget).attr("data-name");
 			if (!this.current_list || !name) return;
 			if (this.current_list.doctype === "LTL Quote Request") {
@@ -2229,6 +2274,9 @@ ltl_quote.Dashboard = class Dashboard {
 
 		this.body.on("click", "[data-action='detail-cancel']", () => this.close_detail_view());
 		this.body.on("change", "[data-carrier-enabled]", (e) => this.save_carrier_enabled(e));
+		this.body.on("change", "[data-acc-show], [data-acc-default]", (e) => {
+			this.save_accessorial_preference($(e.currentTarget));
+		});
 		this.body.on("change", "[data-smc3-network-enabled]", (e) => this.save_smc3_network_enabled(e));
 		this.body.on("click", "[data-action='detail-save']", () => {
 			if (this.detail_type === "shipment") this.save_shipment_detail();
@@ -2580,9 +2628,9 @@ ltl_quote.Dashboard = class Dashboard {
 							<div>${transit}</div>
 							${centerLine ? `<div class="ltl-transit-centers">${centerLine}</div>` : ""}
 						</td>
-						<td class="ltl-total">${total}</td>
-						<td>${base}</td>
-						<td>${acc}</td>
+						<td class="ltl-total ltl-num">${total}</td>
+						<td class="ltl-num">${base}</td>
+						<td class="ltl-num">${acc}</td>
 						<td><span class="ltl-rating">${rating} <i class="fa fa-star"></i></span></td>
 						<td class="ltl-rate-action-cell">${this.render_rate_action(q, idx)}</td>
 					</tr>`;
@@ -3069,11 +3117,30 @@ ltl_quote.Dashboard = class Dashboard {
 			</div>`;
 	}
 
+	show_page_loader(message) {
+		const msg = message || __("Please wait…");
+		const $loader = this.body.find(".ltl-page-loader");
+		$loader.find(".ltl-page-loader-msg").text(msg);
+		$loader.removeAttr("hidden").addClass("is-visible");
+		this.body.find(".ltl-main").addClass("is-loading");
+		this.body.find(".ltl-book-btn").prop("disabled", true);
+	}
+
+	hide_page_loader() {
+		this.body.find(".ltl-page-loader").attr("hidden", true).removeClass("is-visible");
+		this.body.find(".ltl-main").removeClass("is-loading");
+		if (!this.booking_context?.shipment) {
+			this.body.find(".ltl-book-btn").prop("disabled", false);
+		}
+	}
+
 	execute_booking(quote) {
 		const line_items = this.require_line_items();
 		if (!line_items) return;
 
 		const first = line_items[0] || {};
+		const loading_msg = __("Generating BOL, and fetching BOL image…");
+		this.show_page_loader(loading_msg);
 		frappe.call({
 			method: "ltl_quote.api.quote.accept_carrier_quote",
 			args: {
@@ -3085,8 +3152,6 @@ ltl_quote.Dashboard = class Dashboard {
 				commodity_description: first.description || first.item_name || "",
 				nmfc: first.nmfc || first.nmfc_number || "",
 			},
-			freeze: true,
-			freeze_message: __("Generating BOL, and fetching BOL image…"),
 			callback: (r) => {
 				const res = r.message || {};
 				if (res.status === "success" || res.status === "already_booked") {
@@ -3122,6 +3187,8 @@ ltl_quote.Dashboard = class Dashboard {
 					});
 				}
 			},
+			error: () => this.hide_page_loader(),
+			always: () => this.hide_page_loader(),
 		});
 	}
 
@@ -3177,15 +3244,15 @@ ltl_quote.Dashboard = class Dashboard {
 						: "—";
 				return `
 			<tr>
-				<td class="ltl-mono">${frappe.utils.escape_html(row.name)}</td>
+				<td class="ltl-id">${frappe.utils.escape_html(row.name)}</td>
 				<td>${loc(row.origin_city, row.origin_state, row.origin_zip)}</td>
 				<td>${loc(row.destination_city, row.destination_state, row.destination_zip)}</td>
-				<td>${row.total_weight ? Number(row.total_weight).toLocaleString() : "—"}</td>
+				<td class="ltl-num">${row.total_weight ? Number(row.total_weight).toLocaleString() : "—"}</td>
 				<td>${carrier}</td>
-				<td>${rate}</td>
+				<td class="ltl-num">${rate}</td>
 				<td>${frappe.datetime.str_to_user(row.creation)}</td>
 				<td><span class="ltl-status ltl-status-${status_class(row.status)}">${frappe.utils.escape_html(row.status || "—")}</span></td>
-				<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="View"><i class="fa fa-eye"></i></span></td>
+				<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="View">${ltl_nav_icon("eye")}</span></td>
 			</tr>`;
 			})
 			.join("");
@@ -3200,8 +3267,10 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	show_view(key) {
-		if (key === "carriers" && this.is_shipper_user()) {
+		if (this.is_shipper_user() && ltl_is_shipper_hidden_view(key)) {
 			key = "quote";
+			this.body.find(".ltl-nav-item").removeClass("active");
+			this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
 		}
 		const is_quote = key === "quote";
 		const is_detail = key === "detail";
@@ -3260,8 +3329,9 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.find(".ltl-breadcrumb .current").text(cfg.title);
 		this.body.find(".ltl-list-title").text(cfg.title);
 		this.body.find(".ltl-list-sub").text(cfg.sub || "");
-		this.body.find(".ltl-list-icon").attr("class", cfg.icon);
-		this.body.find(".ltl-list-new").html(`<i class="fa fa-plus"></i> New ${frappe.utils.escape_html(cfg.title)}`);
+		this.body.find(".ltl-list-icon").html(ltl_nav_icon(cfg.icon || "list"));
+		this.body.find(".ltl-list-new").html(`${ltl_nav_icon("plus")} New ${frappe.utils.escape_html(cfg.title)}`);
+		this.body.find(".ltl-list-new").toggle(!cfg.hide_new);
 		this.body.find(".ltl-list-search").val("");
 		this.load_list(cfg);
 	}
@@ -3465,6 +3535,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 	open_accessorial_detail(name) {
 		if (!name) return;
+		if (this.is_shipper_user()) {
+			if (this._built) {
+				this.body.find(".ltl-nav-item").removeClass("active");
+				this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+				this.show_view("quote");
+			}
+			return;
+		}
 		if (!this._built) {
 			this._pending_detail = { type: "accessorial", name };
 			return;
@@ -3492,37 +3570,53 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	save_carrier_enabled(e) {
-		const doc = this.detail_doc && this.detail_doc.doc;
-		if (!doc || !doc.name || this.detail_type !== "carrier") return;
 		const $select = $(e.currentTarget);
 		const as_flag = (value) => (value === 1 || value === true || value === "1" ? 1 : 0);
 		const enabled = as_flag($select.val());
-		const previous = as_flag(doc.enabled);
-		if (enabled === previous) return;
+		const name =
+			$select.attr("data-carrier") ||
+			(this.detail_doc && this.detail_doc.doc && this.detail_type === "carrier" && this.detail_doc.doc.name);
+		if (!name) return;
+		const previous = as_flag($select.attr("data-previous"));
+		if (enabled === previous && $select.attr("data-previous") != null) return;
 		$select.prop("disabled", true);
 		const finish = () => $select.prop("disabled", false);
-		frappe.db
-			.set_value("LTL Carrier", doc.name, "enabled", enabled)
-			.then(() => {
-				doc.enabled = enabled;
-				this.body
-					.find(".ltl-carrier-enabled-badge")
-					.text(enabled ? __("Enabled") : __("Disabled"));
+		frappe.call({
+			method: "ltl_quote.api.user_settings.set_quote_source_enabled",
+			args: { carrier: name, enabled },
+			callback: (r) => {
+				const flag = as_flag(r.message && r.message.enabled);
+				$select.attr("data-previous", String(flag));
+				if (this.detail_doc && this.detail_doc.doc && this.detail_doc.doc.name === name) {
+					this.detail_doc.doc.enabled = flag;
+					this.body
+						.find(".ltl-carrier-enabled-badge")
+						.text(flag ? __("Enabled for your quotes") : __("Off for your quotes"));
+				}
+				(this.list_rows || []).forEach((row) => {
+					if (row.name === name) row.enabled = flag;
+				});
+				this.body.find("select[data-carrier-enabled]").each(function () {
+					if ($(this).attr("data-carrier") === name) {
+						$(this).val(String(flag)).attr("data-previous", String(flag));
+					}
+				});
 				this.load_enabled_carrier_options();
 				frappe.show_alert({
-					message: enabled ? __("Carrier enabled") : __("Carrier disabled"),
-					indicator: enabled ? "green" : "orange",
+					message: flag ? __("Enabled for your quotes") : __("Turned off for your quotes"),
+					indicator: flag ? "green" : "orange",
 				});
 				finish();
-			})
-			.catch(() => {
+			},
+			error: () => {
 				$select.val(String(previous));
 				frappe.show_alert({
-					message: __("Could not update carrier status."),
+					message: __("Could not update carrier preference."),
 					indicator: "red",
 				});
 				finish();
-			});
+			},
+		});
 	}
 
 	save_smc3_network_enabled(e) {
@@ -3571,6 +3665,14 @@ ltl_quote.Dashboard = class Dashboard {
 
 	open_carrier_detail(name) {
 		if (!name) return;
+		if (this.is_shipper_user()) {
+			if (this._built) {
+				this.body.find(".ltl-nav-item").removeClass("active");
+				this.body.find('.ltl-nav-item[data-view="quote"]').addClass("active");
+				this.show_view("quote");
+			}
+			return;
+		}
 		if (!this._built) {
 			this._pending_detail = { type: "carrier", name };
 			return;
@@ -3582,19 +3684,21 @@ ltl_quote.Dashboard = class Dashboard {
 		this.show_view("detail");
 		const container = this.body.find(".ltl-detail-body");
 		container.html('<div class="ltl-empty">Loading…</div>');
-		frappe.db
-			.get_doc("LTL Carrier", name)
-			.then((doc) => {
-				if (!doc) {
+		frappe.call({
+			method: "ltl_quote.api.user_settings.get_quote_source_detail",
+			args: { carrier: name },
+			callback: (r) => {
+				if (!r.message) {
 					container.html('<div class="ltl-empty">Unable to load carrier.</div>');
 					return;
 				}
-				this.detail_doc = { doc };
-				container.html(this.render_carrier_detail(doc));
-			})
-			.catch(() => {
+				this.detail_doc = { doc: r.message };
+				container.html(this.render_carrier_detail(r.message));
+			},
+			error: () => {
 				container.html('<div class="ltl-empty">Unable to load carrier.</div>');
-			});
+			},
+		});
 	}
 
 	open_pickup_detail(name) {
@@ -3920,7 +4024,9 @@ ltl_quote.Dashboard = class Dashboard {
 					})
 					.join("")
 			: `<tr><td colspan="7" class="ltl-empty-cell">${__("No SMC3 network carriers")}</td></tr>`;
-		const smc3_card = is_smc3
+		const hide_secrets = this.is_shipper_user();
+		const smc3_card =
+			is_smc3 && !hide_secrets
 			? `<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-sitemap"></i> ${__("SMC3 Network Carriers")}</div>
 					<table class="ltl-table ltl-detail-acc-table">
@@ -3932,47 +4038,9 @@ ltl_quote.Dashboard = class Dashboard {
 					</table>
 				</section>`
 			: "";
-		return `
-			<div class="ltl-detail ltl-carrier-detail">
-				<div class="ltl-detail-hero">
-					<div class="ltl-detail-hero-left">
-						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
-							<i class="fa fa-arrow-left"></i> ${__("Back to Quote Source")}
-						</button>
-						<span class="ltl-detail-hero-icon"><i class="fa fa-users"></i></span>
-						<div>
-							<div class="ltl-detail-hero-title">${__("Carrier Details")}</div>
-							<div class="ltl-detail-hero-sub">${val(doc.carrier_name)}</div>
-						</div>
-					</div>
-					<div class="ltl-detail-hero-right">
-						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
-						<div class="ltl-detail-hero-badge ltl-carrier-enabled-badge">${
-							enabled ? __("Enabled") : __("Disabled")
-						}</div>
-					</div>
-				</div>
-
-				<section class="ltl-detail-card">
-					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Carrier Details")}</div>
-					<div class="ltl-detail-grid ltl-detail-grid-2">
-						<div class="ltl-field"><label>${__("Carrier Name")}</label>
-							<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
-						<div class="ltl-field"><label>${__("Enabled")}</label>
-							<select class="ltl-input" data-carrier-enabled>
-								<option value="1" ${enabled ? "selected" : ""}>${__("Yes")}</option>
-								<option value="0" ${!enabled ? "selected" : ""}>${__("No")}</option>
-							</select></div>
-						<div class="ltl-field"><label>${__("SCAC")}</label>
-							<input class="ltl-input" value="${val(doc.scac)}" readonly /></div>
-						<div class="ltl-field"><label>${__("Reliability Score")}</label>
-							<input class="ltl-input" value="${esc(score)}" readonly /></div>
-						<div class="ltl-field"><label>${__("Carrier Code")}</label>
-							<input class="ltl-input" value="${esc(code)}" readonly /></div>
-					</div>
-				</section>
-
-				<section class="ltl-detail-card">
+		const api_card = hide_secrets
+			? ""
+			: `<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-plug"></i> ${__("API Integration")}</div>
 					<div class="ltl-detail-grid ltl-detail-grid-2">
 						<div class="ltl-field"><label>${__("Connector Type")}</label>
@@ -3992,9 +4060,10 @@ ltl_quote.Dashboard = class Dashboard {
 						<div class="ltl-field ltl-field-span-2"><label>${__("Notes")}</label>
 							<textarea class="ltl-input" rows="3" readonly>${val(doc.notes)}</textarea></div>
 					</div>
-				</section>
-
-				<section class="ltl-detail-card">
+				</section>`;
+		const mapping_card = hide_secrets
+			? ""
+			: `<section class="ltl-detail-card">
 					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> ${__("Accessorial Mapping")}</div>
 					<table class="ltl-table ltl-detail-acc-table">
 						<thead><tr>
@@ -4007,7 +4076,50 @@ ltl_quote.Dashboard = class Dashboard {
 						</tr></thead>
 						<tbody>${mapping_rows}</tbody>
 					</table>
+				</section>`;
+		return `
+			<div class="ltl-detail ltl-carrier-detail">
+				<div class="ltl-detail-hero">
+					<div class="ltl-detail-hero-left">
+						<button type="button" class="ltl-btn ltl-pickup-back" data-action="detail-cancel">
+							<i class="fa fa-arrow-left"></i> ${__("Back to Quote Source")}
+						</button>
+						<span class="ltl-detail-hero-icon"><i class="fa fa-users"></i></span>
+						<div>
+							<div class="ltl-detail-hero-title">${__("Carrier Details")}</div>
+							<div class="ltl-detail-hero-sub">${val(doc.carrier_name)}</div>
+						</div>
+					</div>
+					<div class="ltl-detail-hero-right">
+						<div class="ltl-detail-hero-badge">${__("Code")}: ${esc(code)}</div>
+						<div class="ltl-detail-hero-badge ltl-carrier-enabled-badge">${
+							enabled ? __("Enabled for your quotes") : __("Off for your quotes")
+						}</div>
+					</div>
+				</div>
+
+				<section class="ltl-detail-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-info-circle"></i> ${__("Carrier Details")}</div>
+					<div class="ltl-detail-grid ltl-detail-grid-2">
+						<div class="ltl-field"><label>${__("Carrier Name")}</label>
+							<input class="ltl-input" value="${val(doc.carrier_name)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Enabled for your quotes")}</label>
+							<select class="ltl-input" data-carrier-enabled data-carrier="${esc(doc.name || code)}" data-previous="${enabled ? "1" : "0"}">
+								<option value="1" ${enabled ? "selected" : ""}>${__("Yes")}</option>
+								<option value="0" ${!enabled ? "selected" : ""}>${__("No")}</option>
+							</select>
+							<div class="ltl-field-hint">${__("Applies only to your login. Platform credentials stay shared.")}</div>
+						</div>
+						<div class="ltl-field"><label>${__("SCAC")}</label>
+							<input class="ltl-input" value="${val(doc.scac)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Reliability Score")}</label>
+							<input class="ltl-input" value="${esc(score)}" readonly /></div>
+						<div class="ltl-field"><label>${__("Carrier Code")}</label>
+							<input class="ltl-input" value="${esc(code)}" readonly /></div>
+					</div>
 				</section>
+				${api_card}
+				${mapping_card}
 				${smc3_card}
 			</div>`;
 	}
@@ -5499,6 +5611,26 @@ ltl_quote.Dashboard = class Dashboard {
 		const container = this.body.find(".ltl-list-body");
 		container.html('<div class="ltl-empty">Loading…</div>');
 		const request_id = (this._list_request_id = (this._list_request_id || 0) + 1);
+		if (cfg.doctype === "LTL Carrier") {
+			frappe.call({
+				method: "ltl_quote.api.user_settings.get_quote_source_list",
+				callback: (r) => {
+					if (request_id !== this._list_request_id) return;
+					if (!this.current_list || this.current_list.doctype !== cfg.doctype) return;
+					this.list_rows = r.message || [];
+					this.render_list_table(this.list_rows);
+				},
+				error: () => {
+					if (request_id !== this._list_request_id) return;
+					container.html('<div class="ltl-empty">Unable to load records.</div>');
+				},
+			});
+			return;
+		}
+		if (cfg.doctype === "LTL Accessorial") {
+			this.load_accessorial_prefs(request_id);
+			return;
+		}
 		frappe.db
 			.get_list(cfg.doctype, {
 				fields: cfg.fields,
@@ -5517,8 +5649,157 @@ ltl_quote.Dashboard = class Dashboard {
 			});
 	}
 
+	load_accessorial_prefs(request_id) {
+		const container = this.body.find(".ltl-list-body");
+		frappe.call({
+			method: "ltl_quote.api.user_settings.get_accessorial_preferences",
+			callback: (r) => {
+				if (request_id && request_id !== this._list_request_id) return;
+				if (!this.current_list || this.current_list.doctype !== "LTL Accessorial") return;
+				this.accessorial_prefs = r.message || { pickup: [], delivery: [], load: [] };
+				this.list_rows = this.flatten_accessorial_prefs(this.accessorial_prefs);
+				this.render_accessorial_prefs(this.accessorial_prefs);
+			},
+			error: () => {
+				if (request_id && request_id !== this._list_request_id) return;
+				container.html('<div class="ltl-empty">Unable to load records.</div>');
+			},
+		});
+	}
+
+	flatten_accessorial_prefs(prefs) {
+		const rows = [];
+		["pickup", "delivery", "load"].forEach((group) => {
+			(prefs[group] || []).forEach((row) => {
+				rows.push({
+					...row,
+					name: row.accessorial || row.code,
+					accessorial_code: row.code,
+					accessorial_name: row.label,
+					service_group: group,
+				});
+			});
+		});
+		return rows;
+	}
+
+	render_accessorial_prefs(prefs, filter_term) {
+		const container = this.body.find(".ltl-list-body");
+		const q = String(filter_term || "").toLowerCase().trim();
+		const groups = [
+			{ key: "pickup", title: __("Pickup (Origin)") },
+			{ key: "delivery", title: __("Delivery (Destination)") },
+			{ key: "load", title: __("Load") },
+		];
+		const sections = groups
+			.map((group) => {
+				const rows = (prefs[group.key] || []).filter((row) => {
+					if (!q) return true;
+					return [row.code, row.label, row.master_name, group.key].some((value) =>
+						String(value || "").toLowerCase().includes(q)
+					);
+				});
+				const body = rows.length
+					? rows
+							.map((row) => {
+								const code = frappe.utils.escape_html(row.code || "");
+								const label = frappe.utils.escape_html(row.label || row.master_name || row.code || "");
+								const show = row.show_on_form ? "checked" : "";
+								const selected = row.default_selected ? "checked" : "";
+								const selected_disabled = row.show_on_form ? "" : "disabled";
+								return `<tr>
+									<td class="ltl-id">${code}</td>
+									<td>${label}</td>
+									<td>
+										<label class="ltl-check">
+											<input type="checkbox" data-acc-show="${code}" data-acc-group="${group.key}" ${show} />
+											<span>${__("Show on form")}</span>
+										</label>
+									</td>
+									<td>
+										<label class="ltl-check">
+											<input type="checkbox" data-acc-default="${code}" data-acc-group="${group.key}" ${selected} ${selected_disabled} />
+											<span>${__("Default selected")}</span>
+										</label>
+									</td>
+								</tr>`;
+							})
+							.join("")
+					: `<tr><td colspan="4" class="ltl-empty-cell">${__("No accessorials")}</td></tr>`;
+				return `<section class="ltl-detail-card ltl-acc-pref-card">
+					<div class="ltl-detail-card-head"><i class="fa fa-tags"></i> ${group.title}</div>
+					<table class="ltl-table">
+						<thead><tr>
+							<th>${__("Code")}</th>
+							<th>${__("Name")}</th>
+							<th>${__("Show on form")}</th>
+							<th>${__("Default selected")}</th>
+						</tr></thead>
+						<tbody>${body}</tbody>
+					</table>
+				</section>`;
+			})
+			.join("");
+		container.html(`<div class="ltl-acc-prefs">${sections}</div>`);
+	}
+
+	save_accessorial_preference($input) {
+		const code = $input.attr("data-acc-show") || $input.attr("data-acc-default");
+		const group = $input.attr("data-acc-group");
+		if (!code || !group) return;
+		const $row = $input.closest("tr");
+		const show_box = $row.find("[data-acc-show]");
+		const default_box = $row.find("[data-acc-default]");
+		let show_on_form = show_box.is(":checked") ? 1 : 0;
+		let default_selected = default_box.is(":checked") ? 1 : 0;
+		if (default_selected) show_on_form = 1;
+		if (!show_on_form) default_selected = 0;
+		show_box.prop("checked", show_on_form);
+		default_box.prop("checked", default_selected).prop("disabled", !show_on_form);
+		frappe.call({
+			method: "ltl_quote.api.user_settings.set_accessorial_preference",
+			args: {
+				accessorial_code: code,
+				service_group: group,
+				show_on_form,
+				default_selected,
+			},
+			callback: () => {
+				this.refresh_quote_accessorials();
+				frappe.show_alert({ message: __("Accessorial preference saved"), indicator: "green" });
+			},
+			error: () => {
+				this.load_accessorial_prefs(this._list_request_id);
+				frappe.show_alert({ message: __("Could not save accessorial preference."), indicator: "red" });
+			},
+		});
+	}
+
+	refresh_quote_accessorials() {
+		frappe.call({
+			method: "ltl_quote.freight.page.ltl_quote.ltl_quote.get_accessorial_options",
+			callback: (r) => {
+				if (r.message && (r.message.pickup || r.message.delivery || r.message.load)) {
+					this.acc_options = r.message;
+				}
+				this.redraw_quote_accessorials();
+			},
+		});
+	}
+
+	redraw_quote_accessorials() {
+		if (!this.body) return;
+		this.body.find("[data-acc-grid='origin']").html(this.accessorial_boxes(this.acc_options.pickup, "origin"));
+		this.body.find("[data-acc-grid='destination']").html(this.accessorial_boxes(this.acc_options.delivery, "destination"));
+		this.body.find("[data-acc-grid='load']").html(this.accessorial_boxes(this.acc_options.load, "load"));
+	}
+
 	filter_list(term) {
 		if (!this.current_list) return;
+		if (this.current_list.doctype === "LTL Accessorial") {
+			this.render_accessorial_prefs(this.accessorial_prefs || { pickup: [], delivery: [], load: [] }, term);
+			return;
+		}
 		const q = (term || "").toLowerCase().trim();
 		if (!q) {
 			this.render_list_table(this.list_rows || []);
@@ -5543,68 +5824,75 @@ ltl_quote.Dashboard = class Dashboard {
 		const head = cfg.columns.map((c) => `<th>${c.label}</th>`).join("") + "<th>Action</th>";
 		const body = rows
 			.map((row) => {
-				const cells = cfg.columns.map((c) => `<td>${this.format_cell(row, c)}</td>`).join("");
+				const cells = cfg.columns
+					.map((c) => {
+						const num_class = c.type === "money" || c.type === "num" ? ' class="ltl-num"' : "";
+						return `<td${num_class}>${this.format_cell(row, c)}</td>`;
+					})
+					.join("");
 				const actions = this.render_list_actions(row, cfg);
 				return `<tr class="ltl-list-row" data-name="${frappe.utils.escape_html(row.name)}">${cells}${actions}</tr>`;
 			})
 			.join("");
 
 		container.html(`
-			<table class="ltl-table">
-				<thead><tr>${head}</tr></thead>
-				<tbody>${body}</tbody>
-			</table>`);
+			<div class="ltl-list-table-wrap">
+				<table class="ltl-table">
+					<thead><tr>${head}</tr></thead>
+					<tbody>${body}</tbody>
+				</table>
+			</div>`);
 	}
 
 	render_list_actions(row, cfg) {
 		if (cfg.doctype === "LTL Shipment") {
 			const bol_url = resolve_bol_url(row);
 			const bol_icon = bol_url
-				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}"><i class="fa fa-paperclip"></i></span>`
-				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No BOL attached")}"><i class="fa fa-paperclip"></i></span>`;
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No BOL attached")}">${ltl_nav_icon("paperclip")}</span>`;
 			return `<td class="ltl-list-actions">
-				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
 				${bol_icon}
 			</td>`;
 		}
 		if (cfg.doctype === "LTL Quote Request") {
 			const bol_url = resolve_bol_url(row);
 			const bol_icon = bol_url
-				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}"><i class="fa fa-paperclip"></i></span>`
+				? `<span class="ltl-bol-attach" title="${__("View BOL")}" data-bol-url="${frappe.utils.escape_html(bol_url)}">${ltl_nav_icon("paperclip")}</span>`
 				: "";
 			return `<td class="ltl-list-actions">
-				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
 				${bol_icon}
 			</td>`;
 		}
 		if (cfg.doctype === "LTL Carrier Invoice") {
 			const url = resolve_file_url(row.carrier_invoice);
 			const attach = url
-				? `<span class="ltl-bol-attach" title="${__("View Invoice")}" data-bol-url="${frappe.utils.escape_html(url)}"><i class="fa fa-paperclip"></i></span>`
-				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No invoice attached")}"><i class="fa fa-paperclip"></i></span>`;
+				? `<span class="ltl-bol-attach" title="${__("View Invoice")}" data-bol-url="${frappe.utils.escape_html(url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No invoice attached")}">${ltl_nav_icon("paperclip")}</span>`;
 			return `<td class="ltl-list-actions">
-				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
 				${attach}
 			</td>`;
 		}
 		if (cfg.doctype === "LTL POD") {
 			const url = resolve_file_url(row.pod_document);
 			const attach = url
-				? `<span class="ltl-bol-attach" title="${__("View POD")}" data-bol-url="${frappe.utils.escape_html(url)}"><i class="fa fa-paperclip"></i></span>`
-				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No POD attached")}"><i class="fa fa-paperclip"></i></span>`;
+				? `<span class="ltl-bol-attach" title="${__("View POD")}" data-bol-url="${frappe.utils.escape_html(url)}">${ltl_nav_icon("paperclip")}</span>`
+				: `<span class="ltl-bol-attach ltl-bol-attach-muted" title="${__("No POD attached")}">${ltl_nav_icon("paperclip")}</span>`;
 			return `<td class="ltl-list-actions">
-				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span>
+				<span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span>
 				${attach}
 			</td>`;
 		}
-		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}"><i class="fa fa-eye"></i></span></td>`;
+		return `<td><span class="ltl-recent-view" data-name="${frappe.utils.escape_html(row.name)}" title="${__("Open")}">${ltl_nav_icon("eye")}</span></td>`;
 	}
 
 	format_cell(row, col) {
 		const raw = row[col.key] != null ? row[col.key] : col.fallback ? row[col.fallback] : "";
 		switch (col.type) {
 			case "mono":
-				return `<span class="ltl-mono">${frappe.utils.escape_html(String(raw || "—"))}</span>`;
+				return `<span class="ltl-id">${frappe.utils.escape_html(String(raw || "—"))}</span>`;
 			case "text":
 				return frappe.utils.escape_html(String(raw || "—"));
 			case "num":
@@ -5617,6 +5905,14 @@ ltl_quote.Dashboard = class Dashboard {
 				return raw
 					? '<span class="ltl-status ltl-status-green">Yes</span>'
 					: '<span class="ltl-status ltl-status-grey">No</span>';
+			case "user_enabled": {
+				const on = Boolean(raw);
+				const name = frappe.utils.escape_html(String(row.name || row.carrier_code || ""));
+				return `<select class="ltl-input ltl-input-compact" data-carrier-enabled data-carrier="${name}" data-previous="${on ? "1" : "0"}">
+					<option value="1" ${on ? "selected" : ""}>${__("Yes")}</option>
+					<option value="0" ${!on ? "selected" : ""}>${__("No")}</option>
+				</select>`;
+			}
 			case "status":
 				return `<span class="ltl-status ltl-status-${this.status_class(raw)}">${frappe.utils.escape_html(String(raw || "—"))}</span>`;
 			case "origin":
@@ -5656,7 +5952,7 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.find(".ltl-view-quote .ltl-input").each(function () {
 			this.value = "";
 		});
-		this.body.find("input[data-acc]").prop("checked", false);
+		this.redraw_quote_accessorials();
 		this.set_carrier_selection([]);
 		this.close_carrier_filter_menus();
 		this.line_items = [];

@@ -1,0 +1,74 @@
+{
+ "actions": [],
+ "creation": "2026-09-17 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "accessorial",
+  "accessorial_code",
+  "accessorial_name",
+  "service_group",
+  "show_on_form",
+  "default_selected"
+ ],
+ "fields": [
+  {
+   "fieldname": "accessorial",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Accessorial",
+   "options": "LTL Accessorial",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "accessorial.accessorial_code",
+   "fieldname": "accessorial_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Code",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "accessorial.accessorial_name",
+   "fieldname": "accessorial_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_group",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Service Group",
+   "options": "pickup\ndelivery\nload",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "show_on_form",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Show on form"
+  },
+  {
+   "default": "0",
+   "fieldname": "default_selected",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default selected"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-17 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL User Accessorial",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

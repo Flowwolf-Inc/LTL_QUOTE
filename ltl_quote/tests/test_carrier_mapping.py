@@ -34,6 +34,16 @@ ENABLED_CARRIERS = [
 
 
 class TestLoadCarriersForRating(unittest.TestCase):
+	def setUp(self):
+		self._user_pref_patch = patch(
+			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
+			return_value=None,
+		)
+		self._user_pref_patch.start()
+
+	def tearDown(self):
+		self._user_pref_patch.stop()
+
 	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
 	def test_empty_param_returns_all_enabled(self, _mock_enabled):
 		docs, warnings, available = load_carriers_for_rating(requested=None)
@@ -159,6 +169,42 @@ class TestLoadCarriersForRating(unittest.TestCase):
 		with patch("ltl_quote.api.carrier_mapping.frappe.throw") as throw:
 			require_enabled_carriers(available)
 			throw.assert_called_once_with(NO_ENABLED_CARRIERS_MESSAGE)
+
+	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
+	def test_empty_source_uses_user_enabled_set(self, _mock_enabled):
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
+			return_value={"DAYTON", "SMC3"},
+		):
+			docs, warnings, available = load_carriers_for_rating(requested=None)
+		self.assertEqual({doc.name for doc in docs}, {"DAYTON", "SMC3"})
+		self.assertEqual({row["id"] for row in available}, {"DAYTON", "SMC3"})
+		self.assertEqual(warnings, [])
+
+	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
+	def test_user_prefs_do_not_block_explicit_source(self, _mock_enabled):
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
+			return_value={"DAYTON"},
+		):
+			docs, warnings, _available = load_carriers_for_rating(source="TForce")
+		self.assertEqual([doc.name for doc in docs], ["TFORCE"])
+		self.assertEqual(warnings, [])
+
+	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
+	def test_user_a_disable_does_not_affect_user_b(self, _mock_enabled):
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
+			return_value={"DAYTON"},
+		):
+			docs_a, _, _ = load_carriers_for_rating(requested=None)
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
+			return_value={"TFORCE", "ARCB"},
+		):
+			docs_b, _, _ = load_carriers_for_rating(requested=None)
+		self.assertEqual({doc.name for doc in docs_a}, {"DAYTON"})
+		self.assertEqual({doc.name for doc in docs_b}, {"TFORCE", "ARCB"})
 
 
 class _FormEncodedRequest:
