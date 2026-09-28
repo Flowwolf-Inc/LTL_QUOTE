@@ -7,6 +7,8 @@
 			{ id: "shipper", label: "Shipper", usr: "Shipper", pwd: "Flowwolf@123" },
 			{ id: "broker", label: "Broker", usr: "Broker", pwd: "Flowwolf@1212" },
 			{ id: "user1", label: "User1", usr: "user1@gmail.com", pwd: "user1@123" },
+			{ id: "envoy", label: "Envoy", usr: "Envoy", pwd: "Envoy@123" },
+			{ id: "amerilux", label: "Amerilux", usr: "Amerilux", pwd: "Amerilux@123" },
 		];
 
 		const form = document.querySelector(".for-login .form-login");

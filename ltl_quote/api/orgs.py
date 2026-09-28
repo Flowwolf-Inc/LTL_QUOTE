@@ -57,14 +57,34 @@ def read_request_org_code(*sources) -> str:
 	return ""
 
 
-def require_administrator() -> None:
-	user = ""
+def user_org_code(user: str | None = None) -> str:
+	"""Return ENVOY or AMERILUX when the login belongs to that organization."""
 	try:
-		user = str(getattr(getattr(frappe, "session", None), "user", None) or "").strip()
+		current = user or str(getattr(getattr(frappe, "session", None), "user", None) or "")
 	except Exception:
-		user = ""
-	if user != "Administrator":
-		frappe.throw("Only Administrator can view organization settings.", frappe.PermissionError)
+		current = ""
+	text = str(current or "").strip().lower()
+	if "amerilux" in text:
+		return "AMERILUX"
+	if "envoy" in text:
+		return "ENVOY"
+	return ""
+
+
+def require_org_access(org_code: str) -> str:
+	"""Administrator may open either org. An org login may open only its own."""
+	key = str(org_code or "").strip().upper()
+	if key not in ORG_NAMES:
+		frappe.throw("Unknown organization.")
+	try:
+		current = str(getattr(getattr(frappe, "session", None), "user", None) or "").strip()
+	except Exception:
+		current = ""
+	if current == "Administrator":
+		return key
+	if user_org_code(current) != key:
+		frappe.throw("Not permitted to view this organization.", frappe.PermissionError)
+	return key
 
 
 def ensure_org_settings(org_code: str):
@@ -177,8 +197,8 @@ def org_accessorial_groups(doc) -> dict[str, list[dict]]:
 
 @frappe.whitelist(methods=["GET", "POST"])
 def get_org_settings(org_code: str | None = None) -> dict:
-	require_administrator()
-	doc = ensure_org_settings(org_code or "")
+	key = require_org_access(org_code or "")
+	doc = ensure_org_settings(key)
 	key = str(doc.org_code or doc.name).upper()
 	return {
 		"org_code": key,
@@ -190,8 +210,8 @@ def get_org_settings(org_code: str | None = None) -> dict:
 
 @frappe.whitelist(methods=["POST"])
 def set_org_quote_source_enabled(org_code: str | None = None, carrier: str | None = None, enabled: int = 0) -> dict:
-	require_administrator()
-	doc = ensure_org_settings(org_code or "")
+	key = require_org_access(org_code or "")
+	doc = ensure_org_settings(key)
 	carrier_name = str(carrier or "").strip()
 	if not carrier_name or not frappe.db.exists("LTL Carrier", carrier_name):
 		frappe.throw("Carrier not found.")
@@ -233,8 +253,8 @@ def set_org_accessorial_preference(
 	show_on_form: int = 1,
 	default_selected: int = 0,
 ) -> dict:
-	require_administrator()
-	doc = ensure_org_settings(org_code or "")
+	key = require_org_access(org_code or "")
+	doc = ensure_org_settings(key)
 	group = str(service_group or "").strip().lower()
 	if group not in SERVICE_GROUPS:
 		frappe.throw("Invalid service group.")

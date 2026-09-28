@@ -242,3 +242,41 @@ class TestOrgSettingsPermission(unittest.TestCase):
 				)
 		finally:
 			frappe.set_user("Administrator")
+
+
+class TestOrgLoginIsolation(unittest.TestCase):
+	def test_envoy_cannot_open_amerilux(self):
+		if not frappe.db.exists("User", "envoy@ltlquote.local"):
+			self.skipTest("Envoy login is not installed")
+		frappe.set_user("envoy@ltlquote.local")
+		try:
+			own = get_org_settings(org_code="ENVOY")
+			self.assertEqual(own["org_code"], "ENVOY")
+			self.assertEqual(own["org_name"], "Envoy")
+			with self.assertRaises(frappe.PermissionError):
+				get_org_settings(org_code="AMERILUX")
+			with self.assertRaises(frappe.PermissionError):
+				set_org_quote_source_enabled(org_code="AMERILUX", carrier="DAYTON", enabled=0)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_amerilux_cannot_open_envoy(self):
+		if not frappe.db.exists("User", "amerilux@ltlquote.local"):
+			self.skipTest("Amerilux login is not installed")
+		frappe.set_user("amerilux@ltlquote.local")
+		try:
+			own = get_org_settings(org_code="AMERILUX")
+			self.assertEqual(own["org_code"], "AMERILUX")
+			self.assertEqual(own["org_name"], "Amerilux")
+			with self.assertRaises(frappe.PermissionError):
+				get_org_settings(org_code="ENVOY")
+			with self.assertRaises(frappe.PermissionError):
+				set_org_accessorial_preference(
+					org_code="ENVOY",
+					accessorial_code="LIFTGATE",
+					service_group="pickup",
+					show_on_form=0,
+					default_selected=0,
+				)
+		finally:
+			frappe.set_user("Administrator")

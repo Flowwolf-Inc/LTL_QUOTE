@@ -331,6 +331,20 @@ LOGIN_USERS = (
 		"password": "user1@123",
 		"roles": ("Desk User",),
 	},
+	{
+		"email": "envoy@ltlquote.local",
+		"username": "Envoy",
+		"first_name": "Envoy",
+		"password": "Envoy@123",
+		"roles": ("System Manager",),
+	},
+	{
+		"email": "amerilux@ltlquote.local",
+		"username": "Amerilux",
+		"first_name": "Amerilux",
+		"password": "Amerilux@123",
+		"roles": ("System Manager",),
+	},
 )
 
 
@@ -392,8 +406,8 @@ def _ensure_login_users():
 			page.save(ignore_permissions=True)
 
 	head_snippet = (
-		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css?v=4">\n'
-		'<script src="/assets/ltl_quote/js/login_users.js?v=4"></script>'
+		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css?v=5">\n'
+		'<script src="/assets/ltl_quote/js/login_users.js?v=5"></script>'
 	)
 	head_html = frappe.db.get_single_value("Website Settings", "head_html") or ""
 	if "login_users.js" not in head_html:
@@ -402,9 +416,12 @@ def _ensure_login_users():
 			"head_html",
 			(head_html.rstrip() + "\n" + head_snippet).strip(),
 		)
-	elif "login_users.js?v=4" not in head_html:
-		updated = head_html.replace("login_users.css?v=3", "login_users.css?v=4").replace(
-			"login_users.js?v=3", "login_users.js?v=4"
+	elif "login_users.js?v=5" not in head_html:
+		updated = (
+			head_html.replace("login_users.css?v=4", "login_users.css?v=5")
+			.replace("login_users.js?v=4", "login_users.js?v=5")
+			.replace("login_users.css?v=3", "login_users.css?v=5")
+			.replace("login_users.js?v=3", "login_users.js?v=5")
 		)
 		frappe.db.set_single_value("Website Settings", "head_html", updated)
 

@@ -471,14 +471,14 @@ function org_list_view(org_code, page) {
 	};
 }
 
-function ltl_org_folder_nav() {
+function ltl_org_folder_nav(orgs) {
 	const page_link = (view, label, icon) => `
 		<a class="ltl-nav-item ltl-nav-item-nested" data-view="${view}">
 			<span class="ltl-nav-ico">${ltl_nav_icon(icon)}</span>
 			<span class="ltl-nav-label">${label}</span>
 		</a>`;
 	const org_folder = (code, label) => `
-		<div class="ltl-nav-folder" data-folder="${code}">
+		<div class="ltl-nav-folder is-open" data-folder="${code}">
 			<button type="button" class="ltl-nav-folder-toggle">
 				<span class="ltl-nav-ico">${ltl_nav_icon("users")}</span>
 				<span class="ltl-nav-label">${label}</span>
@@ -489,6 +489,10 @@ function ltl_org_folder_nav() {
 				${page_link(`${code}-accessorials`, "Accessorials", "tag")}
 			</div>
 		</div>`;
+	const folders = (orgs || [])
+		.map((org) => org_folder(org.code, org.label))
+		.join("");
+	if ((orgs || []).length === 1) return folders;
 	return `
 		<div class="ltl-nav-folder is-open" data-folder="orgs">
 			<button type="button" class="ltl-nav-folder-toggle">
@@ -497,8 +501,7 @@ function ltl_org_folder_nav() {
 				<span class="ltl-nav-caret" aria-hidden="true">›</span>
 			</button>
 			<div class="ltl-nav-folder-items">
-				${org_folder("envoy", "Envoy")}
-				${org_folder("amerilux", "Amerilux")}
+				${folders}
 			</div>
 		</div>`;
 }
@@ -979,14 +982,24 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_sidebar() {
 		const hide_shipper_views = this.is_shipper_user();
-		const admin = this.is_administrator();
 		const sections = NAV_SECTIONS.map((section) => {
 			let items = hide_shipper_views
 				? section.items.filter((item) => !ltl_is_shipper_hidden_view(item.view))
 				: section.items.slice();
-			if (admin && section.title === "SETTINGS") {
-				const title = `<div class="ltl-nav-title">${section.title}</div>`;
-				return `<div class="ltl-nav-section">${title}${ltl_org_folder_nav()}</div>`;
+			if (section.title === "SETTINGS") {
+				const org = this.session_org();
+				const orgs = this.is_administrator()
+					? [
+							{ code: "envoy", label: "Envoy" },
+							{ code: "amerilux", label: "Amerilux" },
+						]
+					: org
+						? [org]
+						: null;
+				if (orgs) {
+					const title = `<div class="ltl-nav-title">${section.title}</div>`;
+					return `<div class="ltl-nav-section">${title}${ltl_org_folder_nav(orgs)}</div>`;
+				}
 			}
 			if (!items.length) return "";
 			const title = section.title ? `<div class="ltl-nav-title">${section.title}</div>` : "";
@@ -1073,6 +1086,13 @@ ltl_quote.Dashboard = class Dashboard {
 
 	is_administrator() {
 		return String(frappe.session.user || "") === "Administrator";
+	}
+
+	session_org() {
+		const user = String(frappe.session.user || "").toLowerCase();
+		if (user.includes("amerilux")) return { code: "amerilux", label: "Amerilux" };
+		if (user.includes("envoy")) return { code: "envoy", label: "Envoy" };
+		return null;
 	}
 
 	has_enabled_carriers() {
@@ -3379,6 +3399,15 @@ ltl_quote.Dashboard = class Dashboard {
 	}
 
 	show_view(key) {
+		const mine = this.session_org();
+		if (mine && !this.is_administrator()) {
+			const other = mine.code === "envoy" ? "amerilux" : "envoy";
+			if (String(key).startsWith(other) || key === "carriers" || key === "accessorials") {
+				key = String(key) === "accessorials" ? `${mine.code}-accessorials` : `${mine.code}-carriers`;
+				this.body.find(".ltl-nav-item").removeClass("active");
+				this.body.find(`.ltl-nav-item[data-view="${key}"]`).addClass("active");
+			}
+		}
 		if (this.is_shipper_user() && ltl_is_shipper_hidden_view(key)) {
 			key = "quote";
 			this.body.find(".ltl-nav-item").removeClass("active");
