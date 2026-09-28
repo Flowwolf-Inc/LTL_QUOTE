@@ -344,6 +344,29 @@ def _session_enabled_carrier_ids() -> set[str] | None:
 		return None
 
 
+def _session_quote_source_flags() -> dict[str, int] | None:
+	"""Existing quote-source Yes/No rows, or None when the user has no settings."""
+	try:
+		from ltl_quote.api.user_settings import get_user_quote_source_flags
+
+		return get_user_quote_source_flags()
+	except Exception:
+		return None
+
+
+def _user_source_enabled(doc, flags: dict[str, int] | None) -> int:
+	"""1 when the user left this source on, or has no preference row for it."""
+	if not flags:
+		return 1
+	for key in (
+		str(getattr(doc, "name", None) or "").strip().upper(),
+		str(getattr(doc, "carrier_code", None) or "").strip().upper(),
+	):
+		if key and key in flags:
+			return 1 if flags[key] else 0
+	return 1
+
+
 def _filter_carriers_for_user(enabled: list) -> list:
 	user_ids = _session_enabled_carrier_ids()
 	if user_ids is None:
@@ -406,8 +429,18 @@ def load_carriers_for_rating(requested=None, carrier_preference=None, source=Non
 
 
 def enabled_carrier_options() -> list[dict]:
-	"""Enabled LTL Carrier rows for the quote Source dropdown (user prefs ∩ platform)."""
-	return [_carrier_metadata(doc) for doc in _filter_carriers_for_user(get_enabled_carriers() or [])]
+	"""Platform-enabled carriers for the Source dropdown, including ones marked No.
+
+	``enabled`` is the session user's Yes/No flag. A missing preference row
+	defaults to Yes. Rating with an empty Source still uses only the Yes rows.
+	"""
+	flags = _session_quote_source_flags()
+	rows = []
+	for doc in get_enabled_carriers() or []:
+		row = _carrier_metadata(doc)
+		row["enabled"] = _user_source_enabled(doc, flags)
+		rows.append(row)
+	return rows
 
 
 def require_enabled_carriers(available_carriers) -> None:

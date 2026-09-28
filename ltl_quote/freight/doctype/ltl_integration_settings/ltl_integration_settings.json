@@ -1,0 +1,51 @@
+{
+ "actions": [],
+ "creation": "2026-09-23 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "mapping_section",
+  "customer_mappings"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "description": "When unchecked, inbound Revenova LTL Quote requests are rejected.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enable Inbound Routing"
+  },
+  {
+   "fieldname": "mapping_section",
+   "fieldtype": "Section Break",
+   "label": "Customer Mappings"
+  },
+  {
+   "description": "Map each Revenova customer code to the DocType that should receive inbound quote payloads.",
+   "fieldname": "customer_mappings",
+   "fieldtype": "Table",
+   "label": "Customer Mappings",
+   "options": "LTL Integration Customer Map"
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-23 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Freight",
+ "name": "LTL Integration Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

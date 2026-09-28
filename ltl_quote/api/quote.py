@@ -209,6 +209,50 @@ def get_ltl_rates(payload=None, source=None, **kwargs):
 	return response_payload
 
 
+@frappe.whitelist()
+def fetch_quotes(payload=None, source=None, **kwargs):
+	"""Rate quotes via get_ltl_rates and stamp the caller's request-from identity."""
+	return _fetch_quotes(payload=payload, source=source, **kwargs)
+
+
+def _fetch_quotes(payload=None, source=None, **kwargs):
+	result = get_ltl_rates(payload=payload, source=source, **kwargs)
+	if not isinstance(result, dict):
+		result = {"data": result}
+	else:
+		result = dict(result)
+	result["request from"] = resolve_request_from()
+	return result
+
+
+def resolve_request_from(user: str | None = None) -> list[str]:
+	"""Return a one-item request-from tag for the logged-in user."""
+	try:
+		session_user = user or str(getattr(getattr(frappe, "session", None), "user", None) or "").strip()
+	except Exception:
+		session_user = ""
+	if not session_user:
+		return ["Guest"]
+
+	if session_user == "Guest":
+		return ["Guest"]
+
+	try:
+		roles = set(frappe.get_roles(session_user) or [])
+	except Exception:
+		roles = set()
+
+	if session_user == "Administrator" or "Administrator" in roles:
+		return ["administrator"]
+	if "System Manager" in roles and "Shipper" not in roles and "Broker" not in roles:
+		return ["administrator"]
+	if "Shipper" in roles:
+		return ["shipper"]
+	if "Broker" in roles:
+		return ["broker"]
+	return [session_user]
+
+
 def _build_shipment_request_from_payload(request: dict) -> ShipmentRequest:
 	"""Map parsed Postman/API payload directly into ShipmentRequest for carrier adapters."""
 	accessorials = build_accessorial_items_from_payload(request.get("accessorial_rows") or [])
@@ -265,6 +309,13 @@ def _public_rate_errors(errors: list) -> list[dict]:
 
 
 def _create_quote_request(request: dict):
+	from ltl_quote.api.orgs import org_display_name, read_request_org_code
+
+	org = ""
+	for raw in (request.get("tenant_code"), request.get("org"), read_request_org_code()):
+		org = org_display_name(raw)
+		if org:
+			break
 	line_items = _map_request_line_items(request.get("items") or [])
 	header_class = ensure_shipping_class(request.get("freight_class") or "")
 	for row in line_items:
@@ -303,6 +354,7 @@ def _create_quote_request(request: dict):
 			"height": request.get("height") or 0,
 			"pieces": request.get("pieces") or 1,
 			"requested_on": now_datetime(),
+			"org": org,
 			"status": "Draft",
 			"accessorials": request.get("accessorial_rows") or [],
 			"line_items": line_items,

@@ -16,6 +16,7 @@ ACCESSORIALS = [
 def after_install():
 	_fix_workspace_module()
 	_ensure_platform_settings()
+	_ensure_integration_settings()
 	_seed_accessorials()
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
@@ -29,6 +30,7 @@ def after_install():
 
 
 def after_migrate():
+	_ensure_integration_settings()
 	_ensure_dayton_carrier()
 	_ensure_arcbest_carrier()
 	_ensure_tforce_carrier()
@@ -68,6 +70,16 @@ def _ensure_platform_settings():
 		)
 	else:
 		frappe.db.set_value("LTL Platform Settings", "LTL Platform Settings", "quote_currency", "USD")
+
+
+def _ensure_integration_settings():
+	if not frappe.db.exists("DocType", "LTL Integration Settings"):
+		return
+	if frappe.db.exists("LTL Integration Settings", "LTL Integration Settings"):
+		return
+	doc = frappe.new_doc("LTL Integration Settings")
+	doc.enabled = 1
+	doc.insert(ignore_permissions=True)
 
 
 def _ensure_dayton_carrier():
@@ -312,6 +324,13 @@ LOGIN_USERS = (
 		"password": "Flowwolf@1212",
 		"roles": ("Broker", "System Manager"),
 	},
+	{
+		"email": "user1@gmail.com",
+		"username": "user1",
+		"first_name": "User1",
+		"password": "user1@123",
+		"roles": ("Desk User",),
+	},
 )
 
 
@@ -373,8 +392,8 @@ def _ensure_login_users():
 			page.save(ignore_permissions=True)
 
 	head_snippet = (
-		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css?v=3">\n'
-		'<script src="/assets/ltl_quote/js/login_users.js?v=3"></script>'
+		'<link rel="stylesheet" href="/assets/ltl_quote/css/login_users.css?v=4">\n'
+		'<script src="/assets/ltl_quote/js/login_users.js?v=4"></script>'
 	)
 	head_html = frappe.db.get_single_value("Website Settings", "head_html") or ""
 	if "login_users.js" not in head_html:
@@ -383,6 +402,11 @@ def _ensure_login_users():
 			"head_html",
 			(head_html.rstrip() + "\n" + head_snippet).strip(),
 		)
+	elif "login_users.js?v=4" not in head_html:
+		updated = head_html.replace("login_users.css?v=3", "login_users.css?v=4").replace(
+			"login_users.js?v=3", "login_users.js?v=4"
+		)
+		frappe.db.set_single_value("Website Settings", "head_html", updated)
 
 
 def _migrate_quote_currency():

@@ -61,6 +61,10 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 		carrier_label = LOG_CARRIER_LABELS.get(carrier_id, carrier_id or "Dayton Freight")
 		api_url = body.get("api_url") or body.get("api_endpoint") or API_GATEWAY_ENDPOINT
 		log_status = coerce_log_status(status)
+		request_from = _request_from_label()
+		logged_response = response_payload
+		if isinstance(response_payload, dict) and "request from" not in response_payload:
+			logged_response = {**response_payload, "request from": _request_from_values()}
 
 		log_doc = frappe.get_doc(
 			{
@@ -70,12 +74,13 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 				"action_method": "POST",
 				"api_endpoint": api_url,
 				"status": log_status,
+				"request_from": request_from,
 				"origin_zip": body.get("origin_zip"),
 				"destination_zip": body.get("destination_zip"),
 				"timestamp": now_datetime(),
 				"headers": json.dumps(_sanitize_headers(headers), indent=2),
 				"request_payload": json.dumps(body, indent=2, default=str),
-				"response_payload": json.dumps(response_payload, indent=2, default=str),
+				"response_payload": json.dumps(logged_response, indent=2, default=str),
 			}
 		)
 		log_doc.insert(ignore_permissions=True)
@@ -84,6 +89,17 @@ def log_api_transaction(headers, body, response_payload, status, carrier_id):
 		# Keep booking/rate API responses clean if logging fails.
 		frappe.clear_messages()
 		frappe.logger().error(f"Failed to write LTL Carrier Transaction Log: {log_ex}")
+
+
+def _request_from_values() -> list[str]:
+	from ltl_quote.api.quote import resolve_request_from
+
+	values = resolve_request_from()
+	return values if isinstance(values, list) else [str(values)]
+
+
+def _request_from_label() -> str:
+	return ", ".join(str(value) for value in _request_from_values())
 
 
 def _format_json(value) -> str:

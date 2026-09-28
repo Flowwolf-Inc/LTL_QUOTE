@@ -210,7 +210,7 @@ scheduler_events = {
 
 # Request Events
 # ----------------
-# before_request = ["ltl_quote.utils.before_request"]
+before_request = ["ltl_quote.api.revenova.rewrite_revenova_v1_path"]
 # after_request = ["ltl_quote.utils.after_request"]
 
 # Job Events

@@ -6,6 +6,7 @@
 			{ id: "administrator", label: "Administrator", usr: "Administrator", pwd: "admin" },
 			{ id: "shipper", label: "Shipper", usr: "Shipper", pwd: "Flowwolf@123" },
 			{ id: "broker", label: "Broker", usr: "Broker", pwd: "Flowwolf@1212" },
+			{ id: "user1", label: "User1", usr: "user1@gmail.com", pwd: "user1@123" },
 		];
 
 		const form = document.querySelector(".for-login .form-login");

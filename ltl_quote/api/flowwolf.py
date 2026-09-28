@@ -17,6 +17,7 @@ import json
 import frappe
 from frappe.utils import add_days, flt, getdate, now_datetime
 
+from ltl_quote.api.orgs import carriers_for_org, org_display_name, read_request_org_code
 from ltl_quote.api.carrier_mapping import (
 	applied_filter_ids,
 	apply_carrier_response_filter,
@@ -89,11 +90,26 @@ def get_rates(payload=None, source=None, **kwargs):
 
 		raw_preference = request.get("carrier_preference") or body.get("carrier_preference") or ""
 		raw_carriers = extract_requested_carriers(request, body, kwargs)
+		explicit_source = bool(source)
+		org_code = read_request_org_code(body, json_body, kwargs, request)
+		if org_code:
+			request["tenant_code"] = org_code
 		carrier_docs, filter_warnings, available_carriers = load_carriers_for_rating(
 			requested=raw_carriers,
 			carrier_preference=raw_preference,
 			source=source,
 		)
+		if org_code and not explicit_source:
+			carrier_docs = carriers_for_org(org_code)
+			available_carriers = [
+				{
+					"id": str(getattr(doc, "name", None) or ""),
+					"name": str(getattr(doc, "carrier_name", None) or getattr(doc, "name", None) or ""),
+					"connector_type": str(getattr(doc, "connector_type", "") or ""),
+				}
+				for doc in carrier_docs
+			]
+			filter_warnings = []
 		require_enabled_carriers(carrier_docs or available_carriers)
 		filter_active = bool(
 			parse_carrier_tokens(source)
@@ -123,6 +139,7 @@ def get_rates(payload=None, source=None, **kwargs):
 			"status": "success" if ranked_quotes else "error",
 			"engine": FLOWWOLF_ENGINE,
 			"quote_request_id": quote_request.name,
+			"org": org_display_name(request.get("tenant_code")),
 			"source": source,
 			"summary": {
 				"total_carriers_pinged": len(carrier_docs),

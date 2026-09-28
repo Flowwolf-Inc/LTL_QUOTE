@@ -356,6 +356,40 @@ body.ltl-fullscreen .layout-side-section {
 	color: var(--ltl-sidebar-active-color, #fff);
 	font-weight: 600;
 }
+.ltl-nav-folder-toggle {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	padding: 9px 10px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--ltl-sidebar-text, #f4f6ff);
+	cursor: pointer;
+	margin-bottom: 2px;
+	font-family: inherit;
+	font-size: 13px;
+	font-weight: 500;
+	text-align: left;
+}
+.ltl-nav-folder-toggle:hover {
+	background: var(--ltl-sidebar-hover, rgba(255, 255, 255, 0.08));
+}
+.ltl-nav-caret {
+	margin-left: auto;
+	transition: transform 0.15s ease;
+}
+.ltl-nav-folder.is-open > .ltl-nav-folder-toggle .ltl-nav-caret {
+	transform: rotate(90deg);
+}
+.ltl-nav-folder-items {
+	display: none;
+	padding-left: 12px;
+}
+.ltl-nav-folder.is-open > .ltl-nav-folder-items {
+	display: block;
+}
 .ltl-nav-ico {
 	width: 18px;
 	height: 18px;
@@ -996,6 +1030,13 @@ textarea.ltl-input[readonly] {
 	accent-color: var(--ltl-orange);
 	cursor: pointer;
 	margin: 0;
+}
+.ltl-ms-option-hint {
+	margin-left: auto;
+	font-size: 11px;
+	font-weight: 500;
+	color: #9aa3ad;
+	white-space: nowrap;
 }
 .ltl-field-hint {
 	margin-top: 4px;

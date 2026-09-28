@@ -296,7 +296,7 @@ const LIST_VIEWS = {
 		title: "LTL Quote List",
 		sub: "All rate requests across carriers.",
 		icon: "list",
-		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation", "bol_number", "pro_number", "bol_document_url"],
+		fields: ["name", "origin_city", "origin_state", "origin_zip", "destination_city", "destination_state", "destination_zip", "total_weight", "freight_class", "status", "creation", "bol_number", "pro_number", "bol_document_url", "org"],
 		order_by: "creation desc",
 		search: ["name", "origin_zip", "destination_zip", "origin_city", "destination_city"],
 		columns: [
@@ -429,7 +429,79 @@ const LIST_VIEWS = {
 			{ label: "Default Amount", type: "money", key: "default_amount" },
 		],
 	},
+	"envoy-carriers": org_list_view("ENVOY", "sources"),
+	"envoy-accessorials": org_list_view("ENVOY", "accessorials"),
+	"amerilux-carriers": org_list_view("AMERILUX", "sources"),
+	"amerilux-accessorials": org_list_view("AMERILUX", "accessorials"),
 };
+
+function org_list_view(org_code, page) {
+	const name = org_code === "AMERILUX" ? "Amerilux" : "Envoy";
+	if (page === "accessorials") {
+		return {
+			doctype: "LTL Org Settings",
+			org_code,
+			org_page: "accessorials",
+			title: `${name} Accessorials`,
+			sub: `Choose which services appear on ${name} quotes, and which start checked.`,
+			icon: "tag",
+			hide_new: true,
+			search: ["accessorial_code", "accessorial_name", "code", "label"],
+		};
+	}
+	return {
+		doctype: "LTL Org Settings",
+		org_code,
+		org_page: "sources",
+		title: `${name} Quote Source`,
+		sub: `Choose which carriers ${name} uses for quotes.`,
+		icon: "users",
+		hide_new: true,
+		hide_actions: true,
+		fields: ["name", "carrier_code", "carrier_name", "scac", "connector_type", "reliability_score", "enabled"],
+		search: ["carrier_code", "carrier_name", "scac", "connector_type"],
+		columns: [
+			{ label: "Code", type: "mono", key: "carrier_code" },
+			{ label: "Carrier Name", type: "text", key: "carrier_name" },
+			{ label: "SCAC", key: "scac" },
+			{ label: "Connector", key: "connector_type" },
+			{ label: "Reliability", type: "num", key: "reliability_score" },
+			{ label: "Enabled for your quotes", type: "user_enabled", key: "enabled" },
+		],
+	};
+}
+
+function ltl_org_folder_nav() {
+	const page_link = (view, label, icon) => `
+		<a class="ltl-nav-item ltl-nav-item-nested" data-view="${view}">
+			<span class="ltl-nav-ico">${ltl_nav_icon(icon)}</span>
+			<span class="ltl-nav-label">${label}</span>
+		</a>`;
+	const org_folder = (code, label) => `
+		<div class="ltl-nav-folder" data-folder="${code}">
+			<button type="button" class="ltl-nav-folder-toggle">
+				<span class="ltl-nav-ico">${ltl_nav_icon("users")}</span>
+				<span class="ltl-nav-label">${label}</span>
+				<span class="ltl-nav-caret" aria-hidden="true">›</span>
+			</button>
+			<div class="ltl-nav-folder-items">
+				${page_link(`${code}-carriers`, "Quote Source", "users")}
+				${page_link(`${code}-accessorials`, "Accessorials", "tag")}
+			</div>
+		</div>`;
+	return `
+		<div class="ltl-nav-folder is-open" data-folder="orgs">
+			<button type="button" class="ltl-nav-folder-toggle">
+				<span class="ltl-nav-ico">${ltl_nav_icon("users")}</span>
+				<span class="ltl-nav-label">Orgs</span>
+				<span class="ltl-nav-caret" aria-hidden="true">›</span>
+			</button>
+			<div class="ltl-nav-folder-items">
+				${org_folder("envoy", "Envoy")}
+				${org_folder("amerilux", "Amerilux")}
+			</div>
+		</div>`;
+}
 
 function resolve_file_url(value) {
 	const attach = String(value || "").trim();
@@ -907,10 +979,15 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_sidebar() {
 		const hide_shipper_views = this.is_shipper_user();
+		const admin = this.is_administrator();
 		const sections = NAV_SECTIONS.map((section) => {
-			const items = hide_shipper_views
+			let items = hide_shipper_views
 				? section.items.filter((item) => !ltl_is_shipper_hidden_view(item.view))
-				: section.items;
+				: section.items.slice();
+			if (admin && section.title === "SETTINGS") {
+				const title = `<div class="ltl-nav-title">${section.title}</div>`;
+				return `<div class="ltl-nav-section">${title}${ltl_org_folder_nav()}</div>`;
+			}
 			if (!items.length) return "";
 			const title = section.title ? `<div class="ltl-nav-title">${section.title}</div>` : "";
 			const links = items
@@ -994,8 +1071,21 @@ ltl_quote.Dashboard = class Dashboard {
 		return roles.includes("Shipper");
 	}
 
+	is_administrator() {
+		return String(frappe.session.user || "") === "Administrator";
+	}
+
 	has_enabled_carriers() {
 		return Boolean(this.available_carriers && this.available_carriers.length);
+	}
+
+	source_option_enabled(carrier) {
+		const flag = carrier && carrier.enabled;
+		return !(flag === 0 || flag === "0" || flag === false);
+	}
+
+	has_user_enabled_sources() {
+		return (this.available_carriers || []).some((carrier) => this.source_option_enabled(carrier));
 	}
 
 	no_enabled_carriers_message() {
@@ -1036,9 +1126,14 @@ ltl_quote.Dashboard = class Dashboard {
 				const name = frappe.utils.escape_html(raw_name);
 				const checked = selected.has(raw_id) ? "checked" : "";
 				const active = selected.has(raw_id) ? " is-checked" : "";
-				return `<label class="ltl-ms-option${active}">
+				const off = !this.source_option_enabled(c);
+				const hint = off
+					? `<span class="ltl-ms-option-hint">${__("Off for your quotes")}</span>`
+					: "";
+				return `<label class="ltl-ms-option${active}${off ? " is-off" : ""}">
 					<input type="checkbox" value="${id}" ${checked} />
 					<span class="ltl-ms-option-name">${name}</span>
+					${hint}
 				</label>`;
 			})
 			.join("");
@@ -1787,9 +1882,16 @@ ltl_quote.Dashboard = class Dashboard {
 		this.body.on("click", "[data-action='dashboard']", () => this.body[0].querySelector(".ltl-scroll").scrollTo(0, 0));
 		this.body.on("click", ".ltl-help-btn", () => frappe.msgprint(__("Please reach out to your platform administrator.")));
 
+		this.body.on("click", ".ltl-nav-folder-toggle", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			$(e.currentTarget).closest(".ltl-nav-folder").toggleClass("is-open");
+		});
+
 		this.body.on("click", ".ltl-nav-item[data-view]", (e) => {
 			this.body.find(".ltl-nav-item").removeClass("active");
 			$(e.currentTarget).addClass("active");
+			$(e.currentTarget).parents(".ltl-nav-folder").addClass("is-open");
 			this.show_view($(e.currentTarget).attr("data-view"));
 		});
 
@@ -1817,6 +1919,7 @@ ltl_quote.Dashboard = class Dashboard {
 				this.open_carrier_detail(name);
 				return;
 			}
+			if (this.current_list.org_code) return;
 			frappe.set_route("Form", this.current_list.doctype, name);
 		});
 
@@ -2537,7 +2640,11 @@ ltl_quote.Dashboard = class Dashboard {
 			return;
 		}
 
-		if (this.carriers_loaded && !this.has_enabled_carriers()) {
+		if (
+			this.carriers_loaded &&
+			!this.selected_carriers().length &&
+			!this.has_user_enabled_sources()
+		) {
 			frappe.show_alert({ message: this.no_enabled_carriers_message(), indicator: "orange" }, 6);
 			return;
 		}
@@ -2552,7 +2659,6 @@ ltl_quote.Dashboard = class Dashboard {
 			callback: (r) => {
 				$btn.prop("disabled", false).html('<i class="fa fa-bolt"></i> Fetch Rates');
 				const res = r.message || {};
-				this.refresh_carrier_filter_options((res.data || {}).available_carriers);
 				if (res.status !== "success" || !res.data || !(res.data.quotes || []).length) {
 					const err = (res.errors && res.errors.length && (res.errors[0].error || res.errors[0])) || res.error;
 					this.quotes = [];
@@ -3232,6 +3338,7 @@ ltl_quote.Dashboard = class Dashboard {
 				"API Error": "red",
 			}[s] || "grey");
 
+		const show_org = this.is_administrator();
 		const body = rows
 			.map((row) => {
 				const carrier =
@@ -3242,9 +3349,13 @@ ltl_quote.Dashboard = class Dashboard {
 					row.final_charge != null && row.final_charge !== ""
 						? format_currency(row.final_charge, "USD")
 						: "—";
+				const org_cell = show_org
+					? `<td>${frappe.utils.escape_html(row.org || "—")}</td>`
+					: "";
 				return `
 			<tr>
 				<td class="ltl-id">${frappe.utils.escape_html(row.name)}</td>
+				${org_cell}
 				<td>${loc(row.origin_city, row.origin_state, row.origin_zip)}</td>
 				<td>${loc(row.destination_city, row.destination_state, row.destination_zip)}</td>
 				<td class="ltl-num">${row.total_weight ? Number(row.total_weight).toLocaleString() : "—"}</td>
@@ -3257,10 +3368,11 @@ ltl_quote.Dashboard = class Dashboard {
 			})
 			.join("");
 
+		const org_head = show_org ? "<th>Org</th>" : "";
 		container.html(`
 			<table class="ltl-table">
 				<thead>
-					<tr><th>Request ID</th><th>Origin</th><th>Destination</th><th>Weight (lbs)</th><th>Carrier</th><th>Rate</th><th>Created On</th><th>Status</th><th>Action</th></tr>
+					<tr><th>Request ID</th>${org_head}<th>Origin</th><th>Destination</th><th>Weight (lbs)</th><th>Carrier</th><th>Rate</th><th>Created On</th><th>Status</th><th>Action</th></tr>
 				</thead>
 				<tbody>${body}</tbody>
 			</table>`);
@@ -3323,6 +3435,10 @@ ltl_quote.Dashboard = class Dashboard {
 
 		const cfg = LIST_VIEWS[key];
 		if (!cfg) return;
+		if (key === "quotes" && this.is_administrator() && !cfg.columns.some((col) => col.key === "org")) {
+			const status_idx = cfg.columns.findIndex((col) => col.key === "status");
+			cfg.columns.splice(status_idx < 0 ? cfg.columns.length : status_idx, 0, { label: "Org", key: "org" });
+		}
 		this.current_list = cfg;
 		this.detail_doc = null;
 		this.detail_type = null;
@@ -3582,8 +3698,12 @@ ltl_quote.Dashboard = class Dashboard {
 		$select.prop("disabled", true);
 		const finish = () => $select.prop("disabled", false);
 		frappe.call({
-			method: "ltl_quote.api.user_settings.set_quote_source_enabled",
-			args: { carrier: name, enabled },
+			method: this.current_list && this.current_list.org_code
+				? "ltl_quote.api.orgs.set_org_quote_source_enabled"
+				: "ltl_quote.api.user_settings.set_quote_source_enabled",
+			args: this.current_list && this.current_list.org_code
+				? { org_code: this.current_list.org_code, carrier: name, enabled }
+				: { carrier: name, enabled },
 			callback: (r) => {
 				const flag = as_flag(r.message && r.message.enabled);
 				$select.attr("data-previous", String(flag));
@@ -3601,7 +3721,9 @@ ltl_quote.Dashboard = class Dashboard {
 						$(this).val(String(flag)).attr("data-previous", String(flag));
 					}
 				});
-				this.load_enabled_carrier_options();
+				if (!(this.current_list && this.current_list.org_code)) {
+					this.load_enabled_carrier_options();
+				}
 				frappe.show_alert({
 					message: flag ? __("Enabled for your quotes") : __("Turned off for your quotes"),
 					indicator: flag ? "green" : "orange",
@@ -5607,10 +5729,41 @@ ltl_quote.Dashboard = class Dashboard {
 		return list;
 	}
 
+	load_org_settings(cfg, request_id) {
+		const container = this.body.find(".ltl-list-body");
+		frappe.call({
+			method: "ltl_quote.api.orgs.get_org_settings",
+			args: { org_code: cfg.org_code },
+			callback: (r) => {
+				if (request_id !== this._list_request_id) return;
+				if (!this.current_list || this.current_list.org_code !== cfg.org_code) return;
+				const message = r.message || {};
+				this.org_quote_sources = message.quote_sources || [];
+				this.org_accessorials = message.accessorials || { pickup: [], delivery: [], load: [] };
+				if (cfg.org_page === "accessorials") {
+					this.accessorial_prefs = this.org_accessorials;
+					this.list_rows = this.flatten_accessorial_prefs(this.org_accessorials);
+					this.render_accessorial_prefs(this.org_accessorials);
+					return;
+				}
+				this.list_rows = this.org_quote_sources;
+				this.render_list_table(this.list_rows);
+			},
+			error: () => {
+				if (request_id !== this._list_request_id) return;
+				container.html('<div class="ltl-empty">Unable to load organization settings.</div>');
+			},
+		});
+	}
+
 	load_list(cfg) {
 		const container = this.body.find(".ltl-list-body");
 		container.html('<div class="ltl-empty">Loading…</div>');
 		const request_id = (this._list_request_id = (this._list_request_id || 0) + 1);
+		if (cfg.org_code) {
+			this.load_org_settings(cfg, request_id);
+			return;
+		}
 		if (cfg.doctype === "LTL Carrier") {
 			frappe.call({
 				method: "ltl_quote.api.user_settings.get_quote_source_list",
@@ -5685,6 +5838,10 @@ ltl_quote.Dashboard = class Dashboard {
 
 	render_accessorial_prefs(prefs, filter_term) {
 		const container = this.body.find(".ltl-list-body");
+		container.html(this.accessorial_prefs_html(prefs, filter_term));
+	}
+
+	accessorial_prefs_html(prefs, filter_term) {
 		const q = String(filter_term || "").toLowerCase().trim();
 		const groups = [
 			{ key: "pickup", title: __("Pickup (Origin)") },
@@ -5740,7 +5897,7 @@ ltl_quote.Dashboard = class Dashboard {
 				</section>`;
 			})
 			.join("");
-		container.html(`<div class="ltl-acc-prefs">${sections}</div>`);
+		return `<div class="ltl-acc-prefs">${sections}</div>`;
 	}
 
 	save_accessorial_preference($input) {
@@ -5756,20 +5913,21 @@ ltl_quote.Dashboard = class Dashboard {
 		if (!show_on_form) default_selected = 0;
 		show_box.prop("checked", show_on_form);
 		default_box.prop("checked", default_selected).prop("disabled", !show_on_form);
+		const org_code = this.current_list && this.current_list.org_code;
 		frappe.call({
-			method: "ltl_quote.api.user_settings.set_accessorial_preference",
-			args: {
-				accessorial_code: code,
-				service_group: group,
-				show_on_form,
-				default_selected,
-			},
+			method: org_code
+				? "ltl_quote.api.orgs.set_org_accessorial_preference"
+				: "ltl_quote.api.user_settings.set_accessorial_preference",
+			args: org_code
+				? { org_code, accessorial_code: code, service_group: group, show_on_form, default_selected }
+				: { accessorial_code: code, service_group: group, show_on_form, default_selected },
 			callback: () => {
-				this.refresh_quote_accessorials();
+				if (!org_code) this.refresh_quote_accessorials();
 				frappe.show_alert({ message: __("Accessorial preference saved"), indicator: "green" });
 			},
 			error: () => {
-				this.load_accessorial_prefs(this._list_request_id);
+				if (org_code) this.load_org_settings(this.current_list, this._list_request_id);
+				else this.load_accessorial_prefs(this._list_request_id);
 				frappe.show_alert({ message: __("Could not save accessorial preference."), indicator: "red" });
 			},
 		});
@@ -5796,6 +5954,10 @@ ltl_quote.Dashboard = class Dashboard {
 
 	filter_list(term) {
 		if (!this.current_list) return;
+		if (this.current_list.org_code && this.current_list.org_page === "accessorials") {
+			this.render_accessorial_prefs(this.org_accessorials || { pickup: [], delivery: [], load: [] }, term);
+			return;
+		}
 		if (this.current_list.doctype === "LTL Accessorial") {
 			this.render_accessorial_prefs(this.accessorial_prefs || { pickup: [], delivery: [], load: [] }, term);
 			return;
@@ -5821,7 +5983,8 @@ ltl_quote.Dashboard = class Dashboard {
 			return;
 		}
 
-		const head = cfg.columns.map((c) => `<th>${c.label}</th>`).join("") + "<th>Action</th>";
+		const action_head = cfg.hide_actions ? "" : "<th>Action</th>";
+		const head = cfg.columns.map((c) => `<th>${c.label}</th>`).join("") + action_head;
 		const body = rows
 			.map((row) => {
 				const cells = cfg.columns
@@ -5830,7 +5993,7 @@ ltl_quote.Dashboard = class Dashboard {
 						return `<td${num_class}>${this.format_cell(row, c)}</td>`;
 					})
 					.join("");
-				const actions = this.render_list_actions(row, cfg);
+				const actions = cfg.hide_actions ? "" : this.render_list_actions(row, cfg);
 				return `<tr class="ltl-list-row" data-name="${frappe.utils.escape_html(row.name)}">${cells}${actions}</tr>`;
 			})
 			.join("");

@@ -17,7 +17,7 @@ def get_accessorial_options() -> dict:
 
 @frappe.whitelist()
 def get_enabled_carrier_options() -> list[dict]:
-	"""Enabled LTL Carriers for the quote Source dropdown (user prefs ∩ platform)."""
+	"""Platform-enabled carriers for the Source dropdown, including ones marked No."""
 	from ltl_quote.api.carrier_mapping import enabled_carrier_options
 	from ltl_quote.api.user_settings import ensure_user_settings, session_user
 
@@ -104,6 +104,7 @@ def get_recent_quote_requests(limit: int = 10, origin_zip: str = None, destinati
 			"status",
 			"final_carrier",
 			"final_charge",
+			"org",
 		],
 		order_by="creation desc",
 		limit_page_length=int(limit or 10),

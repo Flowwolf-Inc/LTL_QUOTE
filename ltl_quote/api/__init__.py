@@ -3,6 +3,7 @@
 from ltl_quote.api.quote import (
 	accept_carrier_quote,
 	book_shipment,
+	fetch_quotes,
 	get_ltl_rates,
 	track_shipment,
 )
@@ -12,6 +13,7 @@ __all__ = [
 	"accept_carrier_quote",
 	"attach_arcbest_bol_to_shipment",
 	"book_shipment",
+	"fetch_quotes",
 	"get_ltl_rates",
 	"track_shipment",
 ]

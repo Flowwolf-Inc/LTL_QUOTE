@@ -90,6 +90,37 @@ def get_user_enabled_carrier_ids(user: str | None = None, create: bool = False) 
 	return {str(row).strip().upper() for row in rows if row}
 
 
+def get_user_quote_source_flags(user: str | None = None) -> dict[str, int] | None:
+	"""Map existing quote-source rows to 1 or 0.
+
+	None when the user has no settings document. Carriers with no row are
+	omitted so callers can default them to enabled.
+	"""
+	user = user or session_user()
+	if not user:
+		return None
+	name = get_user_settings_name(user)
+	if not name:
+		return None
+	try:
+		rows = frappe.get_all(
+			"LTL User Quote Source",
+			filters={"parent": name},
+			fields=["carrier", "enabled"],
+		)
+	except Exception:
+		return None
+	flags: dict[str, int] = {}
+	for row in rows or []:
+		carrier = row.get("carrier") if isinstance(row, dict) else getattr(row, "carrier", None)
+		carrier = str(carrier or "").strip().upper()
+		if not carrier:
+			continue
+		enabled = row.get("enabled") if isinstance(row, dict) else getattr(row, "enabled", 0)
+		flags[carrier] = 1 if cint(enabled) else 0
+	return flags
+
+
 def ensure_user_settings(user: str | None = None):
 	"""Create or refresh the session user's settings with missing defaults."""
 	user = user or session_user()

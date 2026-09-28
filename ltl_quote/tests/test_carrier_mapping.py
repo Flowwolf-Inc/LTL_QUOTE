@@ -182,6 +182,36 @@ class TestLoadCarriersForRating(unittest.TestCase):
 		self.assertEqual(warnings, [])
 
 	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
+	def test_source_options_include_user_disabled_carriers(self, _mock_enabled):
+		from ltl_quote.api.carrier_mapping import enabled_carrier_options
+
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_quote_source_flags",
+			return_value={"DAYTON": 1, "SMC3": 0, "TFORCE": 0, "ARCB": 0},
+		):
+			options = enabled_carrier_options()
+		self.assertEqual({row["id"] for row in options}, {"DAYTON", "SMC3", "TFORCE", "ARCB"})
+		by_id = {row["id"]: row["enabled"] for row in options}
+		self.assertEqual(by_id["DAYTON"], 1)
+		self.assertEqual(by_id["SMC3"], 0)
+		self.assertEqual(by_id["TFORCE"], 0)
+		self.assertEqual(by_id["ARCB"], 0)
+		for row in options:
+			self.assertIn("name", row)
+			self.assertIn("connector_type", row)
+
+		with patch(
+			"ltl_quote.api.carrier_mapping._session_quote_source_flags",
+			return_value={"DAYTON": 0},
+		):
+			options = enabled_carrier_options()
+		by_id = {row["id"]: row["enabled"] for row in options}
+		self.assertEqual(by_id["DAYTON"], 0)
+		self.assertEqual(by_id["SMC3"], 1)
+		self.assertEqual(by_id["TFORCE"], 1)
+		self.assertEqual(by_id["ARCB"], 1)
+
+	@patch("ltl_quote.api.carrier_mapping.get_enabled_carriers", return_value=ENABLED_CARRIERS)
 	def test_user_prefs_do_not_block_explicit_source(self, _mock_enabled):
 		with patch(
 			"ltl_quote.api.carrier_mapping._session_enabled_carrier_ids",
