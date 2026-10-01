@@ -290,6 +290,13 @@ def normalize_pickup_response(data: dict) -> dict:
 	}
 
 
+def mark_pickup_cancelled(shipment) -> None:
+	"""Record a cancelled pickup on the shipment so lists show Cancelled."""
+	shipment.pickup_status = "Cancelled"
+	shipment.dispatch_status = "Failed"
+	shipment.status = "Cancelled"
+
+
 def apply_pickup_response_to_shipment(shipment, pickup_data: dict, *, save: bool = True) -> None:
 	"""Persist pickup fields on LTL Shipment from a normalized pickup response."""
 	raw = pickup_data.get("raw") or pickup_data

@@ -1319,8 +1319,9 @@ class DaytonCarrierAdapter(BaseCarrierAdapter):
 		target_number = resolve_pickup_cancel_number(shipment_doc)
 		result = self.cancel_pickup(target_number)
 		if result.get("success"):
-			shipment_doc.pickup_status = "Cancelled"
-			shipment_doc.dispatch_status = "Failed"
+			from ltl_quote.carrier_network.pickup import mark_pickup_cancelled
+
+			mark_pickup_cancelled(shipment_doc)
 			shipment_doc.save(ignore_permissions=True)
 		return bool(result.get("success"))
 

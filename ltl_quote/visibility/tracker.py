@@ -15,6 +15,8 @@ class ShipmentTracker:
 		self.settings = frappe.get_single("LTL Platform Settings")
 
 	def refresh(self) -> dict:
+		if str(getattr(self.shipment, "pickup_status", None) or "").strip() == "Cancelled":
+			return {"events": 0, "has_exception": False, "skipped": "pickup_cancelled"}
 		if not self.shipment.pro_number:
 			frappe.throw("PRO / tracking number required for visibility updates.")
 

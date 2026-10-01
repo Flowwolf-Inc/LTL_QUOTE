@@ -129,6 +129,55 @@ def get_recent_quote_requests(limit: int = 10, origin_zip: str = None, destinati
 
 
 @frappe.whitelist()
+def create_shipment_draft(quote_request: str | None = None, carrier: str | None = None) -> dict:
+	"""Create a draft shipment in the themed page from a quote and carrier."""
+	quote_name = str(quote_request or "").strip()
+	carrier_id = str(carrier or "").strip()
+	if not quote_name or not frappe.db.exists("LTL Quote Request", quote_name):
+		frappe.throw("Choose a quote request.")
+	if not carrier_id or not frappe.db.exists("LTL Carrier", carrier_id):
+		frappe.throw("Choose a carrier.")
+	if not frappe.has_permission("LTL Shipment", "create"):
+		frappe.throw("Not permitted to create a shipment.")
+
+	quote = frappe.get_doc("LTL Quote Request", quote_name)
+	frappe.has_permission("LTL Quote Request", "read", doc=quote, throw=True)
+	carrier_doc = frappe.get_doc("LTL Carrier", carrier_id)
+	shipment = frappe.get_doc(
+		{
+			"doctype": "LTL Shipment",
+			"quote_request": quote.name,
+			"carrier": carrier_doc.name,
+			"carrier_name": carrier_doc.carrier_name or carrier_doc.name,
+			"status": "Draft",
+			"dispatch_status": "Pending",
+			"current_status": "Draft",
+			"total_charge": quote.get("final_charge") or 0,
+			"currency": quote.get("currency") or "USD",
+			"bol_shipper_name": quote.get("shipper_company_name"),
+			"bol_shipper_address1": quote.get("shipper_address"),
+			"bol_shipper_city": quote.get("origin_city"),
+			"bol_shipper_state": quote.get("origin_state"),
+			"bol_shipper_postal_code": quote.get("origin_zip"),
+			"bol_shipper_contact_name": quote.get("origin_contact_name") or quote.get("contact_name"),
+			"bol_shipper_contact_phone": quote.get("origin_contact_phone") or quote.get("contact_phone"),
+			"bol_consignee_name": quote.get("consignee_company_name"),
+			"bol_consignee_address1": quote.get("consignee_address"),
+			"bol_consignee_city": quote.get("destination_city"),
+			"bol_consignee_state": quote.get("destination_state"),
+			"bol_consignee_postal_code": quote.get("destination_zip"),
+			"bol_consignee_contact_name": quote.get("destination_contact_name"),
+			"bol_consignee_contact_phone": quote.get("destination_contact_phone"),
+			"bol_number": quote.get("bol_number"),
+			"pro_number": quote.get("pro_number"),
+		}
+	)
+	shipment.insert()
+	frappe.db.commit()
+	return {"name": shipment.name, "status": shipment.status}
+
+
+@frappe.whitelist()
 def get_quote_request_detail(name: str) -> dict:
 	"""Return a quote request with accessorials and linked shipment for the themed detail view."""
 	if not name or not frappe.db.exists("LTL Quote Request", name):
@@ -292,6 +341,7 @@ def get_shipment_detail(name: str) -> dict:
 			"origin_state": quote.origin_state,
 			"destination_city": quote.destination_city,
 			"destination_state": quote.destination_state,
+			"org": quote.org or "",
 		}
 		for row in quote.accessorials or []:
 			label = ""
@@ -654,6 +704,8 @@ def get_tracking_page_data(name: str, refresh: int | str | None = 1) -> dict:
 
 	if not supports_tracking(doc):
 		frappe.throw("Tracking dashboard is only available for Dayton, TForce, ArcBest, and SMC3 shipments.")
+	if str(doc.pickup_status or "").strip() == "Cancelled":
+		frappe.throw("Shipment tracking is not available because this pickup was cancelled.")
 	if not str(doc.pro_number or "").strip():
 		frappe.throw("This shipment does not have a PRO / tracking number yet.")
 
@@ -1044,7 +1096,14 @@ def _refresh_smc3_bol_after_save(shipment) -> None:
 	)
 
 	adapter = get_adapter(carrier)
-	result = adapter.update_bill_of_lading(shipment)
+	try:
+		result = adapter.update_bill_of_lading(shipment)
+	except frappe.ValidationError as exc:
+		# Missing party fields (for example Shipper Address) must not block saving.
+		if "is required before sending this request to SMC3" in str(exc):
+			frappe.clear_messages()
+			return
+		raise
 	attach_smc3_bol_to_shipment(shipment, bol_result=result)
 	try:
 		png_result = adapter.get_bol_document_image(shipment, raise_on_empty=False)

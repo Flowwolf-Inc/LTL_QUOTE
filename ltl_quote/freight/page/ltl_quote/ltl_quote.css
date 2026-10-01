@@ -2419,6 +2419,9 @@ img.ltl-bol-image {
 .ltl-detail-conn-tab.active {
 	background: #fff;
 }
+.ltl-detail-conn-org {
+	cursor: default;
+}
 .ltl-detail-conn-add {
 	width: 30px;
 	height: 30px;

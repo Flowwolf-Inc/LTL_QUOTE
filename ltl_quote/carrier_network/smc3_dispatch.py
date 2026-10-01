@@ -15,7 +15,6 @@ from ltl_quote.carrier_network.pickup import resolve_pickup_window
 from ltl_quote.carrier_network.smc3_bol import (
 	canonical_bol_number,
 	quote_data_from_shipment,
-	require_email,
 	require_phone,
 	require_text,
 )
@@ -101,14 +100,29 @@ def build_dispatch_payload(
 		"requestor": _dispatch_requestor(quote_data, origin),
 	}
 	if code in {"CANCEL", "UPDATE"}:
-		pickup = str(
-			pickup_number or getattr(shipment, "pickup_number", None) or ""
-		).strip()
-		if pickup:
-			payload["referenceNumbers"] = [
-				{"assignedBy": "Customer", "type": "pickup", "number": pickup}
-			]
+		refs = _dispatch_reference_numbers(
+			quote_data,
+			pickup_number or getattr(shipment, "pickup_number", None),
+		)
+		if refs:
+			payload["referenceNumbers"] = refs
 	return payload
+
+
+def _dispatch_reference_numbers(quote_data: dict, pickup_number: str = "") -> dict:
+	"""Dispatch referenceNumbers is an object (bol/pro/additionalReferences), not a BOL array."""
+	quote_data = quote_data or {}
+	refs = {}
+	bol = str(quote_data.get("bol_number") or "").strip()
+	pro = str(quote_data.get("pro_number") or "").strip()
+	if bol:
+		refs["bol"] = bol
+	if pro:
+		refs["pro"] = pro
+	pickup = str(pickup_number or "").strip()
+	if pickup:
+		refs["additionalReferences"] = [{"type": "Pickup", "number": pickup}]
+	return refs
 
 
 def _pickup_availability(ready_dt, close_dt) -> dict:
@@ -154,6 +168,10 @@ def _commodity_row(item: dict, quote_data: dict, weight) -> dict:
 	}
 
 
+def _optional_text(value) -> str:
+	return str(value or "").strip()
+
+
 def _dispatch_party(
 	quote_data: dict,
 	*,
@@ -168,42 +186,61 @@ def _dispatch_party(
 	contact_email=None,
 	party_label: str,
 ) -> dict:
-	postal_code = require_text(postal, f"{party_label} Postal Code")
-	return {
-		"name": require_text(name, f"{party_label} Company Name"),
+	"""Company name, street address, and phone are required. Other party fields are optional."""
+	postal_code = _optional_text(postal)
+	company_name = require_text(name, f"{party_label} Company Name")
+	party = {
+		"name": company_name,
 		"address": require_text(address, f"{party_label} Address"),
-		"city": require_text(city, f"{party_label} City"),
-		"stateProvince": require_text(state, f"{party_label} State"),
-		"postalCode": postal_code,
 		"country": _dispatch_country(country, postal_code),
-		"contact": {
-			"name": require_text(contact_name, f"{party_label} Contact Name"),
-			"phone": require_phone(contact_phone, f"{party_label} Contact Phone"),
-			"email": require_email(contact_email, f"{party_label} Contact Email"),
-		},
 	}
+	city_text = _optional_text(city)
+	state_text = _optional_text(state)
+	if city_text:
+		party["city"] = city_text
+	if state_text:
+		party["stateProvince"] = state_text
+	if postal_code:
+		party["postalCode"] = postal_code
+	contact = {
+		"name": _optional_text(contact_name) or company_name,
+		"phone": require_phone(contact_phone, f"{party_label} Contact Phone"),
+		"email": _dispatch_email(contact_email),
+	}
+	party["contact"] = contact
+	return party
+
+
+def _dispatch_email(*values) -> str:
+	"""SMC3 requires an email. Use a typed address, otherwise the logged-in user, otherwise a placeholder."""
+	for value in values:
+		text = _optional_text(value)
+		if "@" in text:
+			return text
+	try:
+		user = _optional_text(getattr(getattr(frappe, "session", None), "user", None))
+	except Exception:
+		user = ""
+	if "@" in user and user.lower() != "guest":
+		return user
+	return "dispatch@example.com"
 
 
 def _dispatch_requestor(quote_data: dict, origin: dict) -> dict:
 	contact = origin.get("contact") if isinstance(origin.get("contact"), dict) else {}
+	company_name = require_text(
+		quote_data.get("requestor_name") or quote_data.get("shipper_name") or origin.get("name"),
+		"Requestor Company Name",
+	)
 	return {
-		"name": require_text(
-			quote_data.get("requestor_name") or quote_data.get("shipper_name") or origin.get("name"),
-			"Requestor Company Name",
-		),
+		"name": company_name,
 		"contact": {
-			"name": require_text(
-				quote_data.get("requestor_contact_name") or contact.get("name"),
-				"Requestor Contact Name",
-			),
+			"name": _optional_text(quote_data.get("requestor_contact_name") or contact.get("name")) or company_name,
 			"phone": require_phone(
 				quote_data.get("requestor_phone") or contact.get("phone"),
 				"Requestor Contact Phone",
 			),
-			"email": require_email(
-				quote_data.get("requestor_email") or contact.get("email"),
-				"Requestor Contact Email",
-			),
+			"email": _dispatch_email(quote_data.get("requestor_email"), contact.get("email")),
 		},
 	}
 

@@ -165,16 +165,65 @@ class TestRequiredPartyFields(unittest.TestCase):
 		payload = build_bol_payload(FAILED_TXN_QUOTE, is_test=True, account="")
 		self.assertEqual(payload["origin"]["account"], DEFAULT_SANDBOX_ACCOUNT)
 
-	def test_dispatch_payload_requires_shipper_email(self):
+	def test_dispatch_payload_allows_blank_optional_party_fields(self):
 		from types import SimpleNamespace
 
 		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
 
 		quote = dict(FAILED_TXN_QUOTE)
-		quote.pop("origin_contact_email")
-		with self.assertRaises(Exception) as ctx:
-			build_dispatch_payload(SimpleNamespace(pickup_date="2026-09-08"), quote)
-		self.assertIn("Shipper Contact Email", str(ctx.exception))
+		for key in (
+			"origin_contact_email",
+			"destination_contact_email",
+			"origin_city",
+			"origin_state",
+			"origin_zip",
+			"destination_city",
+			"destination_state",
+			"destination_zip",
+			"contact_name",
+			"destination_contact_name",
+		):
+			quote.pop(key, None)
+		with patch(
+			"ltl_quote.carrier_network.smc3_dispatch.resolve_pickup_window",
+			return_value=("2026-09-16 08:00:00", "2026-09-16 16:00:00"),
+		):
+			payload = build_dispatch_payload(SimpleNamespace(pickup_date="2026-09-16"), quote)
+		self.assertEqual(payload["origin"]["name"], "Main Warehouse Dispatch")
+		self.assertEqual(payload["origin"]["address"], "123 Logistics Way")
+		self.assertEqual(payload["origin"]["contact"]["phone"], "3125550199")
+		self.assertEqual(payload["origin"]["contact"]["name"], "Main Warehouse Dispatch")
+		self.assertIn("@", payload["origin"]["contact"]["email"])
+		self.assertEqual(payload["requestor"]["contact"]["name"], "Main Warehouse Dispatch")
+		self.assertIn("@", payload["requestor"]["contact"]["email"])
+		self.assertNotIn("city", payload["origin"])
+		self.assertEqual(payload["destination"]["contact"]["name"], "Destination Receiver")
+		self.assertEqual(payload["destination"]["contact"]["phone"], "2145550188")
+
+	def test_cancel_dispatch_reference_numbers_are_an_object(self):
+		from types import SimpleNamespace
+
+		from ltl_quote.carrier_network.smc3_dispatch import build_dispatch_payload
+
+		quote = dict(FAILED_TXN_QUOTE)
+		quote["bol_number"] = "BOL123"
+		quote["pro_number"] = "PRO456"
+		with patch(
+			"ltl_quote.carrier_network.smc3_dispatch.resolve_pickup_window",
+			return_value=("2026-09-16 08:00:00", "2026-09-16 16:00:00"),
+		):
+			payload = build_dispatch_payload(
+				SimpleNamespace(pickup_date="2026-09-16", pickup_number="PU789"),
+				quote,
+				dispatch_code="CANCEL",
+				pickup_number="PU789",
+			)
+		refs = payload["referenceNumbers"]
+		self.assertIsInstance(refs, dict)
+		self.assertEqual(refs["bol"], "BOL123")
+		self.assertEqual(refs["pro"], "PRO456")
+		self.assertEqual(refs["additionalReferences"], [{"type": "Pickup", "number": "PU789"}])
+		self.assertNotIn("assignedBy", str(refs))
 
 	def test_dispatch_payload_uses_quote_contacts(self):
 		from types import SimpleNamespace

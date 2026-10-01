@@ -829,7 +829,11 @@ def update_dayton_pickup_by_psid(shipment=None, shipment_name=None, payload=None
 def cancel_dayton_pickup(shipment=None, shipment_name=None, number=None):
 	"""Cancel a Dayton pickup (DELETE /api/Pickup/Cancel)."""
 	from ltl_quote.carrier_network.adapters.dayton import DaytonCarrierAdapter
-	from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number, shipment_pickup_summary
+	from ltl_quote.carrier_network.pickup import (
+		mark_pickup_cancelled,
+		resolve_pickup_cancel_number,
+		shipment_pickup_summary,
+	)
 
 	doc = None
 	if shipment or shipment_name:
@@ -844,8 +848,7 @@ def cancel_dayton_pickup(shipment=None, shipment_name=None, number=None):
 	adapter = DaytonCarrierAdapter()
 	result = adapter.cancel_pickup(target)
 	if doc and result.get("success"):
-		doc.pickup_status = "Cancelled"
-		doc.dispatch_status = "Failed"
+		mark_pickup_cancelled(doc)
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		doc.reload()
@@ -909,7 +912,11 @@ def get_tforce_pickup(shipment=None, shipment_name=None, number=None):
 def cancel_tforce_pickup(shipment=None, shipment_name=None, number=None):
 	"""Cancel a TForce pickup (DELETE /pickup/request/{confirmationNumber})."""
 	from ltl_quote.carrier_network.adapters.tforce import TForceCarrierAdapter
-	from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number, shipment_pickup_summary
+	from ltl_quote.carrier_network.pickup import (
+		mark_pickup_cancelled,
+		resolve_pickup_cancel_number,
+		shipment_pickup_summary,
+	)
 
 	doc = None
 	if shipment or shipment_name:
@@ -924,8 +931,7 @@ def cancel_tforce_pickup(shipment=None, shipment_name=None, number=None):
 	adapter = TForceCarrierAdapter(frappe.get_doc("LTL Carrier", doc.carrier) if doc else None)
 	result = adapter.cancel_pickup(target)
 	if doc and result.get("success"):
-		doc.pickup_status = "Cancelled"
-		doc.dispatch_status = "Failed"
+		mark_pickup_cancelled(doc)
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		doc.reload()
@@ -990,12 +996,11 @@ def get_arcbest_pickup(shipment=None, shipment_name=None, number=None):
 @frappe.whitelist(allow_guest=False)
 def cancel_arcbest_pickup(shipment=None, shipment_name=None, number=None):
 	"""Cancel a locally recorded ArcBest pickup (no carrier cancel API)."""
-	from ltl_quote.carrier_network.pickup import shipment_pickup_summary
+	from ltl_quote.carrier_network.pickup import mark_pickup_cancelled, shipment_pickup_summary
 
 	doc = _get_arcbest_shipment(shipment, shipment_name)
 	frappe.has_permission("LTL Shipment", "write", doc=doc, throw=True)
-	doc.pickup_status = "Cancelled"
-	doc.dispatch_status = "Failed"
+	mark_pickup_cancelled(doc)
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
 	doc.reload()
@@ -1052,7 +1057,11 @@ def get_smc3_pickup(shipment=None, shipment_name=None, number=None):
 def cancel_smc3_pickup(shipment=None, shipment_name=None, number=None):
 	"""Cancel an SMC3 pickup (POST dispatchCode CANCEL)."""
 	from ltl_quote.carrier_network.adapters.smc3 import SMC3CarrierAdapter
-	from ltl_quote.carrier_network.pickup import resolve_pickup_cancel_number, shipment_pickup_summary
+	from ltl_quote.carrier_network.pickup import (
+		mark_pickup_cancelled,
+		resolve_pickup_cancel_number,
+		shipment_pickup_summary,
+	)
 
 	doc = None
 	if shipment or shipment_name:
@@ -1069,8 +1078,7 @@ def cancel_smc3_pickup(shipment=None, shipment_name=None, number=None):
 	if not result.get("success"):
 		frappe.throw(result.get("message") or "Could not cancel the SMC3 pickup.")
 	if doc:
-		doc.pickup_status = "Cancelled"
-		doc.dispatch_status = "Failed"
+		mark_pickup_cancelled(doc)
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		doc.reload()
